@@ -1,9 +1,92 @@
-# Discord Player
+# Grajek
 
-A compact native Rust desktop utility: paste a YouTube video URL, press **Play**
-(or Enter), and broadcast one audio stream to a configured Discord voice channel.
-Another Play replaces the track; Stop cancels pending work and stops playback.
-The bot stays connected after Stop or natural completion and leaves on window close.
+A compact native Rust desktop music controller: paste a YouTube video URL, press
+**Play URL** (or Enter), and broadcast one audio stream to a configured Discord
+voice channel. The window shows the track title and elapsed time, and offers
+**Pause / Resume**, **Next** and **Stop**, a **volume** slider, an in-memory
+**queue** and a persistent **history**. Another Play URL replaces the current
+track, even while paused; Stop cancels pending work and stops playback in both
+Playing and Paused states. The bot stays connected after Stop or natural
+completion and leaves on window close.
+
+## Playback controls (v0.2.0)
+
+- **Now playing:** the title and duration come from the same yt-dlp JSON that
+  initializes the stream; no extra request, process, cache or artwork. A missing
+  title shows "Untitled track". Titles are whitespace-normalized, capped at 200
+  characters and truncated with an ellipsis to the window width.
+- **Pause / Resume:** one button, labelled for the action it performs. Both use
+  Songbird's `TrackHandle::pause()` / `play()` on the existing track; Resume does
+  not reconnect to Discord or resolve YouTube again. The button is disabled while
+  a request is in flight and the GUI shows the state the controller reports, never
+  a guess. If the track is gone, the controller reports an error instead.
+- **Elapsed time:** `01:24 / 03:45`, or `01:24 (duration unavailable)` (live
+  streams, missing metadata). It is read from the existing 250 ms
+  `TrackHandle::get_info()` poll and published to the UI only when the displayed
+  second changes. It stops while paused and restarts at 00:00 for a new track.
+  There is no seeking.
+
+## Volume, history and queue (v0.2.0)
+
+**Volume.** A 0 to 100 % slider with the percentage beside it. It maps to
+Songbird's `TrackHandle::set_volume(0.0..=1.0)`; there is no amplification above
+100 %, and NaN or infinite values are ignored. It changes the live track without
+restarting the stream, also while paused, and new tracks start at the selected
+volume (it is part of the `Track` handed to Songbird), so Next, Play and
+replacement keep it. Mouse drags send the newest value through a `watch` channel
+(not one command per pixel), so dragging stays live and cheap. The value is saved
+when you let go. Keyboard: click the slider or Tab to it, then Left/Down and
+Right/Up change it by 5, Page Up/Down by 10, Home/End jump to 0/100 (each key
+press is saved). GPUI Kit's `Slider` has no keyboard handling of its own, so the
+window adds it. If the track is gone when the volume is set, the controller
+reports an error and the slider returns to the volume actually applied.
+Existing users start at 100 %, as before.
+
+**History.** The 50 most recently played unique videos, newest first, in the
+**History** tab: title, duration, **Play now** (replaces the current track),
+**Add to queue**, remove, and **Clear history** (asks for confirmation inline). A
+video is recorded only once its playback has really begun (the position advanced),
+never merely because yt-dlp succeeded. Replaying a video moves it to the top.
+Only the canonical `watch?v=` URL, title and duration are stored; never
+expiring stream URLs. History is independent of the queue.
+
+**Local data.** One small JSON file holds history and volume:
+`$XDG_DATA_HOME/grajek/state.json`, else `$HOME/.local/share/grajek/state.json`
+(directory mode 0700). Writes go to `state.json.tmp`, are synced, then renamed
+over the real file, so a crash leaves the old or the new file. A single writer
+saves the newest snapshot, so a slow write can never overwrite newer data. A
+missing file starts empty. A malformed file is renamed to
+`state.json.corrupt-<unix time>` (never deleted), a warning appears in the
+History tab and the log, and Grajek starts empty. Entries that are not valid
+video URLs are dropped on load. Nothing is stored in the repository, `.env` or
+the working directory.
+
+**Queue.** An in-memory FIFO of at most 100 pending entries (canonical URL plus a
+title if History already knows it, otherwise the video ID). It is not persisted
+and nothing is resolved or downloaded when an entry is added. The controller owns
+the only copy; the window renders snapshots. Exact semantics:
+
+- **Play URL** plays immediately, replacing the active or paused track, and
+  leaves the queue alone. Invalid input never interrupts the current track.
+- **Add to queue** (button, or Ctrl+Enter in the URL field) appends and never stops
+  or replaces anything; while idle it does not start playback.
+- **Natural completion** starts the first queued entry (exactly once); with an
+  empty queue the player returns to Ready.
+- **Next** cancels the current track or any request in progress and starts the
+  first queued entry; while idle it starts it. It is disabled when nothing is
+  queued. Only one extraction ever runs; each Next cancels the previous request.
+- **Stop** cancels pending work and the active track, keeps the queue, never
+  advances, and keeps Discord connected.
+- **Pause / Resume** affect only the active track and never advance the queue.
+- **Failure** (yt-dlp, stream or decode) shows the error, keeps the remaining
+  queue and does not advance or retry. Press Next or Play URL to continue; the
+  entry that failed has already left the queue.
+- Per-entry **move up / move down / remove** and **Clear queue** (does not stop
+  the current track); the Queue tab shows the pending count. No drag and drop.
+
+Ctrl+1 / Ctrl+2 switch between the Queue and History tabs (the kit's tabs are not
+focusable). If a focused button turns off (for example Stop after stopping), focus
+returns to the URL field so Tab keeps working.
 
 ## Prerequisites (CachyOS / Arch, Linux x86_64)
 
@@ -165,9 +248,9 @@ The UI watch task stays on `Context::spawn`, whose future deliberately has no
 Serenity/Songbird callbacks keep their required async trait signatures.
 
 Exceptions use local `#[expect(..., reason = "...")]`, which also warns if an
-exception is no longer needed. The controller's `too_many_lines` expectation
-keeps the biased select loop's cancellation, priority and track ownership
-together. Each of the two GPUI test functions expects `expect_used`: the GPUI
+exception is no longer needed. The controller's biased select loop stays in one
+function so cancellation, priority and track ownership remain explicit; its
+per-event work lives in small `Controller` methods. Each GPUI test function and window helper expects `expect_used`: the GPUI
 test macro requires a unit-returning callback, so window failures must fail the
 test with context. Ordinary Rust tests propagate setup errors with `Result`.
 Production code has no `unwrap()` or `expect()` calls.
@@ -176,7 +259,7 @@ The minimal [Linux CI workflow](.github/workflows/ci.yml) runs the four strict
 commands on Ubuntu 22.04 with explicit GPUI/Opus system packages and Rust 1.99.0,
 the toolchain used for this lint audit. It does not change the local toolchain.
 The commands also passed from a clean target directory in a disposable Ubuntu
-22.04 container: 10 tests passed and the existing optional network test stayed
+22.04 container (v0.1.0): 10 tests passed and the existing optional network test stayed
 ignored. Dependency versions and features are unchanged.
 
 After enabling this policy, a native Wayland smoke test with the existing Discord
@@ -190,7 +273,7 @@ and terminal playback errors. GPUI tests exercise clipboard paste, Enter, button
 Play prevention and disabled controls without requiring Discord credentials.
 
 Verified locally on CachyOS with Rust 1.99.0: formatting, check, Clippy with warnings
-denied, build and 10 offline tests passed. The optional network test also passed:
+denied, build and 10 offline tests passed (v0.1.0). The optional network test also passed:
 yt-dlp 2026.08.19 / Deno 2.9.7 / EJS 0.8.0 extracted Opus/WebM, and Songbird opened,
 initialized and decoded an audio packet from that stream. The real native X11 window was checked for typing,
 clipboard paste, visible configuration errors, disabled controls and normal close.
@@ -216,6 +299,47 @@ the Discord client. Other Wayland compositors, IME composition, fractional scali
 and a standalone Xorg session were not tested. No implementation, Cargo feature
 or dependency changes were needed.
 
+## v0.2.0 validation
+
+**Automated** (Rust 1.99.0, 2026-10-12): `cargo fmt --all -- --check`, Clippy with
+`-D warnings`, `cargo test --locked --workspace --all-features` and
+`cargo build --locked` pass; 97 offline tests pass and the optional network test
+stays ignored. Coverage: volume conversion and bounds, live/new-track/paused/failed
+volume handling, persistence (round trip, missing, malformed, repaired, atomic
+replace, newest-snapshot writer, XDG paths), history rules (50 entries, dedupe,
+order, only after playback begins), every queue rule above (FIFO, 100 limit,
+natural end exactly once, stale End events, Next while playing/idle/extracting,
+rapid Next, Stop, Pause, failures without retry, invalid URLs, reorder/remove/clear,
+shutdown) and the GPUI window (slider by mouse and keyboard, tabs, button states,
+row actions, history confirmation, scrolling, long titles/errors, focus).
+The controller tests use a fake `Backend`/`Handle` because a detached Songbird
+driver does not answer or emit events; the real Songbird/Discord path is `live.rs`.
+
+**GUI smoke test** (KDE Plasma/KWin Wayland, native Wayland launch and an
+XWayland run for input injection; a scratch `XDG_DATA_HOME`, not the real one).
+The 520 x 560 window opened and rendered correctly (header status, URL row, now
+playing, controls, volume, tabs, lists, ellipsized titles). With real Discord
+credentials, driven by synthetic keyboard events (the compositor ignores
+synthetic pointer clicks, so no mouse interaction was exercised): Play reached
+Playing with the title and elapsed time; Pause and Resume; Ctrl+Enter queued
+videos without starting playback while idle; Next started a queued track; a
+natural end advanced to the next queued entry once, and an unavailable video
+showed its error, kept the rest of the queue and did not retry; Stop returned to
+Ready, kept the queue, did not advance and stayed connected; History showed
+restored entries and Play now from History started the video; volume (keyboard)
+and history persisted to `state.json` and were restored after a restart (the
+queue was empty, as designed). The slider, Tab order and focus were fixed after
+this test exposed a stuck-focus bug and an unreachable slider.
+
+**Not verified:** audible output in Discord (nobody listened, so "volume changes
+what you hear" is untested; the value reaches `set_volume` and new `Track`s),
+mouse operation of the real window, graceful window-close shutdown (checked in
+earlier versions, not re-run), a live Next during extraction, the bot's behavior
+in the Discord client, and compositors other than KWin. During one run the bot was
+disconnected from the voice channel by Discord (WebSocket closed with
+`Disconnected`), presumably not by Grajek; it showed the "Press Play to reconnect"
+error as designed.
+
 ## Troubleshooting and limits
 
 - **Missing configuration/token rejected:** replace placeholders with a real bot
@@ -227,11 +351,18 @@ or dependency changes were needed.
   resolve successfully and still be rejected when fetched or decoded.
 - **No window:** run in a desktop session with a working Vulkan driver.
   To try X11/Xwayland from a Wayland session, use `env -u WAYLAND_DISPLAY cargo run`.
-- **Logs:** `RUST_LOG=discord_player=debug,warn cargo run`. Detailed failures go
+- **Logs:** `RUST_LOG=grajek=debug,warn cargo run`. Detailed failures go
   to stderr; the window shows short, actionable messages. Do not share your `.env`.
-- One guild, one ordinary voice channel, one track; no queue, seek, commands or
-  persisted state. Network interruptions stop playback; Play can retry after
-  gateway recovery. Fatal configuration/gateway startup failures require restart.
+- One guild, one ordinary voice channel, one track at a time; no seek, playlists,
+  shuffle, repeat, search, Discord commands, drag and drop, or queue persistence.
+  A queued entry is resolved only when it starts, so it can still fail then (private,
+  removed or region-blocked videos). Network interruptions stop playback; Play can
+  retry after gateway recovery. Fatal configuration/gateway startup failures
+  require restart.
+- Volume is the bot's own output level; it cannot override Discord-side server mute
+  or each listener's volume for the bot.
+- If the data directory cannot be determined or written, the app works but logs a
+  warning and history and volume are not saved.
 - The GUI runs on GPUI's main executor; bounded commands and watch snapshots
   bridge to Tokio. Songbird track handles/events report completion and errors;
   Playing waits for actual track position advancement. This cannot prove that

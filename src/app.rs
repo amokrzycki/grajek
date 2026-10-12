@@ -1,22 +1,65 @@
+mod controls;
+mod history;
+mod queue;
+
 use gpui_kit::component::{
     ActiveTheme, Disableable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
+    slider::{SliderEvent, SliderState},
+    tab::{Tab, TabBar},
+    tooltip::Tooltip,
 };
 use gpui_kit::{
-    AppContext, Context, Entity, Focusable, FontWeight, IntoElement, ParentElement, Render, Styled,
-    Subscription, Task, Window, div,
+    AppContext, Context, ElementId, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Task, TestSupportExt, Window, div,
 };
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
-use crate::player::{Command, Phase, State};
+use crate::player::{Command, Phase, State, VolumeRequest};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Section {
+    Queue,
+    History,
+}
 
 pub struct PlayerApp {
     input: Entity<InputState>,
+    volume: Entity<SliderState>,
+    volume_focus: FocusHandle,
+    /// Tracks the Pause/Next/Stop row, to rescue keyboard focus from a control that turns off.
+    controls_focus: FocusHandle,
     commands: mpsc::Sender<Command>,
+    volume_requests: watch::Sender<VolumeRequest>,
     state: State,
-    _input_subscription: Subscription,
+    /// A Pause/Resume/Next request is in flight; cleared by the controller's next state.
+    control_pending: bool,
+    /// The slider is being dragged; controller snapshots must not fight the pointer.
+    dragging: bool,
+    volume_seq: u64,
+    /// The newest volume request the controller has not yet answered.
+    volume_pending: Option<u64>,
+    section: Section,
+    /// "Clear history" was pressed once and awaits confirmation.
+    confirm_clear: bool,
+    _subscriptions: Vec<Subscription>,
     _updates: Task<()>,
+}
+
+fn clock(position: Duration) -> String {
+    let seconds = position.as_secs();
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// `01:24 / 03:45`, or `01:24 (duration unavailable)` when yt-dlp gave no duration.
+fn format_progress(position: Duration, duration: Option<Duration>) -> String {
+    match duration {
+        Some(duration) => format!("{} / {}", clock(position), clock(duration)),
+        None => format!("{} (duration unavailable)", clock(position)),
+    }
 }
 
 impl PlayerApp {
@@ -24,22 +67,51 @@ impl PlayerApp {
         window: &mut Window,
         cx: &mut Context<Self>,
         commands: mpsc::Sender<Command>,
+        volume_requests: watch::Sender<VolumeRequest>,
         mut states: watch::Receiver<State>,
     ) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Paste YouTube URL…"));
         window.focus(&input.read(cx).focus_handle(cx), cx);
-        let subscription = cx.subscribe_in(&input, window, |this, _, event, _, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.play(cx);
-            }
+        let volume = cx.new(|_| {
+            SliderState::new()
+                .min(0.0)
+                .max(100.0)
+                .step(1.0)
+                .default_value(f32::from(volume_requests.borrow().percent))
         });
+        let subscriptions = vec![
+            cx.subscribe_in(&input, window, |this, _, event, window, cx| {
+                if let InputEvent::PressEnter { secondary, .. } = event {
+                    // Enter plays; Ctrl+Enter queues.
+                    if *secondary {
+                        this.enqueue(cx);
+                    } else {
+                        this.play(window, cx);
+                    }
+                }
+            }),
+            cx.subscribe_in(&volume, window, |this, _, event, _, cx| match event {
+                SliderEvent::Change(value) => {
+                    this.dragging = true;
+                    this.request_volume(value.end(), false, cx);
+                }
+                SliderEvent::Release(value) => {
+                    this.dragging = false;
+                    this.request_volume(value.end(), true, cx);
+                }
+            }),
+        ];
         let state = states.borrow_and_update().clone();
-        let updates = cx.spawn(async move |entity, cx| {
+        let updates = cx.spawn_in(window, async move |entity, cx| {
             while states.changed().await.is_ok() {
                 let state = states.borrow_and_update().clone();
                 if entity
-                    .update(cx, |this, cx| {
+                    .update_in(cx, |this, window, cx| {
+                        let before = this.controls_enabled();
                         this.state = state;
+                        this.control_pending = false;
+                        this.rescue_focus(before, window, cx);
+                        this.sync_volume(window, cx);
                         cx.notify();
                     })
                     .is_err()
@@ -50,79 +122,147 @@ impl PlayerApp {
         });
         Self {
             input,
+            volume,
+            volume_focus: cx.focus_handle(),
+            controls_focus: cx.focus_handle(),
             commands,
+            volume_requests,
             state,
-            _input_subscription: subscription,
+            control_pending: false,
+            dragging: false,
+            volume_seq: 0,
+            volume_pending: None,
+            section: Section::Queue,
+            confirm_clear: false,
+            _subscriptions: subscriptions,
             _updates: updates,
         }
     }
 
-    fn play(&mut self, cx: &mut Context<Self>) {
-        if !self.state.can_play() {
-            return;
-        }
-        let url = self.input.read(cx).value().to_string();
-        if self.commands.try_send(Command::Play(url)).is_ok() {
-            // Close the gap before the controller's first update arrives.
-            self.state.phase = Phase::Connecting;
-            self.state.error = None;
-            cx.notify();
-        }
+    /// Fire-and-forget: the controller answers every command with a new snapshot, and the
+    /// window only ever renders snapshots.
+    fn send(&self, command: Command) -> bool {
+        self.commands.try_send(command).is_ok()
     }
 
-    fn stop(&mut self, cx: &mut Context<Self>) {
-        if self.state.can_stop() && self.commands.try_send(Command::Stop).is_ok() {
-            self.state.phase = Phase::Stopping;
-            cx.notify();
-        }
+    fn input_text(&self, cx: &Context<Self>) -> String {
+        self.input.read(cx).value().to_string()
+    }
+
+    fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        self.section = section;
+        self.confirm_clear = false;
+        cx.notify();
     }
 }
 
-impl Render for PlayerApp {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+fn connection(state: &State) -> &'static str {
+    if state.available {
+        "Discord connected"
+    } else if state.phase == Phase::Initializing {
+        "Connecting to Discord…"
+    } else {
+        "Discord unavailable"
+    }
+}
+
+/// A one-line, ellipsized label whose full text appears in a tooltip.
+fn label(id: impl Into<ElementId>, text: String) -> impl IntoElement {
+    let tip: SharedString = text.clone().into();
+    div()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .child(text)
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .test_support()
+}
+
+impl PlayerApp {
+    fn header(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let color = if self.state.error.is_some() {
+        let color = if self.state.available {
+            theme.green
+        } else if self.state.phase == Phase::Initializing {
+            theme.muted_foreground
+        } else {
+            theme.danger
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .text_xs()
+            .text_color(color)
+            .child("●")
+            .child(connection(&self.state))
+    }
+
+    fn url_row(&self, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .gap_2()
+            .child(Input::new(&self.input).id("url").flex_1().min_w_0())
+            .child(
+                Button::new("play")
+                    .primary()
+                    .label("Play URL")
+                    .disabled(!self.state.can_play())
+                    .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))),
+            )
+            .child(
+                Button::new("enqueue")
+                    .label("Add to queue")
+                    .disabled(!self.state.can_enqueue())
+                    .on_click(cx.listener(|this, _, _, cx| this.enqueue(cx))),
+            )
+    }
+
+    /// Title and status are single lines that truncate with an ellipsis, so a long
+    /// title can never widen the window or push the controls away.
+    fn now_playing(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let phase_color = if self.state.error.is_some() {
             theme.danger
         } else if self.state.phase == Phase::Playing {
             theme.green
+        } else if self.state.phase == Phase::Paused {
+            theme.yellow
         } else {
             theme.muted_foreground
         };
+        let track = self.state.visible_track();
+        let (title, title_color) = match track {
+            Some(info) => (
+                info.title
+                    .clone()
+                    .unwrap_or_else(|| "Untitled track".into()),
+                theme.foreground,
+            ),
+            None => ("Nothing playing".into(), theme.muted_foreground),
+        };
+        let progress = track.map(|info| format_progress(self.state.position, info.duration));
         div()
-            .size_full()
-            .bg(theme.background)
-            .text_color(theme.foreground)
-            .font_family(theme.font_family.clone())
-            .p_5()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_1()
+            .pt_3()
+            .border_t_1()
+            .border_color(theme.border)
             .child(
                 div()
-                    .text_base()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Discord Player"),
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child("Now playing"),
             )
-            .child(Input::new(&self.input).id("url").w_full())
             .child(
                 div()
                     .flex()
-                    .gap_2()
-                    .child(
-                        Button::new("play")
-                            .primary()
-                            .label("Play")
-                            .flex_1()
-                            .disabled(!self.state.can_play())
-                            .on_click(cx.listener(|this, _, _, cx| this.play(cx))),
-                    )
-                    .child(
-                        Button::new("stop")
-                            .label("Stop")
-                            .w_24()
-                            .disabled(!self.state.can_stop())
-                            .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
-                    ),
+                    .text_base()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(title_color)
+                    .child(label("title", title)),
             )
             .child(
                 div()
@@ -130,135 +270,125 @@ impl Render for PlayerApp {
                     .items_center()
                     .gap_2()
                     .text_sm()
-                    .text_color(color)
-                    .child("●")
-                    .child(self.state.phase.label()),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .flex_none()
+                            .text_color(phase_color)
+                            .child("●")
+                            .child(self.state.phase.label()),
+                    )
+                    .children(progress.map(|progress| {
+                        div()
+                            .id("progress")
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.muted_foreground)
+                            .child(progress)
+                            .test_support()
+                    })),
             )
+    }
+
+    /// Errors wrap and clamp to three lines instead of stretching the window.
+    fn error(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
+        let theme = cx.theme();
+        self.state.error.clone().map(|error| {
+            div()
+                .id("error")
+                .w_full()
+                .text_xs()
+                .text_color(theme.danger)
+                .line_clamp(3)
+                .child(error)
+                .test_support()
+        })
+    }
+
+    fn empty(id: &'static str, text: &'static str, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .id(id)
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .px_4()
+            .text_center()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(text)
+            .test_support()
+    }
+
+    fn sections(&self, cx: &Context<Self>) -> impl IntoElement {
+        let selected = match self.section {
+            Section::Queue => 0,
+            Section::History => 1,
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap_2()
             .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.danger)
-                    .child(self.state.error.clone().unwrap_or_default()),
+                TabBar::new("sections")
+                    .underline()
+                    .selected_index(selected)
+                    .on_click(cx.listener(|this, index: &usize, _, cx| {
+                        this.select_section(
+                            if *index == 0 {
+                                Section::Queue
+                            } else {
+                                Section::History
+                            },
+                            cx,
+                        );
+                    }))
+                    .child(Tab::new().label(format!("Queue ({})", self.state.queue.len())))
+                    .child(Tab::new().label("History")),
             )
+            .child(match self.section {
+                Section::Queue => self.queue_list(cx).into_any_element(),
+                Section::History => self.history_list(cx).into_any_element(),
+            })
+    }
+}
+
+impl Render for PlayerApp {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .font_family(theme.font_family.clone())
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .overflow_hidden()
+            // The kit's tabs cannot take focus, so Ctrl+1 / Ctrl+2 switch sections.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.modifiers.control {
+                    match event.keystroke.key.as_str() {
+                        "1" => this.select_section(Section::Queue, cx),
+                        "2" => this.select_section(Section::History, cx),
+                        _ => {}
+                    }
+                }
+            }))
+            .child(self.header(cx))
+            .child(self.url_row(cx))
+            .child(self.now_playing(cx))
+            .child(self.controls(cx))
+            .children(self.error(cx))
+            .child(self.volume_row(window, cx))
+            .child(self.sections(cx))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Command, Phase, PlayerApp, State};
-    use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{
-        AppContext, Bounds, ClipboardItem, TestAppContext, WindowBounds, WindowOptions, px, size,
-    };
-    use tokio::sync::{mpsc, watch};
-
-    #[gpui_kit::test]
-    #[expect(
-        clippy::expect_used,
-        reason = "GPUI's test macro requires a unit-returning callback; window setup failures must fail the test"
-    )]
-    fn paste_enter_duplicate_play_and_stop(cx: &mut TestAppContext) {
-        let (commands, mut received) = mpsc::channel(4);
-        let (states, updates) = watch::channel(State {
-            phase: Phase::Ready,
-            error: None,
-            available: true,
-        });
-        let (window, view) = cx.update(|cx| {
-            gpui_kit::init(cx);
-            gpui_kit::open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                        None,
-                        size(px(440.), px(260.)),
-                        cx,
-                    ))),
-                    ..Default::default()
-                },
-                cx,
-                |window, cx| cx.new(|cx| PlayerApp::new(window, cx, commands, updates)),
-            )
-            .expect("test window should open")
-        });
-        cx.update_window(window, |_, window, cx| {
-            window.render_frame(cx);
-            window.click("url", cx);
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                "https://youtu.be/aqz-KE-bpKQ".into(),
-            ));
-            window.press("ctrl-v", cx);
-        })
-        .expect("test window should accept clipboard paste");
-        cx.run_until_parked();
-        cx.update_window(window, |_, window, cx| {
-            window.press("enter", cx);
-            window.press("enter", cx);
-            window.click("play", cx);
-        })
-        .expect("test window should dispatch Enter and Play");
-        assert!(
-            matches!(received.try_recv(), Ok(Command::Play(url)) if url == "https://youtu.be/aqz-KE-bpKQ")
-        );
-        assert!(
-            received.try_recv().is_err(),
-            "busy UI must reject duplicate Play"
-        );
-        cx.update_window(window, |_, window, cx| window.click("stop", cx))
-            .expect("test window should dispatch Stop");
-        assert!(matches!(received.try_recv(), Ok(Command::Stop)));
-        states.send_replace(State {
-            phase: Phase::Ready,
-            error: None,
-            available: true,
-        });
-        cx.run_until_parked();
-        cx.update_window(window, |_, window, cx| {
-            window.click("url", cx);
-            window.press("ctrl-a", cx);
-            window.input("https://music.youtube.com/watch?v=BaW_jenozKc", cx);
-            window.click("play", cx);
-        })
-        .expect("test window should accept a replacement URL and Play");
-        assert!(
-            matches!(received.try_recv(), Ok(Command::Play(url)) if url.contains("music.youtube.com"))
-        );
-        cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Connecting));
-    }
-
-    #[gpui_kit::test]
-    #[expect(
-        clippy::expect_used,
-        reason = "GPUI's test macro requires a unit-returning callback; window setup failures must fail the test"
-    )]
-    fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut TestAppContext) {
-        let (commands, mut received) = mpsc::channel(4);
-        let (_, updates) = watch::channel(State {
-            phase: Phase::Error,
-            error: Some("Set DISCORD_BOT_TOKEN in .env, then restart.".into()),
-            available: false,
-        });
-        let (window, view) = cx.update(|cx| {
-            gpui_kit::init(cx);
-            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-                cx.new(|cx| PlayerApp::new(window, cx, commands, updates))
-            })
-            .expect("test window should open")
-        });
-        cx.update_window(window, |_, window, cx| {
-            window.render_frame(cx);
-            window.click("url", cx);
-            window.input("https://youtu.be/aqz-KE-bpKQ", cx);
-            window.press("enter", cx);
-            window.click("play", cx);
-            window.click("stop", cx);
-        })
-        .expect("test window should accept input and disabled actions");
-        assert!(received.try_recv().is_err());
-        cx.update(|cx| {
-            assert_eq!(
-                view.read(cx).input.read(cx).value(),
-                "https://youtu.be/aqz-KE-bpKQ"
-            );
-        });
-    }
-}
+mod tests;
