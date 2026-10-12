@@ -1,8 +1,11 @@
 mod app;
 mod config;
 mod discord;
+mod live;
 mod media;
 mod player;
+mod queue;
+mod store;
 
 use anyhow::{Context as _, Result};
 use gpui_kit::component::{Theme, ThemeMode};
@@ -10,14 +13,34 @@ use gpui_kit::{
     AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, application, assets, init,
     open_window, px, size,
 };
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 use tokio::sync::{mpsc, watch};
+
+// The kit's default assets lack speaker icons; embed just these two next to them.
+gpui_kit::assets::icon_assets!(SpeakerIcons, [Volume2, VolumeX]);
+
+struct AppAssets;
+
+impl gpui_kit::AssetSource for AppAssets {
+    fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
+        match SpeakerIcons.load(path)? {
+            Some(icon) => Ok(Some(icon)),
+            None => assets::Assets.load(path),
+        }
+    }
+
+    fn list(&self, path: &str) -> gpui_kit::Result<Vec<gpui_kit::SharedString>> {
+        let mut paths = assets::Assets.list(path)?;
+        paths.extend(SpeakerIcons.list(path)?);
+        Ok(paths)
+    }
+}
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "discord_player=info,warn".into()),
+                .unwrap_or_else(|_| "grajek=info,warn".into()),
         )
         .init();
     let config = config::Config::load();
@@ -25,11 +48,18 @@ fn main() -> Result<()> {
         .enable_all()
         .build()
         .context("Could not start Tokio")?;
-    let (commands, receiver) = mpsc::channel(4);
+    let (commands, receiver) = mpsc::channel(16);
+    let (volume, volume_rx) = watch::channel(player::VolumeRequest::default());
     let (states, updates) = watch::channel(player::State::default());
     let (shutdown, shutdown_rx) = watch::channel(false);
-    let controller = runtime.spawn(player::run(config, receiver, states, shutdown_rx));
-    application().with_assets(assets::Assets).run(move |cx| {
+    let controller = runtime.spawn(player::run(
+        config,
+        receiver,
+        volume_rx,
+        states,
+        shutdown_rx,
+    ));
+    application().with_assets(AppAssets).run(move |cx| {
         init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         cx.on_window_closed(|cx, _| {
@@ -41,10 +71,10 @@ fn main() -> Result<()> {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(460.), px(320.)),
+                size(px(520.), px(560.)),
                 cx,
             ))),
-            window_min_size: Some(size(px(400.), px(300.))),
+            window_min_size: Some(size(px(420.), px(480.))),
             titlebar: Some(TitlebarOptions {
                 title: Some("Grajek".into()),
                 ..Default::default()
@@ -52,7 +82,7 @@ fn main() -> Result<()> {
             ..Default::default()
         };
         if let Err(error) = open_window(options, cx, |window, cx| {
-            cx.new(|cx| app::PlayerApp::new(window, cx, commands, updates))
+            cx.new(|cx| app::PlayerApp::new(window, cx, commands, volume, updates))
         }) {
             tracing::error!(%error, "Could not open native window");
             cx.quit();

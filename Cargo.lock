@@ -3538,6 +3538,7 @@ dependencies = [
  "dotenvy",
  "gpui-kit",
  "reqwest",
+ "serde",
  "serde_json",
  "serenity",
  "songbird",
