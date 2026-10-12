@@ -21,9 +21,16 @@ impl QueueItem {
     }
 }
 
-/// `dQw4w9WgXcQ` from `https://www.youtube.com/watch?v=dQw4w9WgXcQ`.
+/// `dQw4w9WgXcQ` from `https://www.youtube.com/watch?v=dQw4w9WgXcQ` or
+/// `https://youtu.be/dQw4w9WgXcQ`.
 pub fn video_id(url: &str) -> &str {
-    url.rsplit_once("v=").map_or(url, |(_, id)| id)
+    if let Some((_, id)) = url.rsplit_once("v=") {
+        id.split('&').next().unwrap_or(id)
+    } else if let Some((_, id)) = url.rsplit_once("youtu.be/") {
+        id.split('?').next().unwrap_or(id)
+    } else {
+        url
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -162,11 +169,26 @@ mod tests {
 
     #[test]
     fn untitled_entries_show_the_video_id() {
-        let url = "https://www.youtube.com/watch?v=BaW_jenozKc";
-        assert_eq!(video_id(url), "BaW_jenozKc");
+        // Standard format
+        assert_eq!(
+            video_id("https://www.youtube.com/watch?v=BaW_jenozKc"),
+            "BaW_jenozKc"
+        );
+        // Short URL format
+        assert_eq!(video_id("https://youtu.be/BaW_jenozKc"), "BaW_jenozKc");
+        // With query parameters
+        assert_eq!(
+            video_id("https://www.youtube.com/watch?v=BaW_jenozKc&t=123"),
+            "BaW_jenozKc"
+        );
+        assert_eq!(
+            video_id("https://youtu.be/BaW_jenozKc?t=123"),
+            "BaW_jenozKc"
+        );
+
         let mut item = QueueItem {
             id: 0,
-            url: url.into(),
+            url: "https://www.youtube.com/watch?v=BaW_jenozKc".into(),
             title: None,
         };
         assert_eq!(item.label(), "BaW_jenozKc");
