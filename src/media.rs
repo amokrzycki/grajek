@@ -3,6 +3,42 @@ use songbird::input::{AudioStream, Input, LiveInput, YoutubeDl, metadata::Youtub
 use std::{process::Stdio, time::Duration};
 use tokio::{process::Command, time::timeout};
 
+const MAX_TITLE_CHARS: usize = 200;
+
+/// What yt-dlp reported about a track, taken from the same extraction as the stream.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrackInfo {
+    pub title: Option<String>,
+    pub duration: Option<Duration>,
+}
+
+impl TrackInfo {
+    /// Normalizes untrusted yt-dlp fields; a missing or nonsensical value becomes `None`.
+    fn from_ytdlp(title: Option<&str>, seconds: Option<f64>) -> Self {
+        let title = title
+            .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|title| !title.is_empty())
+            .map(|title| {
+                if title.chars().count() > MAX_TITLE_CHARS {
+                    let cut: String = title.chars().take(MAX_TITLE_CHARS).collect();
+                    format!("{}…", cut.trim_end())
+                } else {
+                    title
+                }
+            });
+        let duration = seconds
+            .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+            .filter(|duration| !duration.is_zero());
+        Self { title, duration }
+    }
+}
+
+/// A playable stream together with its display metadata.
+pub struct Resolved {
+    pub input: Input,
+    pub info: TrackInfo,
+}
+
 pub const FORMAT: &str = "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=m4a]/bestaudio";
 
 pub fn ytdlp_args() -> Vec<&'static str> {
@@ -63,7 +99,7 @@ fn supported_deno(output: &str) -> bool {
     }
 }
 
-pub async fn resolve(client: reqwest::Client, url: String) -> Result<Input> {
+pub async fn resolve(client: reqwest::Client, url: String) -> Result<Resolved> {
     timeout(Duration::from_secs(60), async {
         // Songbird's query() does not kill yt-dlp on cancellation; own only that subprocess.
         let output = Command::new("yt-dlp")
@@ -85,18 +121,20 @@ pub async fn resolve(client: reqwest::Client, url: String) -> Result<Input> {
         }
         let metadata: YoutubeDlOutput = serde_json::from_slice(&output.stdout)
             .context("yt-dlp returned an unsupported stream description.")?;
+        let info = TrackInfo::from_ytdlp(metadata.title.as_deref(), metadata.duration);
         let loader = YoutubeDl::new(client, url);
         let stream: AudioStream<_> = loader
             .get_stream(&metadata)
             .await
             .context("Cannot open the audio stream. Check media access and the network.")?;
-        Input::Live(LiveInput::Raw(stream), None)
+        let input = Input::Live(LiveInput::Raw(stream), None)
             .make_playable_async(
                 songbird::input::codecs::get_codec_registry(),
                 songbird::input::codecs::get_probe(),
             )
             .await
-            .context("Cannot initialize or decode the audio stream.")
+            .context("Cannot initialize or decode the audio stream.")?;
+        Ok(Resolved { input, info })
     })
     .await
     .context("Audio resolution timed out. Check the network and yt-dlp/EJS installation.")?
@@ -127,7 +165,7 @@ pub fn user_error(error: &anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_tools, resolve, supported_deno, user_error};
+    use super::{Resolved, TrackInfo, check_tools, resolve, supported_deno, user_error};
     use anyhow::{Context, Result, ensure};
     use std::time::Duration;
     use tokio::time::timeout;
@@ -153,6 +191,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn metadata_is_normalized_and_optional() {
+        let info = TrackInfo::from_ytdlp(Some("  Big \n Buck\tBunny  "), Some(596.5));
+        assert_eq!(info.title.as_deref(), Some("Big Buck Bunny"));
+        assert_eq!(info.duration, Some(Duration::from_secs_f64(596.5)));
+        // Live streams and odd extractors: no duration, blank or absent title.
+        for seconds in [
+            None,
+            Some(0.0),
+            Some(-3.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            assert_eq!(
+                TrackInfo::from_ytdlp(Some("   "), seconds),
+                TrackInfo::default()
+            );
+        }
+        assert_eq!(TrackInfo::from_ytdlp(None, Some(1e300)).duration, None);
+    }
+
+    #[test]
+    fn long_titles_are_capped_on_a_character_boundary() {
+        let info = TrackInfo::from_ytdlp(Some(&"ż".repeat(1000)), None);
+        let title = info.title.unwrap_or_default();
+        assert_eq!(title.chars().count(), super::MAX_TITLE_CHARS + 1);
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn metadata_comes_from_the_extraction_json() -> Result<()> {
+        let json = r#"{"url":"https://example.invalid/a","title":"Song","duration":225.0}"#;
+        let output: songbird::input::metadata::YoutubeDlOutput = serde_json::from_str(json)?;
+        let info = TrackInfo::from_ytdlp(output.title.as_deref(), output.duration);
+        assert_eq!(info.title.as_deref(), Some("Song"));
+        assert_eq!(info.duration, Some(Duration::from_secs(225)));
+        let output: songbird::input::metadata::YoutubeDlOutput =
+            serde_json::from_str(r#"{"url":"https://example.invalid/a"}"#)?;
+        assert_eq!(
+            TrackInfo::from_ytdlp(output.title.as_deref(), output.duration),
+            TrackInfo::default()
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     #[ignore = "requires YouTube network access; uses the openly licensed Big Buck Bunny video"]
     async fn public_video_stream_initializes_with_songbird() -> Result<()> {
@@ -161,7 +244,9 @@ mod tests {
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(15))
             .build()?;
-        let input = resolve(client, "https://www.youtube.com/watch?v=aqz-KE-bpKQ".into()).await?;
+        let Resolved { input, info } =
+            resolve(client, "https://www.youtube.com/watch?v=aqz-KE-bpKQ".into()).await?;
+        ensure!(info.title.is_some(), "yt-dlp reported no title");
         ensure!(
             input.is_playable(),
             "Songbird did not initialize the stream"

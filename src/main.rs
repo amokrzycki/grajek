@@ -41,12 +41,12 @@ fn main() -> Result<()> {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(440.), px(260.)),
+                size(px(460.), px(320.)),
                 cx,
             ))),
-            window_min_size: Some(size(px(400.), px(260.))),
+            window_min_size: Some(size(px(400.), px(300.))),
             titlebar: Some(TitlebarOptions {
-                title: Some("Discord Player".into()),
+                title: Some("Grajek".into()),
                 ..Default::default()
             }),
             ..Default::default()

@@ -1,9 +1,29 @@
-# Discord Player
+# Grajek
 
-A compact native Rust desktop utility: paste a YouTube video URL, press **Play**
-(or Enter), and broadcast one audio stream to a configured Discord voice channel.
-Another Play replaces the track; Stop cancels pending work and stops playback.
-The bot stays connected after Stop or natural completion and leaves on window close.
+A compact native Rust desktop music controller: paste a YouTube video URL, press
+**Play URL** (or Enter), and broadcast one audio stream to a configured Discord
+voice channel. The window shows the track title and elapsed time, and offers
+**Pause / Resume** and **Stop**. Another Play URL replaces the current track, even
+while paused; Stop cancels pending work and stops playback in both Playing and
+Paused states. The bot stays connected after Stop or natural completion and
+leaves on window close.
+
+## Playback controls (v0.2.0)
+
+- **Now playing:** the title and duration come from the same yt-dlp JSON that
+  initializes the stream; no extra request, process, cache or artwork. A missing
+  title shows "Untitled track". Titles are whitespace-normalized, capped at 200
+  characters and truncated with an ellipsis to the window width.
+- **Pause / Resume:** one button, labelled for the action it performs. Both use
+  Songbird's `TrackHandle::pause()` / `play()` on the existing track; Resume does
+  not reconnect to Discord or resolve YouTube again. The button is disabled while
+  a request is in flight and the GUI shows the state the controller reports, never
+  a guess. If the track is gone, the controller reports an error instead.
+- **Elapsed time:** `01:24 / 03:45`, or `01:24 (duration unavailable)` (live
+  streams, missing metadata). It is read from the existing 250 ms
+  `TrackHandle::get_info()` poll and published to the UI only when the displayed
+  second changes. It stops while paused and restarts at 00:00 for a new track.
+  There is no seeking.
 
 ## Prerequisites (CachyOS / Arch, Linux x86_64)
 
@@ -167,7 +187,7 @@ Serenity/Songbird callbacks keep their required async trait signatures.
 Exceptions use local `#[expect(..., reason = "...")]`, which also warns if an
 exception is no longer needed. The controller's `too_many_lines` expectation
 keeps the biased select loop's cancellation, priority and track ownership
-together. Each of the two GPUI test functions expects `expect_used`: the GPUI
+together. Each GPUI test function and window helper expects `expect_used`: the GPUI
 test macro requires a unit-returning callback, so window failures must fail the
 test with context. Ordinary Rust tests propagate setup errors with `Result`.
 Production code has no `unwrap()` or `expect()` calls.
@@ -176,7 +196,7 @@ The minimal [Linux CI workflow](.github/workflows/ci.yml) runs the four strict
 commands on Ubuntu 22.04 with explicit GPUI/Opus system packages and Rust 1.99.0,
 the toolchain used for this lint audit. It does not change the local toolchain.
 The commands also passed from a clean target directory in a disposable Ubuntu
-22.04 container: 10 tests passed and the existing optional network test stayed
+22.04 container (v0.1.0): 10 tests passed and the existing optional network test stayed
 ignored. Dependency versions and features are unchanged.
 
 After enabling this policy, a native Wayland smoke test with the existing Discord
@@ -190,7 +210,7 @@ and terminal playback errors. GPUI tests exercise clipboard paste, Enter, button
 Play prevention and disabled controls without requiring Discord credentials.
 
 Verified locally on CachyOS with Rust 1.99.0: formatting, check, Clippy with warnings
-denied, build and 10 offline tests passed. The optional network test also passed:
+denied, build and 10 offline tests passed (v0.1.0). The optional network test also passed:
 yt-dlp 2026.08.19 / Deno 2.9.7 / EJS 0.8.0 extracted Opus/WebM, and Songbird opened,
 initialized and decoded an audio packet from that stream. The real native X11 window was checked for typing,
 clipboard paste, visible configuration errors, disabled controls and normal close.
@@ -216,6 +236,25 @@ the Discord client. Other Wayland compositors, IME composition, fractional scali
 and a standalone Xorg session were not tested. No implementation, Cargo feature
 or dependency changes were needed.
 
+## v0.2.0 validation
+
+On **2026-10-12**, with Rust 1.99.0, `cargo fmt --all -- --check`, Clippy with
+`-D warnings`, `cargo test --locked --workspace --all-features` and
+`cargo build --locked` passed. 28 offline tests passed; the optional network test
+stays ignored and now also requires a yt-dlp title. New tests cover phase
+availability (Pause only while Playing, Resume only while Paused, Stop in both),
+metadata normalization and missing duration, `MM:SS` formatting, once-per-second
+publishing and freezing while paused, Stop while paused, replacing a paused
+track, events from a replaced track, failed control commands, rapid repeat clicks
+and long titles/errors in the real GPUI view.
+
+A native Wayland launch (`env -u DISPLAY cargo run`, KDE Plasma) opened the
+window with the title "Grajek" (seen in the Wayland protocol trace), logged
+`Discord gateway ready` and reached `Ready`. **Not verified:** no input-injection
+tool was available, so Play, Pause, Resume, Stop, the rendered layout of the
+new controls and audible playback in Discord were *not* exercised live or visually
+inspected. Do that once with a real URL before relying on this release.
+
 ## Troubleshooting and limits
 
 - **Missing configuration/token rejected:** replace placeholders with a real bot
@@ -229,7 +268,7 @@ or dependency changes were needed.
   To try X11/Xwayland from a Wayland session, use `env -u WAYLAND_DISPLAY cargo run`.
 - **Logs:** `RUST_LOG=discord_player=debug,warn cargo run`. Detailed failures go
   to stderr; the window shows short, actionable messages. Do not share your `.env`.
-- One guild, one ordinary voice channel, one track; no queue, seek, commands or
+- One guild, one ordinary voice channel, one track; no queue, seek, volume, commands or
   persisted state. Network interruptions stop playback; Play can retry after
   gateway recovery. Fatal configuration/gateway startup failures require restart.
 - The GUI runs on GPUI's main executor; bounded commands and watch snapshots
