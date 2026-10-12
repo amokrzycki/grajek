@@ -80,7 +80,8 @@ pub async fn resolve(client: reqwest::Client, url: String) -> Result<Input> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
         if !output.stderr.is_empty() {
-            tracing::warn!(diagnostic = %String::from_utf8_lossy(&output.stderr).trim(), "yt-dlp diagnostic");
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(diagnostic = %diagnostic.trim(), "yt-dlp diagnostic");
         }
         let metadata: YoutubeDlOutput = serde_json::from_slice(&output.stdout)
             .context("yt-dlp returned an unsupported stream description.")?;

@@ -8,6 +8,7 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.0
