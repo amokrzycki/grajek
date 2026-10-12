@@ -22,6 +22,43 @@ url = "2"
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 
+[lints.rust]
+unsafe_code = "forbid"
+unused = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Panic paths and debugging artifacts.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+# Selected nursery checks; do not enable the entire group.
+collection_is_never_read = "warn"
+future_not_send = "warn"
+needless_collect = "warn"
+needless_pass_by_ref_mut = "warn"
+or_fun_call = "warn"
+redundant_clone = "warn"
+significant_drop_in_scrutinee = "warn"
+significant_drop_tightening = "warn"
+unused_peekable = "warn"
+# Selected restriction checks; do not enable the entire group.
+allow_attributes_without_reason = "warn"
+mutex_atomic = "warn"
+mutex_integer = "warn"
+rc_mutex = "warn"
+unused_result_ok = "warn"
+# Ownership, performance and style checks (clone_on_copy, inefficient_to_string,
+# large_enum_variant, large_futures, large_types_passed_by_value, map_clone,
+# needless_pass_by_value, unnecessary_to_owned, unnecessary_wraps,
+# unused_async and wildcard_imports) are already covered by all/pedantic.
+
 [profile.dev]
 debug = 0
 

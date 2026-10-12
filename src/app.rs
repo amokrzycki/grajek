@@ -3,7 +3,10 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
 };
-use gpui_kit::{prelude::*, *};
+use gpui_kit::{
+    AppContext, Context, Entity, Focusable, FontWeight, IntoElement, ParentElement, Render, Styled,
+    Subscription, Task, Window, div,
+};
 use tokio::sync::{mpsc, watch};
 
 use crate::player::{Command, Phase, State};
@@ -150,6 +153,10 @@ mod tests {
     use tokio::sync::{mpsc, watch};
 
     #[gpui_kit::test]
+    #[expect(
+        clippy::expect_used,
+        reason = "GPUI's test macro requires a unit-returning callback; window setup failures must fail the test"
+    )]
     fn paste_enter_duplicate_play_and_stop(cx: &mut TestAppContext) {
         let (commands, mut received) = mpsc::channel(4);
         let (states, updates) = watch::channel(State {
@@ -171,7 +178,7 @@ mod tests {
                 cx,
                 |window, cx| cx.new(|cx| PlayerApp::new(window, cx, commands, updates)),
             )
-            .unwrap()
+            .expect("test window should open")
         });
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -181,14 +188,14 @@ mod tests {
             ));
             window.press("ctrl-v", cx);
         })
-        .unwrap();
+        .expect("test window should accept clipboard paste");
         cx.run_until_parked();
         cx.update_window(window, |_, window, cx| {
             window.press("enter", cx);
             window.press("enter", cx);
             window.click("play", cx);
         })
-        .unwrap();
+        .expect("test window should dispatch Enter and Play");
         assert!(
             matches!(received.try_recv(), Ok(Command::Play(url)) if url == "https://youtu.be/aqz-KE-bpKQ")
         );
@@ -197,7 +204,7 @@ mod tests {
             "busy UI must reject duplicate Play"
         );
         cx.update_window(window, |_, window, cx| window.click("stop", cx))
-            .unwrap();
+            .expect("test window should dispatch Stop");
         assert!(matches!(received.try_recv(), Ok(Command::Stop)));
         states.send_replace(State {
             phase: Phase::Ready,
@@ -211,7 +218,7 @@ mod tests {
             window.input("https://music.youtube.com/watch?v=BaW_jenozKc", cx);
             window.click("play", cx);
         })
-        .unwrap();
+        .expect("test window should accept a replacement URL and Play");
         assert!(
             matches!(received.try_recv(), Ok(Command::Play(url)) if url.contains("music.youtube.com"))
         );
@@ -219,6 +226,10 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    #[expect(
+        clippy::expect_used,
+        reason = "GPUI's test macro requires a unit-returning callback; window setup failures must fail the test"
+    )]
     fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut TestAppContext) {
         let (commands, mut received) = mpsc::channel(4);
         let (_, updates) = watch::channel(State {
@@ -231,7 +242,7 @@ mod tests {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 cx.new(|cx| PlayerApp::new(window, cx, commands, updates))
             })
-            .unwrap()
+            .expect("test window should open")
         });
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -241,13 +252,13 @@ mod tests {
             window.click("play", cx);
             window.click("stop", cx);
         })
-        .unwrap();
+        .expect("test window should accept input and disabled actions");
         assert!(received.try_recv().is_err());
         cx.update(|cx| {
             assert_eq!(
                 view.read(cx).input.read(cx).value(),
                 "https://youtu.be/aqz-KE-bpKQ"
-            )
+            );
         });
     }
 }

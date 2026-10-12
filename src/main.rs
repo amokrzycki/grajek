@@ -6,7 +6,10 @@ mod player;
 
 use anyhow::{Context as _, Result};
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::*;
+use gpui_kit::{
+    AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, application, assets, init,
+    open_window, px, size,
+};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 

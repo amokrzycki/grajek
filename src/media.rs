@@ -126,7 +126,10 @@ pub fn user_error(error: &anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{check_tools, resolve, supported_deno, user_error};
+    use anyhow::{Context, Result, ensure};
+    use std::time::Duration;
+    use tokio::time::timeout;
 
     #[test]
     fn checks_minimum_deno_version() {

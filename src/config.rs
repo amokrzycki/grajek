@@ -84,10 +84,11 @@ pub fn video_url(value: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{parse_id, video_url};
+    use anyhow::Result;
 
     #[test]
-    fn accepts_video_links_and_discards_playlist_parameters() {
+    fn accepts_video_links_and_discards_playlist_parameters() -> Result<()> {
         let expected = "https://www.youtube.com/watch?v=BaW_jenozKc";
         for value in [
             " https://www.youtube.com/watch?v=BaW_jenozKc&list=PL123 ",
@@ -95,8 +96,9 @@ mod tests {
             "https://music.youtube.com/watch?v=BaW_jenozKc",
             "http://m.youtube.com/watch?v=BaW_jenozKc",
         ] {
-            assert_eq!(video_url(value).unwrap(), expected);
+            assert_eq!(video_url(value)?, expected);
         }
+        Ok(())
     }
 
     #[test]
@@ -120,10 +122,11 @@ mod tests {
     }
 
     #[test]
-    fn ids_must_be_nonzero_numbers() {
-        assert_eq!(parse_id(" 123 ").unwrap(), 123);
+    fn ids_must_be_nonzero_numbers() -> Result<()> {
+        assert_eq!(parse_id(" 123 ")?, 123);
         for value in ["0", "-1", "abc", "18446744073709551616", ""] {
             assert!(parse_id(value).is_err());
         }
+        Ok(())
     }
 }

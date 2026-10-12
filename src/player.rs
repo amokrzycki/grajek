@@ -131,6 +131,10 @@ fn stop_track(track: &mut Option<TrackHandle>) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the biased select loop together so command priority, cancellation and track ownership remain explicit"
+)]
 pub async fn run(
     config: Result<Config>,
     mut commands: mpsc::Receiver<Command>,
@@ -232,7 +236,7 @@ pub async fn run(
                         let (sender, receiver) = watch::channel(None);
                         outcome = receiver;
                         let registration = handle.add_event(Event::Track(TrackEvent::End), TrackEvents(sender.clone()))
-                            .and_then(|_| handle.add_event(Event::Track(TrackEvent::Error), TrackEvents(sender)));
+                            .and_then(|()| handle.add_event(Event::Track(TrackEvent::Error), TrackEvents(sender)));
                         if let Err(error) = registration {
                             let _ = handle.stop();
                             tracing::error!(%error, "Could not observe audio track");
@@ -299,7 +303,14 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Outcome, Phase, State, TrackEvents, cancel_job};
+    use anyhow::{Context, Result};
+    use songbird::{EventContext, EventHandler, tracks::PlayMode};
+    use std::{sync::Arc, time::Duration};
+    use tokio::{
+        sync::{mpsc, watch},
+        time::timeout,
+    };
 
     #[test]
     fn actions_follow_operational_state() {

@@ -1,5 +1,11 @@
 use anyhow::{Context as _, Result, ensure};
-use serenity::{all::*, async_trait};
+use serenity::{
+    all::{
+        ChannelId, ChannelType, Client, ConnectionStage, Context, EventHandler, GatewayIntents,
+        GuildId, Http, Permissions, Ready, ShardManager, ShardStageUpdateEvent, UserId, VoiceState,
+    },
+    async_trait,
+};
 use songbird::{
     CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit, Songbird,
 };

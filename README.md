@@ -73,6 +73,26 @@ Normal `youtube.com/watch?v=…`, `youtu.be/…` and
 11-character video ID. Playlist/tracking/start-time parameters are discarded;
 playlist-only URLs and unrelated domains are rejected.
 
+## Linux windowing
+
+GPUI Kit 0.7.3 enables both `wayland` and `x11` on its pinned
+`gpui-pre-platform` 0.3.9 dependency, which forwards them to `gpui-pre-linux`.
+Both backends are compiled for normal builds, independently of `test-support`.
+GPUI prefers native Wayland when `WAYLAND_DISPLAY` is nonempty, even when
+`DISPLAY` is also set; otherwise it selects X11 when `DISPLAY` is nonempty.
+The app uses the default platform selection and does not override these variables.
+
+```sh
+env -u DISPLAY cargo run          # Native Wayland; run inside a Wayland session.
+env -u WAYLAND_DISPLAY cargo run  # X11 / XWayland; requires a working DISPLAY.
+cargo tree --locked -e normal,build,features -i gpui-pre-platform
+```
+
+Fallback is environment-based: if `WAYLAND_DISPLAY` names an unreachable socket,
+GPUI fails startup rather than automatically retrying X11. Unset it explicitly
+to use X11/XWayland. `ZED_HEADLESS` also forces GPUI's headless platform; leave it
+unset for this desktop app. GTK/Qt backend variables do not select GPUI's backend.
+
 ## yt-dlp, Deno and audio
 
 Use current yt-dlp with **Deno 2.3+**. On current Arch, `yt-dlp` depends on
@@ -108,15 +128,62 @@ cookies or generate PO tokens.
 
 ## Validation
 
+Lint levels live in `Cargo.toml`, following the
+[Random Frame desktop policy](https://github.com/amokrzycki/random-frame/blob/main/src-tauri/Cargo.toml)
+and [server policy](https://github.com/amokrzycki/random-frame-server/blob/main/Cargo.toml).
+Unsafe code is forbidden; unused code, Clippy `all` and `pedantic`, panic paths,
+debugging artifacts, and selected ownership/async/restriction checks warn during
+development and fail the strict checks below. Lints already included in
+`all`/`pedantic` are not declared twice. The entire `nursery` and `restriction`
+groups are intentionally not enabled.
+
+Use the currently selected rustup toolchain (minimum Rust 1.92); no upgrade or
+project override is required. Install the tools if they are missing:
+
+```sh
+rustup component add clippy rustfmt
+```
+
+Formatting uses default rustfmt settings. Run the complete strict validation:
+
 ```sh
 cargo fmt --all -- --check
-cargo check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo build
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-features
+cargo build --locked
 # Optional network test: extraction, stream access and Songbird initialization.
-cargo test public_video_stream_initializes_with_songbird -- --ignored --nocapture
+cargo test --locked public_video_stream_initializes_with_songbird -- --ignored --nocapture
 ```
+
+There are no application feature flags, so `--all-features` is supported and does
+not enable every optional feature of dependencies. GPUI's `test-support` comes
+from the existing dev-dependency; normal builds keep both native Linux backends.
+
+`future_not_send` is enabled after auditing the Tokio tasks and GPUI executor.
+The UI watch task stays on `Context::spawn`, whose future deliberately has no
+`Send` bound; do not move it to Tokio or add synchronization to satisfy a lint.
+Serenity/Songbird callbacks keep their required async trait signatures.
+
+Exceptions use local `#[expect(..., reason = "...")]`, which also warns if an
+exception is no longer needed. The controller's `too_many_lines` expectation
+keeps the biased select loop's cancellation, priority and track ownership
+together. Each of the two GPUI test functions expects `expect_used`: the GPUI
+test macro requires a unit-returning callback, so window failures must fail the
+test with context. Ordinary Rust tests propagate setup errors with `Result`.
+Production code has no `unwrap()` or `expect()` calls.
+
+The minimal [Linux CI workflow](.github/workflows/ci.yml) runs the four strict
+commands on Ubuntu 22.04 with explicit GPUI/Opus system packages and Rust 1.99.0,
+the toolchain used for this lint audit. It does not change the local toolchain.
+The commands also passed from a clean target directory in a disposable Ubuntu
+22.04 container: 10 tests passed and the existing optional network test stayed
+ignored. Dependency versions and features are unchanged.
+
+After enabling this policy, a native Wayland smoke test with the existing Discord
+configuration reached Playing through Discord voice and yt-dlp/Songbird. Stop
+returned to Ready, and normal window close logged clean Discord shutdown. This
+checks the UI and playback state path; audible output was not independently
+verified.
 
 Unit tests cover URL/ID validation, action availability, child-process cancellation
 and terminal playback errors. GPUI tests exercise clipboard paste, Enter, button clicks, duplicate
@@ -127,10 +194,27 @@ denied, build and 10 offline tests passed. The optional network test also passed
 yt-dlp 2026.08.19 / Deno 2.9.7 / EJS 0.8.0 extracted Opus/WebM, and Songbird opened,
 initialized and decoded an audio packet from that stream. The real native X11 window was checked for typing,
 clipboard paste, visible configuration errors, disabled controls and normal close.
-**Discord voice connection and audible end-to-end playback are unverified:** no
-Discord credentials were available. With credentials, join the channel in Discord,
-Play a permitted video, verify audible audio, replace it, press Stop, then close
-the app and confirm the bot leaves. Native Wayland interaction is not yet verified.
+The user subsequently verified Discord voice connection and audible YouTube playback.
+
+On **2026-10-12**, `env -u DISPLAY cargo run` was tested in the actual CachyOS
+KDE/KWin **6.7.5 Wayland session**, using the existing Vulkan driver. Native
+keyboard/pointer input verified typing, Ctrl+V paste and Ctrl+C clipboard round
+trip, input focus after button clicks, Play, Stop and Enter. Play joined Discord
+voice and reached Playing through yt-dlp/Songbird; Stop returned to Ready.
+Enter dispatched a second request, which encountered a YouTube HTTP 403.
+Titlebar close exited successfully and logged `Discord shutdown complete`
+without a controller timeout. A separate launch with both display variables set
+exchanged native Wayland window protocol; missing-configuration controls remained
+disabled. With `WAYLAND_DISPLAY` unset, X11 client properties confirmed an
+**XWayland** fallback window, which also closed successfully.
+
+The unchanged suite passed with `cargo test --locked --offline`: **10 passed,
+1 optional network test ignored**. It required execution outside the agent sandbox;
+the sandbox run failed the existing `/proc`-based child cancellation check.
+This audit did not independently listen to audio or observe the bot leaving in
+the Discord client. Other Wayland compositors, IME composition, fractional scaling
+and a standalone Xorg session were not tested. No implementation, Cargo feature
+or dependency changes were needed.
 
 ## Troubleshooting and limits
 
