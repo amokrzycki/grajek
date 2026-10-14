@@ -4,7 +4,7 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
 };
 use gpui_kit::{
-    Context, InteractiveElement, IntoElement, ParentElement, Styled, TestSupportExt, div,
+    Context, InteractiveElement, IntoElement, ParentElement, Styled, TestSupportExt, div, px,
 };
 
 use super::{PlayerApp, label};
@@ -36,28 +36,31 @@ impl PlayerApp {
         div()
             .id(("queue-row", id))
             .flex()
+            .flex_none()
             .items_center()
             .gap_2()
             .px_2()
-            .h_8()
-            .rounded_md()
+            .h(px(36.))
+            .rounded(theme.radius)
             .text_sm()
             .hover(|row| row.bg(theme.list_hover))
             .child(
                 div()
-                    .w_5()
+                    .w(px(24.))
                     .flex_none()
                     .text_right()
                     .text_xs()
+                    .font_family(theme.mono_font_family.clone())
                     .text_color(theme.muted_foreground)
-                    .child(format!("{}", position + 1)),
+                    .child(format!("{:02}", position + 1)),
             )
             .child(label(("queue-title", id), item.label().to_owned()))
             .child(
                 Button::new(("queue-up", id))
                     .icon(IconName::ArrowUp)
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .accessibility_label("Move up")
                     .tooltip("Move up")
                     .disabled(position == 0)
                     .on_click(cx.listener(move |this, _, _, _| {
@@ -68,7 +71,8 @@ impl PlayerApp {
                 Button::new(("queue-down", id))
                     .icon(IconName::ArrowDown)
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .accessibility_label("Move down")
                     .tooltip("Move down")
                     .disabled(last)
                     .on_click(cx.listener(move |this, _, _, _| {
@@ -79,7 +83,8 @@ impl PlayerApp {
                 Button::new(("queue-remove", id))
                     .icon(IconName::Close)
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .accessibility_label("Remove from queue")
                     .tooltip("Remove from queue")
                     .on_click(cx.listener(move |this, _, _, _| {
                         this.send(Command::Dequeue(id));

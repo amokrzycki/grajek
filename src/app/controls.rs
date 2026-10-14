@@ -1,10 +1,12 @@
 use gpui_kit::assets::IconName as SpeakerIcon;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, Sizable, button::Button, slider::Slider,
+    ActiveTheme, Disableable, Icon, Sizable,
+    button::{Button, ButtonVariants},
+    slider::Slider,
 };
 use gpui_kit::{
     Context, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Styled,
-    TestSupportExt, Window, div,
+    TestSupportExt, Window, div, prelude::FluentBuilder, px,
 };
 
 use super::PlayerApp;
@@ -174,11 +176,18 @@ impl PlayerApp {
         let next_enabled = !self.control_pending && self.state.can_next();
         div()
             .flex()
+            .flex_none()
             .gap_2()
             .track_focus(&self.controls_focus)
             .tab_stop(false)
             .child(
                 Button::new("pause-resume")
+                    .when(resume, ButtonVariants::primary)
+                    .icon(if resume {
+                        SpeakerIcon::Play
+                    } else {
+                        SpeakerIcon::Pause
+                    })
                     .label(if resume { "Resume" } else { "Pause" })
                     .flex_1()
                     .disabled(!toggle_enabled)
@@ -186,8 +195,9 @@ impl PlayerApp {
             )
             .child(
                 Button::new("next")
+                    .icon(SpeakerIcon::SkipForward)
                     .label("Next")
-                    .w_24()
+                    .w(px(88.))
                     .tooltip(if self.state.queue.is_empty() {
                         "Nothing is queued"
                     } else {
@@ -198,8 +208,9 @@ impl PlayerApp {
             )
             .child(
                 Button::new("stop")
+                    .ghost()
                     .label("Stop")
-                    .w_24()
+                    .w(px(64.))
                     .disabled(!self.state.can_stop())
                     .on_click(cx.listener(|this, _, window, cx| this.stop(window, cx))),
             )
@@ -219,6 +230,7 @@ impl PlayerApp {
         let focus = self.volume_focus.clone().tab_stop(available);
         div()
             .flex()
+            .flex_none()
             .items_center()
             .gap_2()
             .child(
@@ -232,7 +244,7 @@ impl PlayerApp {
                     .flex_1()
                     .min_w_0()
                     .px_1()
-                    .rounded_md()
+                    .rounded(theme.radius)
                     .border_1()
                     .border_color(if focused {
                         theme.ring
@@ -249,10 +261,12 @@ impl PlayerApp {
             .child(
                 div()
                     .id("volume-percent")
-                    .w_10()
+                    .w(px(48.))
                     .flex_none()
                     .text_right()
                     .text_sm()
+                    .whitespace_nowrap()
+                    .font_family(theme.mono_font_family.clone())
                     .text_color(if available {
                         theme.foreground
                     } else {

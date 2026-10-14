@@ -6,9 +6,9 @@ mod media;
 mod player;
 mod queue;
 mod store;
+mod style;
 
 use anyhow::{Context as _, Result};
-use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{
     AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, application, assets, init,
     open_window, px, size,
@@ -16,14 +16,14 @@ use gpui_kit::{
 use std::{borrow::Cow, time::Duration};
 use tokio::sync::{mpsc, watch};
 
-// The kit's default assets lack speaker icons; embed just these two next to them.
-gpui_kit::assets::icon_assets!(SpeakerIcons, [Volume2, VolumeX]);
+// Extend the default Lucide assets with the speaker and transport icons we use.
+gpui_kit::assets::icon_assets!(ControlIcons, [Volume2, VolumeX, Pause, SkipForward, Square]);
 
 struct AppAssets;
 
 impl gpui_kit::AssetSource for AppAssets {
     fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
-        match SpeakerIcons.load(path)? {
+        match ControlIcons.load(path)? {
             Some(icon) => Ok(Some(icon)),
             None => assets::Assets.load(path),
         }
@@ -31,7 +31,7 @@ impl gpui_kit::AssetSource for AppAssets {
 
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<gpui_kit::SharedString>> {
         let mut paths = assets::Assets.list(path)?;
-        paths.extend(SpeakerIcons.list(path)?);
+        paths.extend(ControlIcons.list(path)?);
         Ok(paths)
     }
 }
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
     ));
     application().with_assets(AppAssets).run(move |cx| {
         init(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
+        style::init(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();

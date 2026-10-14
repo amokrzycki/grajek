@@ -34,21 +34,31 @@ type Harness = (
     watch::Sender<State>,
 );
 
+fn open_full(cx: &mut TestAppContext, initial: State) -> (Harness, watch::Receiver<VolumeRequest>) {
+    open_at(cx, initial, 520., 560.)
+}
+
 #[expect(
     clippy::expect_used,
-    reason = "GPUI's test macro requires a unit-returning callback; window setup failures must fail the test"
+    reason = "GPUI window setup failures must fail the test with context"
 )]
-fn open_full(cx: &mut TestAppContext, initial: State) -> (Harness, watch::Receiver<VolumeRequest>) {
+fn open_at(
+    cx: &mut TestAppContext,
+    initial: State,
+    width: f32,
+    height: f32,
+) -> (Harness, watch::Receiver<VolumeRequest>) {
     let (commands, received) = mpsc::channel(16);
     let (volume, volume_rx) = watch::channel(VolumeRequest::default());
     let (states, updates) = watch::channel(initial);
     let (window, view) = cx.update(|cx| {
         gpui_kit::init(cx);
+        crate::style::init(cx);
         gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
-                    size(px(520.), px(560.)),
+                    size(px(width), px(height)),
                     cx,
                 ))),
                 ..Default::default()
@@ -287,6 +297,7 @@ fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut Te
     });
     let (window, view) = cx.update(|cx| {
         gpui_kit::init(cx);
+        crate::style::init(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
             cx.new(|cx| PlayerApp::new(window, cx, commands, volume, updates))
         })
@@ -906,4 +917,55 @@ fn the_slider_is_inert_without_discord(cx: &mut TestAppContext) {
     .expect("test window should accept input");
     assert_eq!(volume.borrow().seq, 0);
     assert_eq!(volume.borrow().percent, 100);
+}
+
+#[gpui_kit::test]
+fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
+    for (width, height) in [(420., 480.), (520., 560.)] {
+        for phase in [
+            Phase::Ready,
+            Phase::Initializing,
+            Phase::Connecting,
+            Phase::Resolving,
+            Phase::Playing,
+            Phase::Paused,
+            Phase::Stopping,
+            Phase::Error,
+        ] {
+            let mut initial = with_lists(phase, 3, 3);
+            initial.error = (phase == Phase::Error).then(|| "Playback failed. ".repeat(40));
+            let ((window, view, _, _), _) = open_at(cx, initial, width, height);
+            let input = bounds(cx, window, "url");
+            assert!(
+                input.size.width >= px(width - 40.),
+                "URL input needs room to edit a link"
+            );
+            for id in [
+                "play",
+                "enqueue",
+                "pause-resume",
+                "next",
+                "stop",
+                "volume-percent",
+            ] {
+                let control = bounds(cx, window, id);
+                assert!(
+                    control.right() <= px(width) && control.bottom() < px(height),
+                    "{phase:?}: {id} is clipped"
+                );
+            }
+            for section in [Section::Queue, Section::History] {
+                show(cx, &view, section);
+                let second_row = if section == Section::Queue {
+                    bounds(cx, window, ("queue-row", 11_u64))
+                } else {
+                    bounds(cx, window, ("history-row", 1_usize))
+                };
+                assert!(
+                    second_row.bottom() <= px(height - 16.),
+                    "{phase:?}: list needs room for two rows"
+                );
+            }
+        }
+    }
 }
