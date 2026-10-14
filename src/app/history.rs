@@ -5,7 +5,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     Context, InteractiveElement, IntoElement, ParentElement, Styled, TestSupportExt, div,
-    prelude::FluentBuilder,
+    prelude::FluentBuilder, px,
 };
 
 use super::{PlayerApp, clock, label};
@@ -36,17 +36,22 @@ impl PlayerApp {
         div()
             .id(("history-row", index))
             .flex()
+            .flex_none()
             .items_center()
             .gap_2()
             .px_2()
-            .h_8()
-            .rounded_md()
+            .h(px(36.))
+            .rounded(theme.radius)
             .text_sm()
             .hover(|row| row.bg(theme.list_hover))
             .child(label(("history-title", index), title))
             .children(entry.duration().map(|duration| {
                 div()
                     .flex_none()
+                    .w(px(48.))
+                    .text_right()
+                    .whitespace_nowrap()
+                    .font_family(theme.mono_font_family.clone())
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .child(clock(duration))
@@ -55,7 +60,8 @@ impl PlayerApp {
                 Button::new(("history-play", index))
                     .icon(IconName::Play)
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .accessibility_label("Play now")
                     .tooltip("Play now")
                     .disabled(!self.state.can_play())
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -66,7 +72,8 @@ impl PlayerApp {
                 Button::new(("history-queue", index))
                     .icon(IconName::Plus)
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .accessibility_label("Add to queue")
                     .tooltip("Add to queue")
                     .disabled(!self.state.can_enqueue())
                     .on_click(cx.listener(move |this, _, _, _| {
@@ -77,7 +84,8 @@ impl PlayerApp {
                 Button::new(("history-remove", index))
                     .icon(IconName::Close)
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .accessibility_label("Remove from history")
                     .tooltip("Remove from history")
                     .on_click(cx.listener(move |this, _, _, _| {
                         this.send(Command::ForgetHistory(forget_url.clone()));

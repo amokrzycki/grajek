@@ -2,8 +2,9 @@ mod controls;
 mod history;
 mod queue;
 
+use gpui_kit::assets::IconName as AudioIcon;
 use gpui_kit::component::{
-    ActiveTheme, Disableable,
+    ActiveTheme, Disableable, Icon, Sizable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     slider::{SliderEvent, SliderState},
@@ -13,7 +14,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     AppContext, Context, ElementId, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
     IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Task, TestSupportExt, Window, div,
+    Styled, Subscription, Task, TestSupportExt, Window, div, px,
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -191,31 +192,67 @@ impl PlayerApp {
         };
         div()
             .flex()
+            .flex_none()
             .items_center()
-            .gap_1()
-            .text_xs()
-            .text_color(color)
-            .child("●")
-            .child(connection(&self.state))
+            .justify_between()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(18.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Grajek"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(if self.state.available {
+                        theme.muted_foreground
+                    } else {
+                        color
+                    })
+                    .child(div().size(px(6.)).flex_none().rounded_full().bg(color))
+                    .child(connection(&self.state)),
+            )
     }
 
     fn url_row(&self, cx: &Context<Self>) -> impl IntoElement {
         div()
             .flex()
-            .gap_2()
-            .child(Input::new(&self.input).id("url").flex_1().min_w_0())
+            .flex_none()
+            .flex_col()
+            .gap_1()
             .child(
-                Button::new("play")
-                    .primary()
-                    .label("Play URL")
-                    .disabled(!self.state.can_play())
-                    .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))),
+                Input::new(&self.input)
+                    .id("url")
+                    .aria_label("YouTube video URL")
+                    .w_full()
+                    .h(px(32.))
+                    .mb_2()
+                    .bg(cx.theme().muted),
             )
             .child(
-                Button::new("enqueue")
-                    .label("Add to queue")
-                    .disabled(!self.state.can_enqueue())
-                    .on_click(cx.listener(|this, _, _, cx| this.enqueue(cx))),
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("play")
+                            .primary()
+                            .label("Play URL")
+                            .h(px(28.))
+                            .disabled(!self.state.can_play())
+                            .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))),
+                    )
+                    .child(
+                        Button::new("enqueue")
+                            .label("Add to queue")
+                            .h(px(28.))
+                            .disabled(!self.state.can_enqueue())
+                            .on_click(cx.listener(|this, _, _, cx| this.enqueue(cx))),
+                    ),
             )
     }
 
@@ -226,7 +263,7 @@ impl PlayerApp {
         let phase_color = if self.state.error.is_some() {
             theme.danger
         } else if self.state.phase == Phase::Playing {
-            theme.green
+            theme.primary
         } else if self.state.phase == Phase::Paused {
             theme.yellow
         } else {
@@ -243,52 +280,74 @@ impl PlayerApp {
             None => ("Nothing playing".into(), theme.muted_foreground),
         };
         let progress = track.map(|info| format_progress(self.state.position, info.duration));
+        let symbol = match self.state.phase {
+            Phase::Playing => AudioIcon::Play,
+            Phase::Paused => AudioIcon::Pause,
+            Phase::Ready | Phase::Error => AudioIcon::Square,
+            Phase::Initializing | Phase::Connecting | Phase::Resolving | Phase::Stopping => {
+                AudioIcon::Ellipsis
+            }
+        };
         div()
             .flex()
-            .flex_col()
-            .gap_1()
-            .pt_3()
-            .border_t_1()
-            .border_color(theme.border)
+            .flex_none()
+            .items_center()
+            .gap_3()
+            .py_2()
+            .border_b_1()
+            .border_color(crate::style::separator())
             .child(
                 div()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child("Now playing"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .text_base()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(title_color)
-                    .child(label("title", title)),
-            )
-            .child(
-                div()
+                    .size(px(40.))
+                    .flex_none()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .text_sm()
+                    .justify_center()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(phase_color)
+                    .bg(theme.muted)
+                    .text_color(phase_color)
+                    .child(Icon::new(symbol).size_5()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .text_size(px(22.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(title_color)
+                            .child(label("title", title)),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_1()
-                            .flex_none()
-                            .text_color(phase_color)
-                            .child("●")
-                            .child(self.state.phase.label()),
-                    )
-                    .children(progress.map(|progress| {
-                        div()
-                            .id("progress")
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.muted_foreground)
-                            .child(progress)
-                            .test_support()
-                    })),
+                            .gap_3()
+                            .text_xs()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(phase_color)
+                                    .child(self.state.phase.label()),
+                            )
+                            .children(progress.map(|progress| {
+                                div()
+                                    .id("progress")
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(theme.mono_font_family.clone())
+                                    .text_color(theme.muted_foreground)
+                                    .child(progress)
+                                    .test_support()
+                            })),
+                    ),
             )
     }
 
@@ -296,13 +355,20 @@ impl PlayerApp {
     fn error(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let theme = cx.theme();
         self.state.error.clone().map(|error| {
+            let tip: SharedString = error.clone().into();
             div()
                 .id("error")
+                .flex_none()
                 .w_full()
+                .px_2()
+                .py_1()
+                .rounded(theme.radius)
+                .bg(theme.button_danger)
                 .text_xs()
                 .text_color(theme.danger)
                 .line_clamp(3)
                 .child(error)
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                 .test_support()
         })
     }
@@ -312,10 +378,9 @@ impl PlayerApp {
             .id(id)
             .flex_1()
             .flex()
-            .items_center()
-            .justify_center()
-            .px_4()
-            .text_center()
+            .items_start()
+            .px_2()
+            .pt_3()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
             .child(text)
@@ -336,6 +401,7 @@ impl PlayerApp {
             .child(
                 TabBar::new("sections")
                     .underline()
+                    .small()
                     .selected_index(selected)
                     .on_click(cx.listener(|this, index: &usize, _, cx| {
                         this.select_section(
@@ -368,7 +434,7 @@ impl Render for PlayerApp {
             .p_4()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_2()
             .overflow_hidden()
             // The kit's tabs cannot take focus, so Ctrl+1 / Ctrl+2 switch sections.
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
