@@ -1508,6 +1508,61 @@ async fn exhausted_voice_recovery_preserves_queue_and_manual_play_still_works() 
     Ok(())
 }
 
+#[tokio::test]
+async fn a_rejoin_result_classifies_failure_before_the_driver_callback() -> Result<()> {
+    use songbird::error::{ConnectionError, JoinError};
+    use std::io::ErrorKind;
+
+    for (error, terminal_error, retry) in [
+        (
+            JoinError::Driver(ConnectionError::Io(ErrorKind::ConnectionReset.into())),
+            None,
+            true,
+        ),
+        (JoinError::Driver(ConnectionError::TimedOut), None, true),
+        (JoinError::TimedOut, None, false),
+        (JoinError::NoSender, None, false),
+        (
+            JoinError::Driver(ConnectionError::CryptoModeInvalid),
+            None,
+            false,
+        ),
+        (
+            JoinError::Driver(ConnectionError::Io(ErrorKind::ConnectionReset.into())),
+            Some("Kicked; check permissions"),
+            false,
+        ),
+    ] {
+        let (mut controller, fake, updates) = solo(Saved::default());
+        fake.health.send_modify(|health| {
+            health.voice = false;
+            health.voice_error = terminal_error.map(str::to_owned);
+        });
+        controller.command(Command::Enqueue(B.into())).await;
+        controller.job = Some(Job {
+            task: tokio::spawn(async move {
+                Err(anyhow::Error::new(error).context("Cannot join Discord voice."))
+            }),
+            connected: None,
+            kind: JobKind::Rejoin(1),
+            voice_ready: false,
+        });
+        let JobEvent::Done(result) = job_event(&mut controller.job).await else {
+            bail!("A rejoin must not report media preparation");
+        };
+        // No driver callback has set voice_retry; the typed result is already definitive.
+        controller.finish_job(result).await;
+        assert_eq!(
+            matches!(controller.scheduled, Some((_, Scheduled::Rejoin(2)))),
+            retry
+        );
+        assert_eq!(updates.borrow().queue[0].url, B);
+        assert!(updates.borrow().track.is_none());
+        assert_eq!(fake.started(), 0);
+    }
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn stop_next_and_shutdown_cancel_voice_recovery() -> Result<()> {
     for action in [0, 1, 2] {

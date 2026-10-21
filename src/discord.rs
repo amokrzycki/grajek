@@ -8,7 +8,7 @@ use serenity::{
 };
 use songbird::{
     CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit, Songbird,
-    events::context_data::DisconnectReason, model::CloseCode,
+    error::JoinError, events::context_data::DisconnectReason, model::CloseCode,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::watch, task::JoinHandle, time::timeout};
@@ -34,8 +34,19 @@ pub struct Health {
 }
 
 impl Health {
-    fn left_channel(&mut self, session: &str) -> bool {
-        if !self.voice_requested || self.voice_session.as_deref() != Some(session) {
+    fn voice_state(&mut self, session: &str, in_channel: bool) -> bool {
+        if !self.voice_requested {
+            return false;
+        }
+        if in_channel {
+            if self.voice_session.is_some() {
+                return false;
+            }
+            // The gateway identifies the session before the driver finishes connecting.
+            self.voice_session = Some(session.into());
+            return true;
+        }
+        if self.voice_session.as_deref() != Some(session) {
             return false;
         }
         self.voice = false;
@@ -85,12 +96,10 @@ impl EventHandler for GatewayEvents {
     }
 
     async fn voice_state_update(&self, _: Context, _: Option<VoiceState>, new: VoiceState) {
-        if new.guild_id == Some(self.guild)
-            && new.user_id == self.user
-            && new.channel_id != Some(self.channel)
-        {
-            self.health
-                .send_if_modified(|health| health.left_channel(&new.session_id));
+        if new.guild_id == Some(self.guild) && new.user_id == self.user {
+            self.health.send_if_modified(|health| {
+                health.voice_state(&new.session_id, new.channel_id == Some(self.channel))
+            });
         }
     }
 }
@@ -107,6 +116,13 @@ fn retryable(reason: Option<DisconnectReason>) -> bool {
                         | CloseCode::VoiceServerCrash
                 ))
         )
+    )
+}
+
+pub(crate) fn retryable_join(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<JoinError>(),
+        Some(JoinError::Driver(error)) if retryable(Some(DisconnectReason::from(error)))
     )
 }
 
@@ -480,7 +496,7 @@ mod tests {
         let (events, health) = events();
         events
             .health
-            .send_if_modified(|health| health.left_channel("current"));
+            .send_if_modified(|health| health.voice_state("current", false));
         events.update("current", false, false, Some(DisconnectReason::Io));
         events.update("current", true, true, None);
         assert!(!health.borrow().voice && !health.borrow().voice_retry);
@@ -494,7 +510,34 @@ mod tests {
         let (events, health) = self::events();
         events
             .health
-            .send_if_modified(|health| health.left_channel("old"));
+            .send_if_modified(|health| health.voice_state("old", false));
         assert!(health.borrow().voice && health.borrow().error().is_none());
+    }
+
+    #[test]
+    fn a_kick_during_join_invalidates_a_late_driver_connect() {
+        let (sender, health) = watch::channel(Health {
+            gateway: true,
+            voice_requested: true,
+            voice_epoch: 2,
+            ..Health::default()
+        });
+        let events = VoiceEvents {
+            health: sender.clone(),
+            epoch: 2,
+        };
+        sender.send_if_modified(|health| health.voice_state("current", true));
+        assert!(!health.borrow().voice);
+        // A delayed leave for the previous session must not cancel this join.
+        sender.send_if_modified(|health| health.voice_state("old", false));
+        assert!(health.borrow().voice_requested);
+        assert!(health.borrow().error().is_none());
+        sender.send_if_modified(|health| health.voice_state("current", false));
+        sender.send_if_modified(|health| health.voice_state("current", true));
+        events.update("current", true, false, None);
+        assert!(!health.borrow().voice);
+        assert!(!health.borrow().voice_requested);
+        assert!(!health.borrow().voice_retry);
+        assert!(health.borrow().error().is_some());
     }
 }

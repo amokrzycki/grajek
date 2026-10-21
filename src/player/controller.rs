@@ -726,7 +726,13 @@ impl<B: Backend> Controller<B> {
                         ),
                     );
                 } else {
-                    let retry = self.health.borrow().voice_retry;
+                    let retry = {
+                        let health = self.health.borrow();
+                        // Songbird may return the join error before its disconnect callback.
+                        health.voice_retry
+                            || (health.error().is_none()
+                                && result.as_ref().is_err_and(crate::discord::retryable_join))
+                    };
                     self.backend.recover().await;
                     if retry && self.gateway() {
                         self.schedule_rejoin();
