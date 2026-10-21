@@ -1,14 +1,10 @@
 use anyhow::{Context, Result};
 use songbird::tracks::{PlayMode, TrackResult, TrackState};
-use std::{
-    future::pending,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{future::pending, sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot, watch},
     task::{JoinError, JoinHandle},
-    time::{interval, timeout},
+    time::{Instant, MissedTickBehavior, interval, sleep_until, timeout},
 };
 
 use super::{Backend, Command, Handle, Outcome, Phase, State, VolumeRequest, volume_factor};
@@ -22,6 +18,29 @@ use crate::{
 
 /// How long a track may take to start advancing before it is reported as failed.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+const IDLE_TIMEOUT: Duration = Duration::from_mins(10);
+const SKIP_DELAY: Duration = Duration::from_secs(1);
+const FAILURE_LIMIT: u8 = 3;
+const REJOIN_LIMIT: u8 = 2;
+
+#[derive(Clone, Copy)]
+enum Scheduled {
+    Advance,
+    Rejoin(u8),
+    Idle,
+}
+
+enum JobKind {
+    Prepare { url: String, queued: bool },
+    Rejoin(u8),
+    Disconnect,
+}
+
+enum JobOutput {
+    Prepared(Resolved),
+    Connected,
+    Disconnected,
+}
 
 /// What one `get_info()` poll means for the current track.
 #[derive(Debug, PartialEq, Eq)]
@@ -100,7 +119,12 @@ impl<H: Handle> Active<H> {
     fn observe(&mut self, info: &TrackState) -> Observed {
         match &info.playing {
             PlayMode::Errored(error) => return Observed::Done(Some(error.to_string())),
-            mode if mode.is_done() => return Observed::Done(None),
+            PlayMode::End => return Observed::Done(None),
+            PlayMode::Stop => {
+                return Observed::Done(Some(
+                    "Audio track stopped unexpectedly. Press Next or Play URL.".into(),
+                ));
+            }
             PlayMode::Play if self.paused || info.position.is_zero() => return Observed::Idle,
             PlayMode::Pause if !self.paused => return Observed::Idle,
             _ => {}
@@ -117,17 +141,18 @@ impl<H: Handle> Active<H> {
     }
 }
 
-/// An in-flight connect-and-extract request. At most one exists at a time.
+/// One cancellable playback or voice job. Recovery and extraction share this slot.
 struct Job {
-    task: JoinHandle<Result<Resolved>>,
+    task: JoinHandle<Result<JobOutput>>,
     connected: Option<oneshot::Receiver<()>>,
-    url: String,
+    kind: JobKind,
+    voice_ready: bool,
 }
 
 enum JobEvent {
     /// Voice is ready (`true`), or the job ended without connecting (`false`).
     Connected(bool),
-    Done(Result<Result<Resolved>, JoinError>),
+    Done(Result<Result<JobOutput>, JoinError>),
 }
 
 async fn job_event(job: &mut Option<Job>) -> JobEvent {
@@ -167,6 +192,11 @@ pub(super) struct Controller<B: Backend> {
     notice: Option<String>,
     job: Option<Job>,
     track: Option<Active<B::Handle>>,
+    queued_track: bool,
+    failures: u8,
+    failure_notice: Option<String>,
+    scheduled: Option<(Instant, Scheduled)>,
+    rejoin_attempts: u8,
 }
 
 impl<B: Backend> Controller<B> {
@@ -189,6 +219,11 @@ impl<B: Backend> Controller<B> {
             notice,
             job: None,
             track: None,
+            queued_track: false,
+            failures: 0,
+            failure_notice: None,
+            scheduled: None,
+            rejoin_attempts: 0,
         }
     }
 
@@ -198,6 +233,12 @@ impl<B: Backend> Controller<B> {
 
     /// Adds the shared data (volume, queue, history) to a state about the track/phase.
     fn view(&self, mut state: State) -> State {
+        state.available = self.gateway();
+        state.voice_connected = self.health.borrow().voice;
+        state.continue_on_error = self.saved.continue_on_error;
+        if state.error.is_none() {
+            state.error.clone_from(&self.failure_notice);
+        }
         state.volume = self.volume;
         state.volume_seq = self.volume_seq;
         state.queue = self.queue.snapshot();
@@ -214,11 +255,10 @@ impl<B: Backend> Controller<B> {
         self.states.send_replace(state);
     }
 
-    fn publish(&self, phase: Phase, error: Option<String>, available: bool) {
+    fn publish(&self, phase: Phase, error: Option<String>) {
         self.emit(State {
             phase,
             error,
-            available,
             ..State::default()
         });
     }
@@ -260,31 +300,39 @@ impl<B: Backend> Controller<B> {
 
     fn fail(&mut self, message: &str) {
         self.stop_track();
-        self.publish(Phase::Error, Some(message.into()), true);
+        self.publish(Phase::Error, Some(message.into()));
     }
 
     /// Starts `url`, cancelling whatever was being prepared or played. Only one request
     /// and one track can exist because everything runs through this single path.
-    async fn begin(&mut self, url: String) {
+    async fn begin(&mut self, url: String, queued: bool) {
+        self.scheduled = None;
+        self.queued_track = queued;
         self.cancel_job().await;
         self.stop_track();
         self.backend.clear_error();
-        self.publish(Phase::Connecting, None, true);
+        self.publish(Phase::Connecting, None);
         let (connected_tx, connected) = oneshot::channel();
         let backend = self.backend.clone();
         let request = url.clone();
         self.job = Some(Job {
-            task: tokio::spawn(async move { backend.prepare(request, connected_tx).await }),
+            task: tokio::spawn(async move {
+                backend
+                    .prepare(request, connected_tx)
+                    .await
+                    .map(JobOutput::Prepared)
+            }),
             connected: Some(connected),
-            url,
+            kind: JobKind::Prepare { url, queued },
+            voice_ready: false,
         });
     }
 
     /// Called exactly once per track that ended on its own: the next queued track, or Ready.
     async fn advance(&mut self) {
         match self.queue.pop_front() {
-            Some(item) => self.begin(item.url).await,
-            None => self.publish(Phase::Ready, None, true),
+            Some(item) => self.begin(item.url, true).await,
+            None => self.publish(Phase::Ready, None),
         }
     }
 
@@ -294,11 +342,19 @@ impl<B: Backend> Controller<B> {
             Command::Pause => self.set_paused(true),
             Command::Resume => self.set_paused(false),
             Command::Play(value) => {
-                if self.job.is_some() || !self.gateway() {
-                    return;
+                if matches!(
+                    self.job.as_ref().map(|job| &job.kind),
+                    Some(JobKind::Prepare { .. })
+                ) || !self.gateway()
+                {
+                    return self.sync();
                 }
                 match video_url(&value) {
-                    Ok(url) => self.begin(url).await,
+                    Ok(url) => {
+                        self.failure_notice = None;
+                        self.rejoin_attempts = 0;
+                        self.begin(url, false).await;
+                    }
                     // A bad URL must not disturb the track that is still playing or paused.
                     Err(error) => self.report(error.to_string()),
                 }
@@ -316,11 +372,13 @@ impl<B: Backend> Controller<B> {
                 Err(error) => self.report(error.to_string()),
             },
             Command::Next => {
+                self.failure_notice = None;
+                self.rejoin_attempts = 0;
                 if !self.gateway() {
                     return self.sync();
                 }
                 match self.queue.pop_front() {
-                    Some(item) => self.begin(item.url).await,
+                    Some(item) => self.begin(item.url, true).await,
                     None => self.sync(),
                 }
             }
@@ -342,6 +400,15 @@ impl<B: Backend> Controller<B> {
                 }
                 self.sync();
             }
+            Command::ContinueOnError(enabled) => {
+                self.saved.continue_on_error = enabled;
+                if !enabled && matches!(self.scheduled, Some((_, Scheduled::Advance))) {
+                    self.scheduled = None;
+                    self.report("Automatic continuation disabled. Press Next or Play URL.".into());
+                }
+                self.persist();
+                self.sync();
+            }
             Command::ClearHistory => {
                 if !self.saved.history.is_empty() {
                     self.saved.history.clear();
@@ -354,20 +421,19 @@ impl<B: Backend> Controller<B> {
 
     /// Cancels pending work and the active track. The queue is kept and nothing advances.
     async fn stop(&mut self) {
-        self.publish(Phase::Stopping, None, true);
+        self.scheduled = None;
+        self.failure_notice = None;
+        self.publish(Phase::Stopping, None);
         self.cancel_job().await;
         self.stop_track();
         self.backend.recover().await;
-        let (connected, error) = {
-            let health = self.health.borrow();
-            (health.gateway, health.error())
-        };
+        let error = self.health.borrow().error();
         let phase = if error.is_some() {
             Phase::Error
         } else {
             Phase::Ready
         };
-        self.publish(phase, error, connected);
+        self.publish(phase, error);
     }
 
     /// Applies Pause/Resume. The controller is the authority: it always answers with a state,
@@ -432,7 +498,7 @@ impl<B: Backend> Controller<B> {
             return false;
         };
         if !alive {
-            self.fail("Audio driver terminated unexpectedly. Try again.");
+            self.media_failure("Audio driver terminated unexpectedly. Try again.");
             return false;
         }
         let outcome = current.outcome.borrow_and_update().clone();
@@ -442,21 +508,11 @@ impl<B: Backend> Controller<B> {
                 true
             }
             Some(Outcome::Error(error)) => {
-                self.fail(&error);
+                self.media_failure(&error);
                 false
             }
             None => false,
         }
-    }
-
-    /// Reads the track position and status through the existing handle; publishes at most
-    /// once per displayed second or state change. Returns true when the track ended on its own.
-    async fn poll(&mut self) -> bool {
-        let Some(current) = self.track.as_ref() else {
-            return false;
-        };
-        let reading = timeout(Duration::from_secs(2), current.handle.info()).await;
-        self.apply(reading.ok())
     }
 
     fn apply(&mut self, reading: Option<TrackResult<TrackState>>) -> bool {
@@ -472,6 +528,7 @@ impl<B: Backend> Controller<B> {
                         current.recorded = true;
                         current.entry()
                     });
+                    self.failures = 0;
                     if let Some(entry) = entry {
                         self.saved.record(entry);
                         self.persist();
@@ -483,7 +540,7 @@ impl<B: Backend> Controller<B> {
                     self.stop_track();
                     let ended = error.is_none();
                     if let Some(error) = error {
-                        self.publish(Phase::Error, Some(error), true);
+                        self.media_failure(&error);
                     }
                     return ended;
                 }
@@ -500,47 +557,192 @@ impl<B: Backend> Controller<B> {
             None => Some("Audio driver stopped responding. Try again."),
         };
         if let Some(message) = failure {
-            self.fail(message);
+            self.media_failure(message);
         }
         false
     }
 
-    async fn finish_job(&mut self, result: Result<Result<Resolved>, JoinError>) {
+    fn media_failure(&mut self, message: &str) {
+        self.fail(message);
+        let healthy = {
+            let health = self.health.borrow();
+            health.gateway && health.voice && health.error().is_none()
+        };
+        if !self.saved.continue_on_error || !self.queued_track || !healthy {
+            return;
+        }
+        self.failures = self.failures.saturating_add(1);
+        let explanation = if self.failures >= FAILURE_LIMIT {
+            format!(
+                "Recovery stopped after {FAILURE_LIMIT} consecutive failures. Press Next or Play URL."
+            )
+        } else if self.queue.is_empty() {
+            "No queued tracks remain. Press Play URL or add tracks and press Next.".into()
+        } else {
+            self.scheduled = Some((Instant::now() + SKIP_DELAY, Scheduled::Advance));
+            "Skipped failed queued track; continuing in 1 second.".into()
+        };
+        self.failure_notice = Some(format!("{message} {explanation}"));
+        self.publish(Phase::Error, self.failure_notice.clone());
+    }
+
+    fn schedule_rejoin(&mut self) {
+        if self.rejoin_attempts >= REJOIN_LIMIT {
+            self.publish(Phase::Error, Some("Discord voice recovery stopped after 2 attempts. Check the network and permissions, then press Next or Play URL.".into()));
+        } else {
+            self.rejoin_attempts += 1;
+            self.scheduled = Some((
+                Instant::now() + Duration::from_secs(u64::from(self.rejoin_attempts) * 2 - 1),
+                Scheduled::Rejoin(self.rejoin_attempts),
+            ));
+            self.publish(Phase::Error, Some("Discord voice interrupted; reconnecting. Playback will not restart automatically.".into()));
+        }
+    }
+
+    async fn health_changed(&mut self, current: Health) {
+        let Some(error) = current.error() else {
+            self.sync();
+            return;
+        };
+        // Voice callbacks from a rejoin belong to that job; its result owns the retry budget.
+        if current.gateway
+            && current.voice_retry
+            && (matches!(
+                self.job.as_ref().map(|job| &job.kind),
+                Some(JobKind::Rejoin(_))
+            ) || matches!(self.scheduled, Some((_, Scheduled::Rejoin(_)))))
+        {
+            return;
+        }
+        self.scheduled = None;
+        self.cancel_job().await;
+        self.stop_track();
+        self.failure_notice = None;
+        self.publish(Phase::Error, Some(error));
+        if current.gateway && !current.voice && current.voice_retry {
+            self.schedule_rejoin();
+        }
+    }
+
+    async fn scheduled_work(&mut self) {
+        let Some((_, work)) = self.scheduled.take() else {
+            return;
+        };
+        match work {
+            Scheduled::Advance => {
+                if self.queue.is_empty() {
+                    self.failure_notice = Some("Automatic continuation stopped: the queue is empty. Press Play URL to start playback.".into());
+                    self.publish(Phase::Error, self.failure_notice.clone());
+                    return;
+                }
+                if self.saved.continue_on_error
+                    && self.gateway()
+                    && self.health.borrow().voice
+                    && self.health.borrow().error().is_none()
+                {
+                    self.advance().await;
+                }
+            }
+            Scheduled::Rejoin(attempt) => {
+                if !self.gateway() {
+                    return;
+                }
+                self.backend.clear_error();
+                let backend = self.backend.clone();
+                self.job = Some(Job {
+                    task: tokio::spawn(async move {
+                        timeout(Duration::from_secs(40), backend.connect())
+                            .await
+                            .context("Voice recovery timed out.")??;
+                        Ok(JobOutput::Connected)
+                    }),
+                    connected: None,
+                    kind: JobKind::Rejoin(attempt),
+                    voice_ready: false,
+                });
+            }
+            Scheduled::Idle => {
+                if self.job.is_some() || self.track.is_some() || !self.health.borrow().voice {
+                    return;
+                }
+                let backend = self.backend.clone();
+                self.job = Some(Job {
+                    task: tokio::spawn(async move {
+                        backend.disconnect().await.map(|()| JobOutput::Disconnected)
+                    }),
+                    connected: None,
+                    kind: JobKind::Disconnect,
+                    voice_ready: false,
+                });
+            }
+        }
+    }
+
+    async fn finish_job(&mut self, result: Result<Result<JobOutput>, JoinError>) {
         let Some(job) = self.job.take() else {
             return;
         };
-        let resolved = result
+        let result = result
             .context("Audio request task failed.")
             .and_then(|result| result);
-        match resolved {
-            Ok(resolved) => {
+        match (job.kind, result) {
+            (JobKind::Prepare { url, queued }, Ok(JobOutput::Prepared(resolved))) => {
+                self.queued_track = queued;
                 let info = resolved.info.clone();
-                match self
-                    .backend
-                    .play(resolved, volume_factor(self.volume))
-                    .await
+                match timeout(
+                    Duration::from_secs(2),
+                    self.backend.play(resolved, volume_factor(self.volume)),
+                )
+                .await
                 {
-                    Ok((handle, outcome)) => {
-                        let current = Active::new(handle, outcome, info, job.url);
+                    Ok(Ok((handle, outcome))) => {
+                        let current = Active::new(handle, outcome, info, url);
                         self.emit(current.state(None));
                         self.track = Some(current);
                     }
-                    Err(error) => {
-                        tracing::error!(error = %format!("{error:#}"), "Could not observe audio track");
-                        self.publish(
-                            Phase::Error,
-                            Some("Could not start audio playback. Try again.".into()),
-                            true,
-                        );
+                    Ok(Err(error)) => {
+                        tracing::error!(error = %format!("{error:#}"), "Could not start audio playback");
+                        self.media_failure("Could not start audio playback. Try again.");
+                    }
+                    Err(_) => self
+                        .media_failure("Audio playback startup timed out. Press Next or Play URL."),
+                }
+            }
+            (JobKind::Prepare { queued, .. }, Err(error)) => {
+                tracing::error!(error = %format!("{error:#}"), "Audio request failed");
+                self.queued_track = queued && job.voice_ready;
+                self.media_failure(&media::user_error(&error));
+                self.backend.recover().await;
+            }
+            (JobKind::Rejoin(attempt), result) => {
+                self.rejoin_attempts = attempt;
+                if result.is_ok() && self.health.borrow().voice {
+                    self.rejoin_attempts = 0;
+                    self.publish(
+                        Phase::Ready,
+                        Some(
+                            "Discord voice restored. Press Next or Play URL to start playback."
+                                .into(),
+                        ),
+                    );
+                } else {
+                    let retry = self.health.borrow().voice_retry;
+                    self.backend.recover().await;
+                    if retry && self.gateway() {
+                        self.schedule_rejoin();
+                    } else {
+                        self.publish(Phase::Error, Some("Could not restore Discord voice. Check the network and permissions, then press Next or Play URL.".into()));
                     }
                 }
             }
-            Err(error) => {
-                tracing::error!(error = %format!("{error:#}"), "Audio request failed");
-                self.backend.recover().await;
-                let gateway = self.gateway();
-                self.publish(Phase::Error, Some(media::user_error(&error)), gateway);
+            (JobKind::Disconnect, result) => {
+                if let Err(error) = result {
+                    self.report(error.to_string());
+                } else {
+                    self.sync();
+                }
             }
+            _ => self.fail("Unexpected playback job result. Press Next or Play URL."),
         }
     }
 
@@ -551,10 +753,20 @@ impl<B: Backend> Controller<B> {
         mut shutdown: watch::Receiver<bool>,
     ) {
         let mut health = self.health.clone();
-        // The only timer: drives status polling and the once-per-second position update.
+        // Poll only while a track exists; otherwise sleep until the single scheduled deadline.
         let mut tick = interval(Duration::from_millis(250));
-        self.publish(Phase::Ready, None, true);
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        self.publish(Phase::Ready, None);
         loop {
+            if self.scheduled.is_none()
+                && self.job.is_none()
+                && self.track.is_none()
+                && self.health.borrow().voice
+            {
+                self.scheduled = Some((Instant::now() + IDLE_TIMEOUT, Scheduled::Idle));
+            }
+            let deadline = self.scheduled.map(|(deadline, _)| deadline);
+            let poll_handle = self.track.as_ref().map(|track| track.handle.clone());
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
@@ -574,22 +786,13 @@ impl<B: Backend> Controller<B> {
                         break;
                     }
                     let current = health.borrow_and_update().clone();
-                    if let Some(error) = current.error() {
-                        self.cancel_job().await;
-                        self.stop_track();
-                        self.publish(Phase::Error, Some(error), current.gateway);
-                    } else if current.gateway
-                        && self.states.borrow().phase == Phase::Error
-                        && self.job.is_none()
-                        && self.track.is_none()
-                    {
-                        self.publish(Phase::Ready, None, true);
-                    }
+                    self.health_changed(current).await;
                 },
                 event = job_event(&mut self.job) => match event {
                     JobEvent::Connected(reached) => {
+                        if let Some(job) = &mut self.job { job.voice_ready = reached; }
                         if reached && self.states.borrow().phase == Phase::Connecting {
-                            self.publish(Phase::Resolving, None, true);
+                            self.publish(Phase::Resolving, None);
                         }
                     }
                     JobEvent::Done(result) => self.finish_job(result).await,
@@ -599,8 +802,18 @@ impl<B: Backend> Controller<B> {
                         self.advance().await;
                     }
                 },
-                _ = tick.tick(), if self.track.is_some() => {
-                    if self.poll().await {
+                () = async {
+                    match deadline {
+                        Some(deadline) => sleep_until(deadline).await,
+                        None => pending().await,
+                    }
+                } => self.scheduled_work().await,
+                reading = async {
+                    let Some(handle) = poll_handle else { return pending().await; };
+                    tick.tick().await;
+                    timeout(Duration::from_secs(2), handle.info()).await.ok()
+                } => {
+                    if self.apply(reading) {
                         self.advance().await;
                     }
                 },

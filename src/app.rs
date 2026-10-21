@@ -27,6 +27,14 @@ enum Section {
     History,
 }
 
+#[derive(Clone, Copy)]
+enum Pending {
+    Play,
+    Next,
+    Pause,
+    Stop,
+}
+
 pub struct PlayerApp {
     input: Entity<InputState>,
     volume: Entity<SliderState>,
@@ -36,8 +44,8 @@ pub struct PlayerApp {
     commands: mpsc::Sender<Command>,
     volume_requests: watch::Sender<VolumeRequest>,
     state: State,
-    /// A Pause/Resume/Next request is in flight; cleared by the controller's next state.
-    control_pending: bool,
+    /// Prevent duplicate input while keeping the authoritative playback snapshot visible.
+    pending: Option<Pending>,
     /// The slider is being dragged; controller snapshots must not fight the pointer.
     dragging: bool,
     volume_seq: u64,
@@ -110,7 +118,7 @@ impl PlayerApp {
                     .update_in(cx, |this, window, cx| {
                         let before = this.controls_enabled();
                         this.state = state;
-                        this.control_pending = false;
+                        this.pending = None;
                         this.rescue_focus(before, window, cx);
                         this.sync_volume(window, cx);
                         cx.notify();
@@ -129,7 +137,7 @@ impl PlayerApp {
             commands,
             volume_requests,
             state,
-            control_pending: false,
+            pending: None,
             dragging: false,
             volume_seq: 0,
             volume_pending: None,
@@ -158,8 +166,10 @@ impl PlayerApp {
 }
 
 fn connection(state: &State) -> &'static str {
-    if state.available {
-        "Discord connected"
+    if state.available && state.voice_connected {
+        "Discord voice connected"
+    } else if state.available {
+        "Discord ready · voice idle"
     } else if state.phase == Phase::Initializing {
         "Connecting to Discord…"
     } else {
@@ -243,7 +253,7 @@ impl PlayerApp {
                             .primary()
                             .label("Play URL")
                             .h(px(28.))
-                            .disabled(!self.state.can_play())
+                            .disabled(self.pending.is_some() || !self.state.can_play())
                             .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))),
                     )
                     .child(

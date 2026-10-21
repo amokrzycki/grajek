@@ -1,4 +1,4 @@
-//! The small JSON file that carries the volume preference and play history across restarts.
+//! The small JSON file that carries playback preferences and history across restarts.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,6 +43,9 @@ pub struct Saved {
     /// Percent, 0 to 100. Files without it (older versions) keep full volume.
     #[serde(default = "default_volume")]
     pub volume: u8,
+    /// Opt-in recovery for queued media failures; older files keep stop-on-error.
+    #[serde(default)]
+    pub continue_on_error: bool,
     /// Newest first, unique by URL, at most [`HISTORY_LIMIT`] entries.
     #[serde(default)]
     pub history: Vec<HistoryEntry>,
@@ -52,6 +55,7 @@ impl Default for Saved {
     fn default() -> Self {
         Self {
             volume: DEFAULT_VOLUME,
+            continue_on_error: false,
             history: Vec::new(),
         }
     }
@@ -84,6 +88,7 @@ impl Saved {
         self.volume = self.volume.min(100);
         let mut clean = Self {
             volume: self.volume,
+            continue_on_error: self.continue_on_error,
             history: Vec::new(),
         };
         for mut entry in self.history.into_iter().rev() {
@@ -131,7 +136,9 @@ pub fn load(path: Option<PathBuf>) -> Loaded {
         return Loaded {
             saved: Saved::default(),
             path: None,
-            warning: Some("No data directory found; history and volume will not be saved.".into()),
+            warning: Some(
+                "No data directory found; history and settings will not be saved.".into(),
+            ),
         };
     };
     let text = match fs::read(&file) {
@@ -149,7 +156,7 @@ pub fn load(path: Option<PathBuf>) -> Loaded {
                 saved: Saved::default(),
                 path: None,
                 warning: Some(format!(
-                    "Could not read {}; history and volume will not be saved.",
+                    "Could not read {}; history and settings will not be saved.",
                     file.display()
                 )),
             };
@@ -365,6 +372,7 @@ mod tests {
         let scratch = Scratch::new()?;
         let mut saved = Saved {
             volume: 35,
+            continue_on_error: true,
             ..Saved::default()
         };
         saved.record(entry("a"));
@@ -473,6 +481,17 @@ mod tests {
         drop(sender);
         saver.await?;
         assert_eq!(load(Some(scratch.file())).saved, last);
+        Ok(())
+    }
+
+    #[test]
+    fn old_state_keeps_history_and_volume_with_recovery_disabled() -> Result<()> {
+        let saved: Saved = serde_json::from_str(
+            r#"{"volume":37,"history":[{"url":"https://www.youtube.com/watch?v=aaaaaaaaaaa","title":"Kept"}]}"#,
+        )?;
+        assert!(!saved.continue_on_error);
+        assert_eq!(saved.volume, 37);
+        assert_eq!(saved.history[0].title.as_deref(), Some("Kept"));
         Ok(())
     }
 }

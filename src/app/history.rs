@@ -63,7 +63,7 @@ impl PlayerApp {
                     .small()
                     .accessibility_label("Play now")
                     .tooltip("Play now")
-                    .disabled(!self.state.can_play())
+                    .disabled(self.pending.is_some() || !self.state.can_play())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.play_url(play_url.clone(), window, cx);
                     })),

@@ -119,6 +119,17 @@ impl PlayerApp {
                             .test_support(),
                     )
                     .child(
+                        Button::new("continue-on-error")
+                            .label(if self.state.continue_on_error { "Continue on error: On" } else { "Continue on error: Off" })
+                            .ghost()
+                            .xsmall()
+                            .disabled(!self.state.available)
+                            .tooltip("Skip queued media failures only; stop after 3 consecutive failures. Saved across restarts.")
+                            .on_click(cx.listener(|this, _, _, _| {
+                                this.send(Command::ContinueOnError(!this.state.continue_on_error));
+                            })),
+                    )
+                    .child(
                         Button::new("queue-clear")
                             .label("Clear queue")
                             .ghost()

@@ -8,6 +8,7 @@ use serenity::{
 };
 use songbird::{
     CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit, Songbird,
+    events::context_data::DisconnectReason, model::CloseCode,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::watch, task::JoinHandle, time::timeout};
@@ -15,14 +16,36 @@ use tokio::{sync::watch, task::JoinHandle, time::timeout};
 use crate::config::Config;
 
 #[derive(Clone, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "gateway, voice, join intent and retry eligibility are independent facts"
+)]
 pub struct Health {
     pub gateway: bool,
     pub voice: bool,
     pub gateway_error: Option<String>,
     pub voice_error: Option<String>,
+    /// Only transient failures remaining after Songbird's own retries may rejoin.
+    pub voice_retry: bool,
+    pub voice_epoch: u64,
+    pub voice_requested: bool,
+    // Session IDs are compared for stale-event protection, never displayed or logged.
+    pub voice_session: Option<String>,
 }
 
 impl Health {
+    fn left_channel(&mut self, session: &str) -> bool {
+        if !self.voice_requested || self.voice_session.as_deref() != Some(session) {
+            return false;
+        }
+        self.voice = false;
+        self.voice_retry = false;
+        self.voice_requested = false;
+        self.voice_epoch = self.voice_epoch.wrapping_add(1);
+        self.voice_error = Some("Bot left or was moved from the configured voice channel. Check permissions, then press Next or Play URL.".into());
+        true
+    }
+
     pub fn error(&self) -> Option<String> {
         self.gateway_error
             .clone()
@@ -66,34 +89,76 @@ impl EventHandler for GatewayEvents {
             && new.user_id == self.user
             && new.channel_id != Some(self.channel)
         {
-            self.health.send_modify(|health| {
-                health.voice = false;
-                health.voice_error = Some("Bot left or was moved from the configured voice channel. Press Play to reconnect.".into());
-            });
+            self.health
+                .send_if_modified(|health| health.left_channel(&new.session_id));
         }
     }
 }
 
-struct VoiceEvents(watch::Sender<Health>);
+fn retryable(reason: Option<DisconnectReason>) -> bool {
+    matches!(
+        reason,
+        Some(
+            DisconnectReason::Io
+                | DisconnectReason::TimedOut
+                | DisconnectReason::WsClosed(Some(
+                    CloseCode::SessionInvalid
+                        | CloseCode::SessionTimeout
+                        | CloseCode::VoiceServerCrash
+                ))
+        )
+    )
+}
+
+struct VoiceEvents {
+    health: watch::Sender<Health>,
+    epoch: u64,
+}
+
+impl VoiceEvents {
+    fn update(
+        &self,
+        session: &str,
+        connected: bool,
+        reconnected: bool,
+        reason: Option<DisconnectReason>,
+    ) {
+        self.health.send_if_modified(|health| {
+            if health.voice_epoch != self.epoch || !health.voice_requested {
+                return false;
+            }
+            if !connected && health.voice_session.as_deref().is_some_and(|current| current != session) {
+                return false;
+            }
+            // Requested/discarded callbacks can belong to a superseded driver attempt.
+            if !connected && matches!(reason, None | Some(DisconnectReason::Requested | DisconnectReason::AttemptDiscarded)) {
+                return false;
+            }
+            health.voice_session = Some(session.into());
+            health.voice = connected;
+            health.voice_retry = !connected && retryable(reason);
+            health.voice_error = if reconnected {
+                Some("Discord voice restored. Playback was interrupted; press Next or Play URL.".into())
+            } else if connected {
+                None
+            } else {
+                Some("Discord voice disconnected. Check the network and permissions; press Next or Play URL.".into())
+            };
+            true
+        });
+    }
+}
 
 #[async_trait]
 impl VoiceEventHandler for VoiceEvents {
     async fn act(&self, event: &EventContext<'_>) -> Option<Event> {
         match event {
-            EventContext::DriverConnect(_) | EventContext::DriverReconnect(_) => {
-                self.0.send_modify(|health| {
-                    health.voice = true;
-                    health.voice_error = None;
-                });
-            }
+            EventContext::DriverConnect(data) => self.update(data.session_id, true, false, None),
+            EventContext::DriverReconnect(data) => self.update(data.session_id, true, true, None),
             EventContext::DriverDisconnect(data) => {
                 // Never log the voice session ID or the entire event context.
                 tracing::warn!(kind = ?data.kind, reason = ?data.reason, "Discord voice disconnected");
-                self.0.send_modify(|health| {
-                    health.voice = false;
-                    health.voice_error =
-                        Some("Discord voice disconnected. Press Play to reconnect.".into());
-                });
+                self.update(data.session_id, false, false, data.reason);
             }
             _ => {}
         }
@@ -202,8 +267,10 @@ impl Discord {
     }
 
     pub fn clear_voice_error(&self) {
-        self.health_tx
-            .send_modify(|health| health.voice_error = None);
+        self.health_tx.send_modify(|health| {
+            health.voice_error = None;
+            health.voice_retry = false;
+        });
     }
 
     pub async fn connect(&self) -> Result<()> {
@@ -213,7 +280,19 @@ impl Discord {
         if already_joined && self.health.borrow().voice {
             return Ok(());
         }
+        drop(call);
         self.check_channel().await?;
+        // A failed driver may retain its gateway channel. Remove it before a fresh join.
+        self.disconnect().await?;
+        let epoch = {
+            let mut epoch = 0;
+            self.health_tx.send_modify(|health| {
+                health.voice_requested = true;
+                epoch = health.voice_epoch;
+            });
+            epoch
+        };
+        let call = self.manager.get_or_insert(self.guild);
         {
             let mut call = call.lock().await;
             call.remove_all_global_events();
@@ -222,7 +301,13 @@ impl Discord {
                 CoreEvent::DriverReconnect,
                 CoreEvent::DriverDisconnect,
             ] {
-                call.add_global_event(Event::Core(event), VoiceEvents(self.health_tx.clone()));
+                call.add_global_event(
+                    Event::Core(event),
+                    VoiceEvents {
+                        health: self.health_tx.clone(),
+                        epoch,
+                    },
+                );
             }
         }
         timeout(
@@ -234,17 +319,47 @@ impl Discord {
         .context(
             "Cannot join Discord voice. Check Connect/Speak permissions and channel capacity.",
         )?;
-        self.health_tx.send_modify(|health| {
+        self.health_tx.send_if_modified(|health| {
+            if health.voice_epoch != epoch
+                || !health.voice_requested
+                || health.voice_error.is_some()
+            {
+                return false;
+            }
             health.voice = true;
+            true
+        });
+        ensure!(
+            self.health.borrow().voice,
+            "Discord voice connection was interrupted. Press Next or Play URL."
+        );
+        tracing::info!("Connected to Discord voice with Songbird's DAVE-capable driver");
+        Ok(())
+    }
+
+    pub async fn disconnect(&self) -> Result<()> {
+        // Invalidate callbacks before removing the call, including its late gateway leave.
+        self.health_tx.send_modify(|health| {
+            health.voice_epoch = health.voice_epoch.wrapping_add(1);
+            health.voice_requested = false;
+            health.voice_session = None;
+            health.voice = false;
+            health.voice_retry = false;
             health.voice_error = None;
         });
-        tracing::info!("Connected to Discord voice with Songbird's DAVE-capable driver");
+        if self.manager.get(self.guild).is_none() {
+            return Ok(());
+        }
+        timeout(Duration::from_secs(3), self.manager.remove(self.guild))
+            .await
+            .context("Leaving Discord voice timed out. Press Play URL to reconnect.")?
+            .context("Could not leave Discord voice. Check the network.")?;
         Ok(())
     }
 
     pub async fn reset_incomplete_connection(&self) {
         if !self.health.borrow().voice {
-            let _ = timeout(Duration::from_secs(3), self.manager.remove(self.guild)).await;
+            let _ = self.disconnect().await;
         }
     }
 
@@ -252,7 +367,7 @@ impl Discord {
         if let Some(call) = self.manager.get(self.guild) {
             call.lock().await.stop();
         }
-        let _ = timeout(Duration::from_secs(3), self.manager.remove(self.guild)).await;
+        let _ = self.disconnect().await;
         let _ = timeout(Duration::from_secs(3), self.shards.shutdown_all()).await;
         self.gateway.abort();
         tracing::info!("Discord shutdown complete");
@@ -262,5 +377,124 @@ impl Discord {
 impl Drop for Discord {
     fn drop(&mut self) {
         self.gateway.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn events() -> (VoiceEvents, watch::Receiver<Health>) {
+        let (health, receiver) = watch::channel(Health {
+            gateway: true,
+            voice: true,
+            voice_epoch: 2,
+            voice_requested: true,
+            voice_session: Some("current".into()),
+            ..Health::default()
+        });
+        (VoiceEvents { health, epoch: 2 }, receiver)
+    }
+
+    #[test]
+    fn only_transient_disconnect_reasons_allow_rejoin() {
+        for reason in [
+            DisconnectReason::Io,
+            DisconnectReason::TimedOut,
+            DisconnectReason::WsClosed(Some(CloseCode::SessionInvalid)),
+            DisconnectReason::WsClosed(Some(CloseCode::SessionTimeout)),
+            DisconnectReason::WsClosed(Some(CloseCode::VoiceServerCrash)),
+        ] {
+            assert!(retryable(Some(reason)));
+        }
+        for reason in [
+            None,
+            Some(DisconnectReason::Requested),
+            Some(DisconnectReason::AttemptDiscarded),
+            Some(DisconnectReason::Internal),
+            Some(DisconnectReason::ProtocolViolation),
+            Some(DisconnectReason::WsClosed(None)),
+            Some(DisconnectReason::WsClosed(Some(CloseCode::Disconnected))),
+            Some(DisconnectReason::WsClosed(Some(
+                CloseCode::AuthenticationFailed,
+            ))),
+            Some(DisconnectReason::WsClosed(Some(CloseCode::RateLimited))),
+            Some(DisconnectReason::WsClosed(Some(CloseCode::CallTerminated))),
+        ] {
+            assert!(!retryable(reason));
+        }
+    }
+
+    #[test]
+    fn stale_and_requested_driver_events_cannot_damage_a_new_connection() {
+        let (events, health) = events();
+        events.update("old", false, false, Some(DisconnectReason::Io));
+        assert!(health.borrow().voice);
+        for reason in [
+            None,
+            Some(DisconnectReason::Requested),
+            Some(DisconnectReason::AttemptDiscarded),
+        ] {
+            events.update("current", false, false, reason);
+            assert!(health.borrow().voice && health.borrow().error().is_none());
+        }
+        let old = VoiceEvents {
+            health: events.health,
+            epoch: 1,
+        };
+        old.update("old", false, false, Some(DisconnectReason::Io));
+        old.update("old", true, false, None);
+        assert_eq!(health.borrow().voice_session.as_deref(), Some("current"));
+        assert!(health.borrow().voice && health.borrow().error().is_none());
+    }
+
+    #[test]
+    fn intentional_disconnect_ignores_late_driver_callbacks() {
+        let (events, health) = events();
+        events.health.send_modify(|health| {
+            health.voice_requested = false;
+            health.voice = false;
+        });
+        events.update("current", false, false, Some(DisconnectReason::Io));
+        events.update("current", true, true, None);
+        assert!(!health.borrow().voice);
+        assert!(health.borrow().error().is_none());
+        assert!(!health.borrow().voice_retry);
+    }
+
+    #[test]
+    fn internal_reconnect_reports_interruption_without_requesting_another_join() {
+        let (events, health) = events();
+        events.update("current", true, true, None);
+        assert!(health.borrow().voice);
+        assert!(!health.borrow().voice_retry);
+        assert!(
+            health
+                .borrow()
+                .error()
+                .is_some_and(|e| e.contains("interrupted"))
+        );
+    }
+    #[test]
+    fn a_kick_cannot_be_overridden_by_a_late_driver_event() {
+        let (events, health) = events();
+        events
+            .health
+            .send_if_modified(|health| health.left_channel("current"));
+        events.update("current", false, false, Some(DisconnectReason::Io));
+        events.update("current", true, true, None);
+        assert!(!health.borrow().voice && !health.borrow().voice_retry);
+        assert!(
+            health
+                .borrow()
+                .error()
+                .is_some_and(|error| error.contains("left or was moved"))
+        );
+        // A gateway leave for an older session must not affect a newer connection.
+        let (events, health) = self::events();
+        events
+            .health
+            .send_if_modified(|health| health.left_channel("old"));
+        assert!(health.borrow().voice && health.borrow().error().is_none());
     }
 }

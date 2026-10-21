@@ -40,6 +40,8 @@ pub struct State {
     pub phase: Phase,
     pub error: Option<String>,
     pub available: bool,
+    pub voice_connected: bool,
+    pub continue_on_error: bool,
     /// Metadata of the current track while it is playing or paused.
     pub track: Option<TrackInfo>,
     /// Playback position, truncated to whole seconds so it changes at most once per second.
@@ -60,6 +62,8 @@ impl Default for State {
             phase: Phase::Initializing,
             error: None,
             available: false,
+            voice_connected: false,
+            continue_on_error: false,
             track: None,
             position: Duration::ZERO,
             volume: store::DEFAULT_VOLUME,
@@ -130,6 +134,7 @@ pub enum Command {
     ClearQueue,
     ForgetHistory(String),
     ClearHistory,
+    ContinueOnError(bool),
 }
 
 /// The latest volume the slider wants. It travels over a `watch` channel, so a drag

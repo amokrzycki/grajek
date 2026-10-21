@@ -44,6 +44,10 @@ pub struct Queue {
 }
 
 impl Queue {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     pub fn push(&mut self, url: String, title: Option<String>) -> Result<u64, Full> {
         if self.items.len() >= QUEUE_LIMIT {
             return Err(Full);

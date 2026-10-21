@@ -6,8 +6,9 @@ voice channel. The window shows the track title and elapsed time, and offers
 **Pause / Resume**, **Next** and **Stop**, a **volume** slider, an in-memory
 **queue** and a persistent **history**. Another Play URL replaces the current
 track, even while paused; Stop cancels pending work and stops playback in both
-Playing and Paused states. The bot stays connected after Stop or natural
-completion and leaves on window close.
+Playing and Paused states. The bot stays connected for up to ten idle minutes
+after Stop or natural completion, then leaves voice while the window stays open.
+It also leaves on window close.
 
 ## Playback controls (v0.2.0)
 
@@ -50,7 +51,7 @@ never merely because yt-dlp succeeded. Replaying a video moves it to the top.
 Only the canonical `watch?v=` URL, title and duration are stored; never
 expiring stream URLs. History is independent of the queue.
 
-**Local data.** One small JSON file holds history and volume:
+**Local data.** One small JSON file holds history, volume and Continue on error:
 `$XDG_DATA_HOME/grajek/state.json`, else `$HOME/.local/share/grajek/state.json`
 (directory mode 0700). Writes go to `state.json.tmp`, are synced, then renamed
 over the real file, so a crash leaves the old or the new file. A single writer
@@ -76,17 +77,74 @@ the only copy; the window renders snapshots. Exact semantics:
   first queued entry; while idle it starts it. It is disabled when nothing is
   queued. Only one extraction ever runs; each Next cancels the previous request.
 - **Stop** cancels pending work and the active track, keeps the queue, never
-  advances, and keeps Discord connected.
+  advances, and starts the ten-minute idle period.
 - **Pause / Resume** affect only the active track and never advance the queue.
-- **Failure** (yt-dlp, stream or decode) shows the error, keeps the remaining
-  queue and does not advance or retry. Press Next or Play URL to continue; the
-  entry that failed has already left the queue.
+- **Failure** (yt-dlp, stream or decode) shows the error and keeps the remaining
+  queue. By default it does not advance or retry. With **Continue on error**
+  enabled, queued media failures may advance as described below. The failed
+  entry has already left the queue; explicit Play URL failures always stop.
 - Per-entry **move up / move down / remove** and **Clear queue** (does not stop
   the current track); the Queue tab shows the pending count. No drag and drop.
 
 Ctrl+1 / Ctrl+2 switch between the Queue and History tabs (the kit's tabs are not
 focusable). If a focused button turns off (for example Stop after stopping), focus
 returns to the URL field so Tab keeps working.
+
+## Reliability and playback polish (v0.2.1)
+
+**Continue on error.** The Queue tab has one native button, **Continue on error:
+Off/On**, usable with the mouse or normal Tab/Space button navigation. It is off
+by default and saved in the existing JSON file. Older files retain their history
+and volume and default to off. There is no queue persistence or retry of a failed
+URL. Only failures after voice is connected, for entries consumed by Next or
+natural completion, can continue. This includes extraction, stream initialization,
+playback-start and decode failures. Explicit Play URL (including History's Play
+now), gateway/authorization failures and voice connection loss never skip media.
+
+A failed queued track shows an error and waits one second before consuming the
+next entry. Stop, Next, Play URL, shutdown, or turning the preference off can
+cancel that wait. The failed-track explanation remains visible through automatic
+continuation, including successful playback; a manual playback action or Stop
+clears it. Recovery stops after **three consecutive queued failures**, or when
+nothing remains queued, with an explanation. Only an advancing playback position
+resets the counter; successful extraction, a new handle and manual commands do
+not. Pending queue entries are never cleared by recovery. History still means
+“actually started playing”, not “completed successfully”.
+
+**Discord recovery.** Songbird 0.6.1 owns transient voice reconnects and its default
+bounded backoff (five retries). Grajek waits for its terminal disconnect event
+before considering a fresh gateway join. For positively identified I/O/timeouts,
+expired sessions and voice-server crashes, it allows at most **two application
+rejoin attempts**, delayed by **one and three seconds**, each capped at **40
+seconds**. Another attempt requires another positively classified transient
+failure. Kicks, channel moves, authorization/protocol failures, unknown close
+reasons and terminal gateway failures require an explicit action; Grajek does not add
+gateway retries to Serenity's own handling.
+
+An observed reconnect stops the interrupted track and restores connectivity
+only. It never re-extracts or restarts that video, advances the queue, or claims
+Playing. Press **Next** or **Play URL** to start audio again. Stop, Next, Play URL
+and shutdown cancel pending rejoin work. Failed recovery leaves an actionable
+error and the queue intact; subsequent Next/Play uses the ordinary connect path.
+Connection-generation/session checks reject old driver callbacks, and an
+intentional leave does not become a connection error. Healthy connection updates
+cannot erase an unrelated media error.
+
+**Idle voice leave.** After **ten minutes** with no track and no playback/voice
+job or recovery pending, Grajek gracefully leaves voice. Playing and Paused are
+both active; extraction and connection work also prevent idle leave. The pending
+queue alone does not. Stop starts a fresh idle period and preserves the queue.
+The window, queue and history survive idle leave. The header distinguishes
+**Discord ready · voice idle** from **Discord voice connected**; Next and Play URL
+reconnect normally without an idle-error callout. Queue edits and volume changes
+alone do not postpone the deadline. One controller deadline handles idle leave
+and recovery; there is no idle polling task or extra runtime.
+
+**Lifecycle.** Natural End still advances once. An unexpected Stop/error is not
+reported as successful completion, and a late End cannot erase a decode error.
+Playback status reads are cancellable by commands and shutdown. Pending GUI
+commands disable their controls while retaining the last controller snapshot;
+the GUI does not invent transport phases.
 
 ## Prerequisites (CachyOS / Arch, Linux x86_64)
 
@@ -362,7 +420,7 @@ error as designed.
 - Volume is the bot's own output level; it cannot override Discord-side server mute
   or each listener's volume for the bot.
 - If the data directory cannot be determined or written, the app works but logs a
-  warning and history and volume are not saved.
+  warning and history and settings are not saved.
 - The GUI runs on GPUI's main executor; bounded commands and watch snapshots
   bridge to Tokio. Songbird track handles/events report completion and errors;
   Playing waits for actual track position advancement. This cannot prove that
@@ -379,3 +437,38 @@ error as designed.
 [yt-dlp EJS setup](https://github.com/yt-dlp/yt-dlp/wiki/EJS),
 [Discord voice/DAVE](https://docs.discord.com/developers/topics/voice-connections),
 [Arch yt-dlp package](https://archlinux.org/packages/extra/any/yt-dlp/).
+
+## v0.2.1 validation
+
+**Automated** (Rust 1.99.0, 2026-10-21): all four strict commands above pass:
+format check, Clippy with warnings denied, **121 passed / 0 failed / 1 optional
+network test ignored**, and the locked build. Running the optional network test
+explicitly also passes (**1 passed**), including extraction, stream initialization
+and decoding. Tokio's existing dependency gains only the dev-only `test-util`
+feature for controlled time; production dependencies are unchanged.
+
+New coverage includes queued-only opt-in recovery, failed track startup, the
+three-failure budget and reset after actual playback, pending queue preservation,
+Stop/Next cancellation, bounded voice recovery and exhaustion, terminal errors
+arriving during backoff or a rejoin, duplicate/stale connection callbacks,
+manual playback after recovery failure and during recovery/idle leave, shutdown,
+idle leave while inactive and suppression while Playing/Paused/extracting, and
+responsive Stop with an unresponsive track-status request. Existing queue,
+volume, history, subprocess cancellation and compact-window GPUI tests still pass.
+
+**Native smoke test:** the real XWayland window, existing Discord configuration
+and an isolated `/tmp` data directory were used. Play joined voice and reached
+Playing with title/elapsed time. Actual mouse interaction toggled and persisted
+Continue on error; separate mouse checks reached Paused and resumed to Playing.
+Stop returned to Ready. Next was clicked while a real yt-dlp child was observed;
+logs showed the replacement request and subsequent Playing. Volume changes were
+displayed and persisted in scratch data. Normal titlebar/Alt+F4 close exited with
+code 0 and logged `Discord shutdown complete`, with no controller timeout. Both
+test windows were closed; real saved preferences/history were not modified.
+
+**Not verified:** audible output/volume changes (no independent listener), a
+forced live Discord disconnect/reconnect, the complete ten-minute idle cycle in
+a live voice session, and native Wayland for this release. Connection fault and
+idle behavior are covered by deterministic fake-backend/event-handler tests;
+those tests do not prove Discord service behavior. See
+[the release review](docs/releases/v0.2.1.md) for the behavior matrix and review.
