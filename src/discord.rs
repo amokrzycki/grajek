@@ -293,7 +293,12 @@ impl Discord {
         let call = self.manager.get_or_insert(self.guild);
         let already_joined =
             call.lock().await.current_channel().map(|id| id.0.get()) == Some(self.channel.get());
-        if already_joined && self.health.borrow().voice {
+        // Cancelled teardown may leave voice connected with its callbacks invalidated.
+        let voice_active = {
+            let health = self.health.borrow();
+            health.voice && health.voice_requested
+        };
+        if already_joined && voice_active {
             return Ok(());
         }
         drop(call);
@@ -418,6 +423,66 @@ mod tests {
             ..Health::default()
         });
         (VoiceEvents { health, epoch: 2 }, receiver)
+    }
+
+    #[tokio::test]
+    async fn cancelled_idle_disconnect_requires_a_fresh_connection() -> Result<()> {
+        use std::{future::Future as _, task::Poll};
+
+        let manager = Songbird::serenity();
+        manager.initialise_client_data(1, UserId::new(3));
+        let guild = GuildId::new(1);
+        let channel = ChannelId::new(2);
+        let call = manager.get_or_insert(guild);
+        // Songbird buffers this gateway request without opening a network connection.
+        drop(call.lock().await.join_gateway(channel).await?);
+        let (events, health) = events();
+        // Permission checks fail locally, so only a valid existing connection can succeed.
+        let http = Arc::new(
+            serenity::http::HttpBuilder::new("unused-test-token")
+                .proxy("invalid proxy")
+                .build(),
+        );
+        let (shards, _) = ShardManager::new(serenity::gateway::ShardManagerOptions {
+            data: Arc::new(tokio::sync::RwLock::new(serenity::prelude::TypeMap::new())),
+            event_handlers: vec![],
+            raw_event_handlers: vec![],
+            shard_index: 0,
+            shard_init: 0,
+            shard_total: 1,
+            voice_manager: None,
+            ws_url: Arc::new(tokio::sync::Mutex::new(String::new())),
+            http: http.clone(),
+            intents: GatewayIntents::empty(),
+            presence: None,
+        });
+        let discord = Discord {
+            manager,
+            guild,
+            channel,
+            user: UserId::new(3),
+            http,
+            health,
+            health_tx: events.health,
+            shards,
+            gateway: tokio::spawn(std::future::pending()),
+        };
+        assert_eq!(
+            call.lock().await.current_channel().map(|id| id.0.get()),
+            Some(channel.get())
+        );
+        discord.connect().await?;
+
+        let guard = call.lock().await;
+        let mut leave = Box::pin(discord.disconnect());
+        assert!(std::future::poll_fn(|cx| Poll::Ready(leave.as_mut().poll(cx).is_pending())).await);
+        // Play cancels idle teardown while Songbird's call lock is held.
+        drop(leave);
+        drop(guard);
+        assert!(discord.health.borrow().voice);
+        assert!(!discord.health.borrow().voice_requested);
+        assert!(discord.connect().await.is_err());
+        Ok(())
     }
 
     #[test]
