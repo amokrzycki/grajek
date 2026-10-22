@@ -168,7 +168,7 @@ fn paste_enter_duplicate_play_and_stop(cx: &mut TestAppContext) {
     assert!(
         matches!(received.try_recv(), Ok(Command::Play(url)) if url.contains("music.youtube.com"))
     );
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Connecting));
+    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Ready));
 }
 
 #[gpui_kit::test]
@@ -210,7 +210,7 @@ fn failed_pause_never_leaves_a_false_paused_state(cx: &mut TestAppContext) {
         let app = view.read(cx);
         assert_eq!(app.state.phase, Phase::Error);
         assert!(app.state.visible_track().is_none());
-        assert!(!app.control_pending);
+        assert!(app.pending.is_none());
     });
     assert!(button(cx, window, "pause-resume").1, "no track to pause");
     click(cx, window, "pause-resume");
@@ -223,7 +223,7 @@ fn stop_works_while_paused(cx: &mut TestAppContext) {
     assert!(!button(cx, window, "stop").1);
     click(cx, window, "stop");
     assert!(matches!(received.try_recv(), Ok(Command::Stop)));
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Stopping));
+    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Paused));
     assert!(button(cx, window, "pause-resume").1);
 }
 
@@ -245,8 +245,13 @@ fn new_url_replaces_a_paused_track(cx: &mut TestAppContext) {
     );
     cx.update(|cx| {
         let app = view.read(cx);
-        assert_eq!(app.state.phase, Phase::Connecting);
-        assert!(app.state.visible_track().is_none() && app.state.track.is_none());
+        assert_eq!(app.state.phase, Phase::Paused);
+        assert_eq!(
+            app.state
+                .visible_track()
+                .and_then(|track| track.title.as_deref()),
+            Some("Old")
+        );
     });
     assert!(button(cx, window, "pause-resume").1);
 }
@@ -456,7 +461,7 @@ fn next_follows_the_queue_and_ignores_rapid_clicks(cx: &mut TestAppContext) {
     click(cx, window, "next");
     assert!(matches!(received.try_recv(), Ok(Command::Next)));
     assert!(received.try_recv().is_err(), "a double click is one Next");
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Connecting));
+    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Ready));
     assert!(button(cx, window, "next").1);
     // The controller's answer re-enables it for the remaining entry.
     states.send_replace(with_lists(Phase::Resolving, 1, 0));
@@ -561,7 +566,7 @@ fn history_rows_play_queue_and_forget(cx: &mut TestAppContext) {
     click(cx, window, ("history-play", 1_usize));
     assert!(matches!(received.try_recv(), Ok(Command::Play(sent)) if sent == url));
     // Play now replaces the track like Play URL: the window waits for the controller.
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Connecting));
+    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Ready));
     // While a request is in flight Play now is unavailable; queueing still works.
     assert!(button(cx, window, ("history-play", 0_usize)).1);
     assert!(!button(cx, window, ("history-queue", 0_usize)).1);
@@ -968,4 +973,25 @@ fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
             }
         }
     }
+}
+
+#[gpui_kit::test]
+fn continue_on_error_uses_the_controller_preference(cx: &mut TestAppContext) {
+    let (window, view, mut received, states) = open(cx, state(Phase::Ready));
+    click(cx, window, "continue-on-error");
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::ContinueOnError(true))
+    ));
+    cx.update(|cx| assert!(!view.read(cx).state.continue_on_error));
+    states.send_replace(State {
+        continue_on_error: true,
+        ..state(Phase::Ready)
+    });
+    cx.run_until_parked();
+    click(cx, window, "continue-on-error");
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::ContinueOnError(false))
+    ));
 }

@@ -29,6 +29,7 @@ struct FakeTrack {
     outcome: watch::Sender<Option<Outcome>>,
     dead: AtomicBool,
     stopped: AtomicBool,
+    info_hung: AtomicBool,
 }
 
 impl FakeTrack {
@@ -79,18 +80,21 @@ impl Handle for FakeHandle {
         self.0.stopped.store(true, SeqCst);
         Ok(())
     }
-    fn info(&self) -> impl Future<Output = TrackResult<TrackState>> + Send {
+    async fn info(&self) -> TrackResult<TrackState> {
+        if self.0.info_hung.load(SeqCst) {
+            pending::<()>().await;
+        }
         let (playing, position) = self
             .0
             .mode
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        std::future::ready(Ok(TrackState {
+        Ok(TrackState {
             playing,
             position,
             ..TrackState::default()
-        }))
+        })
     }
 }
 
@@ -99,11 +103,16 @@ struct Fake {
     requests: Mutex<Vec<String>>,
     hung: Mutex<HashSet<String>>,
     failing: Mutex<HashSet<String>>,
+    play_failing: Mutex<HashSet<String>>,
+    disconnect_hung: AtomicBool,
     running: AtomicUsize,
     max_running: AtomicUsize,
     cancelled: AtomicUsize,
     tracks: Mutex<Vec<Arc<FakeTrack>>>,
     shut_down: AtomicBool,
+    connects: AtomicUsize,
+    disconnects: AtomicUsize,
+    connect_mode: AtomicUsize,
 }
 
 impl Fake {
@@ -118,11 +127,16 @@ impl Fake {
             requests: Mutex::default(),
             hung: Mutex::default(),
             failing: Mutex::default(),
+            play_failing: Mutex::default(),
+            disconnect_hung: AtomicBool::new(false),
             running: AtomicUsize::new(0),
             max_running: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
             tracks: Mutex::default(),
             shut_down: AtomicBool::new(false),
+            connects: AtomicUsize::new(0),
+            disconnects: AtomicUsize::new(0),
+            connect_mode: AtomicUsize::new(0),
         })
     }
     fn hang(&self, url: &str) {
@@ -185,6 +199,9 @@ impl Backend for Fake {
         let now = self.running.fetch_add(1, SeqCst) + 1;
         self.max_running.fetch_max(now, SeqCst);
         let mut request = Request(self, false);
+        if !self.health.borrow().voice {
+            self.connect().await?;
+        }
         let _ = connected.send(());
         let hung = self
             .hung
@@ -217,6 +234,14 @@ impl Backend for Fake {
         resolved: Resolved,
         volume: f32,
     ) -> impl Future<Output = Result<(FakeHandle, watch::Receiver<Option<Outcome>>)>> + Send {
+        if resolved.info.title.as_ref().is_some_and(|title| {
+            self.play_failing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(title)
+        }) {
+            return std::future::ready(Err(anyhow::anyhow!("Driver rejected track")));
+        }
         let (outcome, mailbox) = watch::channel(None);
         let track = Arc::new(FakeTrack {
             title: resolved.info.title.unwrap_or_default(),
@@ -227,12 +252,45 @@ impl Backend for Fake {
             outcome,
             dead: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            info_hung: AtomicBool::new(false),
         });
         self.tracks
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(track.clone());
         std::future::ready(Ok((FakeHandle(track), mailbox)))
+    }
+    async fn connect(&self) -> Result<()> {
+        self.connects.fetch_add(1, SeqCst);
+        match self.connect_mode.load(SeqCst) {
+            1 => {
+                self.health.send_modify(|health| {
+                    health.voice_retry = true;
+                    health.voice_error = Some("Transient voice failure".into());
+                });
+                bail!("Transient voice failure");
+            }
+            2 => pending::<()>().await,
+            _ => {}
+        }
+        self.health.send_modify(|health| {
+            health.voice = true;
+            health.voice_error = None;
+            health.voice_retry = false;
+        });
+        Ok(())
+    }
+    async fn disconnect(&self) -> Result<()> {
+        self.disconnects.fetch_add(1, SeqCst);
+        self.health.send_modify(|health| {
+            health.voice = false;
+            health.voice_error = None;
+            health.voice_retry = false;
+        });
+        if self.disconnect_hung.load(SeqCst) {
+            pending::<()>().await;
+        }
+        Ok(())
     }
     async fn recover(&self) {}
     async fn shutdown(&self) {
@@ -599,7 +657,7 @@ async fn pause_and_resume_use_the_existing_track_handle() -> Result<()> {
 #[tokio::test]
 async fn control_without_a_track_still_answers() {
     let (mut controller, _fake, mut updates) = solo(Saved::default());
-    controller.publish(Phase::Ready, None, true);
+    controller.publish(Phase::Ready, None);
     updates.borrow_and_update();
     controller.set_paused(true);
     assert!(updates.has_changed().unwrap_or(false));
@@ -1234,6 +1292,21 @@ async fn a_failed_volume_change_is_reported_not_claimed() -> Result<()> {
 // ---- lifecycle --------------------------------------------------------------------
 
 #[tokio::test]
+async fn a_healthy_update_does_not_erase_a_media_error() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.fake.fail(A);
+    rig.enqueue(B).await?;
+    rig.play(A).await?;
+    let failed = rig.until(|s| s.phase == Phase::Error).await?;
+    rig.fake.health.send_modify(|health| health.voice = true);
+    rig.settle().await;
+    assert_eq!(rig.state().phase, Phase::Error);
+    assert_eq!(rig.state().error, failed.error);
+    assert_eq!(rig.queued(), [B]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn shutdown_cancels_work_and_releases_discord() -> Result<()> {
     let mut rig = Rig::new().await?;
     rig.play(A).await?;
@@ -1247,5 +1320,482 @@ async fn shutdown_cancels_work_and_releases_discord() -> Result<()> {
     ensure!(rig.fake.track(0)?.stopped.load(SeqCst));
     eventually(|| rig.fake.cancelled.load(SeqCst) == 1).await?;
     ensure!(rig.fake.shut_down.load(SeqCst));
+    Ok(())
+}
+
+// ---- v0.2.1 reliability -----------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn queued_media_failure_can_continue_but_explicit_play_cannot() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.send(Command::ContinueOnError(true)).await?;
+    rig.until(|s| s.continue_on_error).await?;
+    assert!(rig.saves.borrow().continue_on_error);
+    rig.fake.fail(A);
+    rig.enqueue(A).await?;
+    rig.enqueue(B).await?;
+    rig.send(Command::Next).await?;
+    rig.started(1).await?;
+    rig.until(|s| s.queue.is_empty()).await?;
+    assert_eq!(rig.fake.requests(), [A, B]);
+    assert!(rig.state().error.is_some_and(|e| e.contains("Skipped")));
+    assert_eq!(rig.state().history.len(), 0);
+    rig.fake.track(0)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    rig.enqueue(C).await?;
+    rig.play(A).await?;
+    rig.until(|s| s.phase == Phase::Error).await?;
+    tokio::time::advance(Duration::from_secs(10)).await;
+    rig.settle().await;
+    assert_eq!(rig.fake.requests(), [A, B, A]);
+    assert_eq!(rig.queued(), [C]);
+    assert_eq!(rig.fake.max_running.load(SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn three_failures_stop_recovery_without_discarding_the_rest() -> Result<()> {
+    let mut rig = Rig::start(Saved {
+        continue_on_error: true,
+        ..Saved::default()
+    });
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    rig.fake.fail(A);
+    for url in [A, A, A, B] {
+        rig.enqueue(url).await?;
+    }
+    rig.send(Command::Next).await?;
+    let state = rig
+        .until(|s| {
+            s.error
+                .as_deref()
+                .is_some_and(|e| e.contains("3 consecutive"))
+        })
+        .await?;
+    assert_eq!(state.phase, Phase::Error);
+    assert_eq!(rig.queued(), [B]);
+    tokio::time::advance(Duration::from_secs(30)).await;
+    rig.settle().await;
+    assert_eq!(rig.fake.requests(), [A, A, A]);
+    rig.send(Command::Next).await?;
+    rig.started(1).await?;
+    assert_eq!(rig.fake.track(0)?.title, B);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn stop_and_next_cancel_a_scheduled_queue_skip() -> Result<()> {
+    for stop in [true, false] {
+        let mut rig = Rig::start(Saved {
+            continue_on_error: true,
+            ..Saved::default()
+        });
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        rig.fake.fail(A);
+        rig.enqueue(A).await?;
+        rig.enqueue(B).await?;
+        rig.enqueue(C).await?;
+        rig.send(Command::Next).await?;
+        rig.until(|s| s.phase == Phase::Error).await?;
+        rig.send(if stop { Command::Stop } else { Command::Next })
+            .await?;
+        if stop {
+            rig.until(|s| s.phase == Phase::Ready).await?;
+        } else {
+            rig.started(1).await?;
+        }
+        tokio::time::advance(Duration::from_secs(5)).await;
+        rig.settle().await;
+        assert_eq!(rig.queued(), if stop { vec![B, C] } else { vec![C] });
+        assert_eq!(rig.fake.requests(), if stop { vec![A] } else { vec![A, B] });
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_real_playback_resets_the_consecutive_failure_budget() -> Result<()> {
+    let mut rig = Rig::start(Saved {
+        continue_on_error: true,
+        ..Saved::default()
+    });
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    rig.fake.fail(A);
+    for url in [A, B, A, A, A, C] {
+        rig.enqueue(url).await?;
+    }
+    rig.send(Command::Next).await?;
+    rig.started(1).await?;
+    // B has a handle but did not advance: its failure is the second, not the first.
+    rig.fake
+        .track(0)?
+        .outcome
+        .send_replace(Some(Outcome::Error("decode".into())));
+    rig.until(|s| {
+        s.error
+            .as_deref()
+            .is_some_and(|e| e.contains("3 consecutive"))
+    })
+    .await?;
+    assert_eq!(rig.queued(), [A, A, C]);
+    rig.play(B).await?;
+    rig.started(2).await?;
+    rig.fake.track(1)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    rig.fake.track(1)?.end();
+    rig.started(3).await?;
+    assert_eq!(rig.fake.requests(), [A, B, A, B, A, A, C]);
+    assert_eq!(rig.queued().len(), 0);
+    Ok(())
+}
+
+fn lose_voice(fake: &Fake, retry: bool) {
+    fake.health.send_modify(|health| {
+        health.voice = false;
+        health.voice_retry = retry;
+        health.voice_error = Some("Voice connection lost".into());
+    });
+}
+
+#[tokio::test(start_paused = true)]
+async fn voice_recovery_restores_connectivity_without_restarting_audio() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.enqueue(B).await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    rig.fake.track(0)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    lose_voice(&rig.fake, true);
+    rig.until(|s| s.phase == Phase::Error).await?;
+    // Duplicate health updates cannot reset the delay or spawn another job.
+    lose_voice(&rig.fake, true);
+    let state = rig
+        .until(|s| s.phase == Phase::Ready && s.voice_connected)
+        .await?;
+    assert!(state.error.is_some_and(|e| e.contains("Press Next")));
+    assert_eq!(rig.fake.connects.load(SeqCst), 1);
+    assert_eq!(rig.fake.requests(), [A]);
+    assert_eq!(rig.fake.started(), 1);
+    assert_eq!(rig.queued(), [B]);
+    assert!(rig.fake.track(0)?.stopped.load(SeqCst));
+    rig.fake.track(0)?.end();
+    rig.settle().await;
+    assert_eq!(rig.queued(), [B]);
+    rig.send(Command::Next).await?;
+    rig.started(2).await?;
+    assert_eq!(rig.fake.track(1)?.title, B);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn exhausted_voice_recovery_preserves_queue_and_manual_play_still_works() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.enqueue(B).await?;
+    rig.fake.connect_mode.store(1, SeqCst);
+    lose_voice(&rig.fake, true);
+    rig.until(|s| s.error.as_deref().is_some_and(|e| e.contains("2 attempts")))
+        .await?;
+    assert_eq!(rig.fake.connects.load(SeqCst), 2);
+    assert_eq!(rig.queued(), [B]);
+    lose_voice(&rig.fake, true);
+    tokio::time::advance(Duration::from_secs(60)).await;
+    rig.settle().await;
+    assert_eq!(rig.fake.connects.load(SeqCst), 2);
+    rig.fake.connect_mode.store(0, SeqCst);
+    rig.play(A).await?;
+    rig.started(1).await?;
+    assert_eq!(rig.queued(), [B]);
+    assert_eq!(rig.state().phase, Phase::Resolving);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_rejoin_result_classifies_failure_before_the_driver_callback() -> Result<()> {
+    use songbird::error::{ConnectionError, JoinError};
+    use std::io::ErrorKind;
+
+    for (error, terminal_error, retry) in [
+        (
+            JoinError::Driver(ConnectionError::Io(ErrorKind::ConnectionReset.into())),
+            None,
+            true,
+        ),
+        (JoinError::Driver(ConnectionError::TimedOut), None, true),
+        (JoinError::TimedOut, None, false),
+        (JoinError::NoSender, None, false),
+        (
+            JoinError::Driver(ConnectionError::CryptoModeInvalid),
+            None,
+            false,
+        ),
+        (
+            JoinError::Driver(ConnectionError::Io(ErrorKind::ConnectionReset.into())),
+            Some("Kicked; check permissions"),
+            false,
+        ),
+    ] {
+        let (mut controller, fake, updates) = solo(Saved::default());
+        fake.health.send_modify(|health| {
+            health.voice = false;
+            health.voice_error = terminal_error.map(str::to_owned);
+        });
+        controller.command(Command::Enqueue(B.into())).await;
+        controller.job = Some(Job {
+            task: tokio::spawn(async move {
+                Err(anyhow::Error::new(error).context("Cannot join Discord voice."))
+            }),
+            connected: None,
+            kind: JobKind::Rejoin(1),
+            voice_ready: false,
+        });
+        let JobEvent::Done(result) = job_event(&mut controller.job).await else {
+            bail!("A rejoin must not report media preparation");
+        };
+        // No driver callback has set voice_retry; the typed result is already definitive.
+        controller.finish_job(result).await;
+        assert_eq!(
+            matches!(controller.scheduled, Some((_, Scheduled::Rejoin(2)))),
+            retry
+        );
+        assert_eq!(updates.borrow().queue[0].url, B);
+        assert!(updates.borrow().track.is_none());
+        assert_eq!(fake.started(), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn stop_next_and_shutdown_cancel_voice_recovery() -> Result<()> {
+    for action in [0, 1, 2] {
+        let mut rig = Rig::new().await?;
+        rig.enqueue(B).await?;
+        rig.fake.connect_mode.store(2, SeqCst);
+        lose_voice(&rig.fake, true);
+        eventually(|| rig.fake.connects.load(SeqCst) == 1).await?;
+        rig.fake.connect_mode.store(0, SeqCst);
+        match action {
+            0 => {
+                rig.send(Command::Stop).await?;
+                rig.until(|s| s.phase == Phase::Error || s.phase == Phase::Ready)
+                    .await?;
+                rig.settle().await;
+                assert_eq!(rig.queued(), [B]);
+                assert_eq!(rig.fake.started(), 0);
+            }
+            1 => {
+                rig.send(Command::Next).await?;
+                rig.started(1).await?;
+                assert_eq!(rig.fake.track(0)?.title, B);
+                assert_eq!(rig.fake.requests(), [B]);
+            }
+            _ => {
+                rig.shutdown.send_replace(true);
+                timeout(Duration::from_secs(5), &mut rig.task).await??;
+                assert!(rig.fake.shut_down.load(SeqCst));
+            }
+        }
+        tokio::time::advance(Duration::from_secs(60)).await;
+        rig.settle().await;
+        assert_eq!(
+            rig.fake.connects.load(SeqCst),
+            if action == 1 { 2 } else { 1 }
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_voice_and_gateway_failures_never_skip_or_rejoin() -> Result<()> {
+    for gateway in [true, false] {
+        let mut rig = Rig::start(Saved {
+            continue_on_error: true,
+            ..Saved::default()
+        });
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        rig.enqueue(A).await?;
+        rig.enqueue(B).await?;
+        rig.fake.hang(A);
+        rig.send(Command::Next).await?;
+        rig.until(|s| s.phase == Phase::Resolving).await?;
+        rig.fake.health.send_modify(|health| {
+            health.voice = false;
+            health.gateway = gateway;
+            health.voice_retry = false;
+            if gateway {
+                health.voice_error = Some("Kicked or unauthorized".into());
+            } else {
+                health.gateway_error = Some("Terminal gateway failure".into());
+            }
+        });
+        rig.until(|s| s.phase == Phase::Error).await?;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        rig.settle().await;
+        assert_eq!(rig.fake.requests(), [A]);
+        assert_eq!(rig.fake.connects.load(SeqCst), 0);
+        assert_eq!(rig.queued(), [B]);
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_disconnect_keeps_data_and_play_and_next_reconnect() -> Result<()> {
+    for next in [true, false] {
+        let mut rig = Rig::new().await?;
+        rig.enqueue(B).await?;
+        tokio::time::advance(Duration::from_secs(599)).await;
+        rig.settle().await;
+        assert_eq!(rig.fake.disconnects.load(SeqCst), 0);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let state = rig.until(|s| !s.voice_connected).await?;
+        assert_eq!(state.phase, Phase::Ready);
+        assert!(state.error.is_none() && state.history.is_empty());
+        assert_eq!(rig.queued(), [B]);
+        tokio::time::advance(IDLE_TIMEOUT * 2).await;
+        rig.settle().await;
+        assert_eq!(rig.fake.disconnects.load(SeqCst), 1);
+        rig.send(if next {
+            Command::Next
+        } else {
+            Command::Play(A.into())
+        })
+        .await?;
+        rig.started(1).await?;
+        assert_eq!(rig.fake.connects.load(SeqCst), 1);
+        assert_eq!(rig.fake.track(0)?.title, if next { B } else { A });
+        assert_eq!(rig.queued().len(), usize::from(!next));
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn playing_paused_and_extracting_are_active_until_stop() -> Result<()> {
+    for phase in [Phase::Playing, Phase::Paused, Phase::Resolving] {
+        let mut rig = Rig::new().await?;
+        rig.enqueue(B).await?;
+        if phase == Phase::Resolving {
+            rig.fake.hang(A);
+        }
+        rig.play(A).await?;
+        if phase != Phase::Resolving {
+            rig.started(1).await?;
+            rig.fake.track(0)?.advance(1);
+            rig.until(|s| s.phase == Phase::Playing).await?;
+            if phase == Phase::Paused {
+                rig.send(Command::Pause).await?;
+            }
+        }
+        rig.until(|s| s.phase == phase).await?;
+        tokio::time::advance(IDLE_TIMEOUT * 2).await;
+        rig.settle().await;
+        assert_eq!(rig.fake.disconnects.load(SeqCst), 0);
+        rig.send(Command::Stop).await?;
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        tokio::time::advance(IDLE_TIMEOUT).await;
+        rig.until(|s| !s.voice_connected).await?;
+        assert_eq!(rig.fake.disconnects.load(SeqCst), 1);
+        assert_eq!(rig.queued(), [B]);
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn stop_is_responsive_while_track_info_is_unresponsive() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    rig.fake.track(0)?.info_hung.store(true, SeqCst);
+    tokio::time::advance(Duration::from_millis(300)).await;
+    tokio::task::yield_now().await;
+    let before = Instant::now();
+    rig.send(Command::Stop).await?;
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    assert!(before.elapsed() < Duration::from_millis(100));
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn play_cancels_a_voice_rejoin_in_progress() -> Result<()> {
+    let rig = Rig::new().await?;
+    rig.enqueue(B).await?;
+    rig.fake.connect_mode.store(2, SeqCst);
+    lose_voice(&rig.fake, true);
+    eventually(|| rig.fake.connects.load(SeqCst) == 1).await?;
+    rig.fake.connect_mode.store(0, SeqCst);
+    rig.play(A).await?;
+    rig.started(1).await?;
+    assert_eq!(rig.fake.requests(), [A]);
+    assert_eq!(rig.queued(), [B]);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_terminal_event_cancels_pending_voice_recovery() -> Result<()> {
+    for running in [false, true] {
+        let mut rig = Rig::new().await?;
+        rig.enqueue(B).await?;
+        rig.fake.connect_mode.store(2, SeqCst);
+        lose_voice(&rig.fake, true);
+        rig.until(|s| s.phase == Phase::Error).await?;
+        if running {
+            eventually(|| rig.fake.connects.load(SeqCst) == 1).await?;
+        }
+        rig.fake.health.send_modify(|health| {
+            health.voice_retry = false;
+            health.voice_error = Some("Kicked; check permissions".into());
+        });
+        rig.until(|s| s.error.as_deref() == Some("Kicked; check permissions"))
+            .await?;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        rig.settle().await;
+        assert_eq!(rig.fake.connects.load(SeqCst), usize::from(running));
+        assert_eq!(rig.queued(), [B]);
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn play_during_idle_leave_cancels_the_leave_and_starts_normally() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.enqueue(B).await?;
+    rig.fake.disconnect_hung.store(true, SeqCst);
+    tokio::time::advance(IDLE_TIMEOUT).await;
+    rig.until(|s| !s.voice_connected).await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    assert_eq!(rig.fake.requests(), [A]);
+    assert_eq!(rig.queued(), [B]);
+    assert_eq!(rig.fake.connects.load(SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rejected_track_start_obeys_the_queue_recovery_preference() -> Result<()> {
+    for enabled in [false, true] {
+        let mut rig = Rig::start(Saved {
+            continue_on_error: enabled,
+            ..Saved::default()
+        });
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        rig.fake
+            .play_failing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(A.into());
+        rig.enqueue(A).await?;
+        rig.enqueue(B).await?;
+        rig.send(Command::Next).await?;
+        rig.until(|s| s.phase == Phase::Error).await?;
+        if enabled {
+            rig.started(1).await?;
+            assert_eq!(rig.fake.track(0)?.title, B);
+            assert_eq!(rig.fake.requests(), [A, B]);
+            assert_eq!(rig.queued().len(), 0);
+        } else {
+            tokio::time::advance(Duration::from_secs(5)).await;
+            rig.settle().await;
+            assert_eq!(rig.fake.started(), 0);
+            assert_eq!(rig.queued(), [B]);
+        }
+        assert_eq!(rig.state().history.len(), 0);
+    }
     Ok(())
 }

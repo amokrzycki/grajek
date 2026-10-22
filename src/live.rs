@@ -83,6 +83,14 @@ impl Backend for Live {
         Ok((handle, outcome))
     }
 
+    async fn connect(&self) -> Result<()> {
+        self.discord.connect().await
+    }
+
+    async fn disconnect(&self) -> Result<()> {
+        self.discord.disconnect().await
+    }
+
     async fn recover(&self) {
         self.discord.reset_incomplete_connection().await;
     }
@@ -106,9 +114,19 @@ impl EventHandler for TrackEvents {
                             "Audio playback failed. Check media access and the logs.".into(),
                         )
                     }
-                    _ => Outcome::End,
+                    PlayMode::End => Outcome::End,
+                    _ => Outcome::Error(
+                        "Audio track terminated unexpectedly. Press Next or Play URL.".into(),
+                    ),
                 };
-                self.0.send_replace(Some(outcome));
+                // Error and End may both arrive; a late End must never erase a failure.
+                self.0.send_if_modified(|current| {
+                    if matches!(current, Some(Outcome::Error(_))) {
+                        return false;
+                    }
+                    *current = Some(outcome);
+                    true
+                });
             }
         }
         Some(Event::Cancel)
@@ -145,6 +163,14 @@ mod tests {
         assert!(
             matches!(&*receiver.borrow(), Some(Outcome::Error(message)) if message.contains("playback failed"))
         );
+        let ended = songbird::tracks::TrackState {
+            playing: PlayMode::End,
+            ..Default::default()
+        };
+        handler
+            .act(&EventContext::Track(&[(&ended, &handle)]))
+            .await;
+        assert!(matches!(&*receiver.borrow(), Some(Outcome::Error(_))));
         driver.stop();
     }
 

@@ -13,6 +13,9 @@ Paste a YouTube video URL, play it in a Discord voice channel, and manage transp
 
 ## Capabilities and Constraints
 - Existing Play URL, enqueue, Pause/Resume, Next, Stop, live volume and persisted history.
+- Opt-in, persisted Continue on error skips queued media failures only, with a one-second cancellable delay and a three-failure limit; only actual playback resets that limit.
+- Songbird owns transient retries. At most two fresh joins may follow eligible terminal voice failures; interrupted audio requires explicit Next/Play and never restarts automatically.
+- Voice leaves after ten idle minutes; Playing, Paused and pending jobs are active. Queue and history survive, and the window stays open.
 - Controller snapshots are the truth. No optimistic playback state, simulated waveform, artwork, seeking or discovery.
 - Queue is FIFO, limited to 100 and not persisted; history holds 50 unique successfully played videos.
 - Enter plays; Ctrl+Enter queues; Ctrl+1/2 selects Queue/History. Volume keyboard handling and focus recovery are preserved.

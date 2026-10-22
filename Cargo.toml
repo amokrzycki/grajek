@@ -1,6 +1,6 @@
 [package]
 name = "grajek"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT"
@@ -21,6 +21,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 
 [lints.rust]

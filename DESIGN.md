@@ -260,6 +260,11 @@ Existing speaker icon, native `Slider`, fixed-width right-aligned mono percentag
 
 ### Lists and empty states
 
+The Queue header includes a native extra-small ghost button, “Continue on error:
+Off/On”. It renders the persisted controller preference, retains native Tab/Space
+handling and explains the queued-only, three-failure limit in its tooltip. Recovery
+messages use the existing error callout; no settings panel or visual system is added.
+
 Rows use 8px horizontal inset/gaps, flexible one-line titles and full tooltips. Queue positions use two digits; history duration stays right-aligned in its reserved slot. Hover uses list-hover. Essential actions never appear only on hover.
 
 Empty guidance is truthful and left-aligned near the top, with 8px horizontal and 12px top inset; no decorative icon or centered hero. Counts and persistent History notices use metadata type; notices clamp to two lines.
@@ -272,9 +277,9 @@ Stamp/title separation is 12px. Now Playing has 8px vertical padding and one bot
 
 ### Errors and micro-interactions
 
-Error callout uses danger-fill, danger text, 4px/8px padding, three-line clamp and full-message tooltip. Healthy connection is a small dot plus muted “Discord connected”; initializing/unavailable use actual connection text. Color never carries meaning alone.
+Error callout uses danger-fill, danger text, 4px/8px padding, three-line clamp and full-message tooltip. Healthy connection is a small dot plus muted “Discord voice connected” or “Discord ready · voice idle”; initializing/unavailable use actual connection text. Color never carries meaning alone.
 
-No new application animations, idle timer or extra frame requests were introduced. Native hover/focus is sufficient; existing kit loading behavior is retained. Do not claim default kit animation behavior changed. Future transitions must express real state, remain roughly 120–180ms, respect reduced motion and leave status readable without motion. Never animate the stamp as an audio meter. Existing elapsed snapshots and volume coalescing remain the performance model.
+No application animations or extra frame requests are introduced. The v0.2.1 idle deadline is controller scheduling and requests no idle frames. Native hover/focus is sufficient; existing kit loading behavior is retained. Do not claim default kit animation behavior changed. Future transitions must express real state, remain roughly 120–180ms, respect reduced motion and leave status readable without motion. Never animate the stamp as an audio meter. Existing elapsed snapshots and volume coalescing remain the performance model.
 
 ## Do's and Don'ts
 

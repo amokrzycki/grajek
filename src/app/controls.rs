@@ -9,7 +9,7 @@ use gpui_kit::{
     TestSupportExt, Window, div, prelude::FluentBuilder, px,
 };
 
-use super::PlayerApp;
+use super::{Pending, PlayerApp};
 use crate::player::{Command, Phase, VolumeRequest, percent_from};
 
 /// Volume change per arrow key; Page Up/Down move twice as far.
@@ -22,32 +22,24 @@ impl PlayerApp {
     }
 
     pub(super) fn play_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.state.can_play() {
+        if self.pending.is_some() || !self.state.can_play() {
             return;
         }
         let before = self.controls_enabled();
         if self.send(Command::Play(url)) {
-            // Close the gap before the controller's first update arrives.
-            self.state.phase = Phase::Connecting;
-            self.state.error = None;
-            self.state.track = None;
-            self.control_pending = false;
+            self.pending = Some(Pending::Play);
             self.rescue_focus(before, window, cx);
             cx.notify();
         }
     }
 
     fn next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.control_pending || !self.state.can_next() {
+        if self.pending.is_some() || !self.state.can_next() {
             return;
         }
         let before = self.controls_enabled();
         if self.send(Command::Next) {
-            self.state.phase = Phase::Connecting;
-            self.state.error = None;
-            self.state.track = None;
-            // Disabled until the controller answers, so a double click skips one track.
-            self.control_pending = true;
+            self.pending = Some(Pending::Next);
             self.rescue_focus(before, window, cx);
             cx.notify();
         }
@@ -55,10 +47,8 @@ impl PlayerApp {
 
     fn stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.controls_enabled();
-        if self.state.can_stop() && self.send(Command::Stop) {
-            self.state.phase = Phase::Stopping;
-            self.state.track = None;
-            self.control_pending = false;
+        if self.controls_enabled()[2] && self.send(Command::Stop) {
+            self.pending = Some(Pending::Stop);
             self.rescue_focus(before, window, cx);
             cx.notify();
         }
@@ -67,7 +57,7 @@ impl PlayerApp {
     /// Sends Pause or Resume without guessing the outcome: the button keeps its label
     /// (and is disabled against repeat clicks) until the controller reports the real state.
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
-        if self.control_pending {
+        if self.pending.is_some() {
             return;
         }
         let command = if self.state.can_pause() {
@@ -78,7 +68,7 @@ impl PlayerApp {
             return;
         };
         if self.send(command) {
-            self.control_pending = true;
+            self.pending = Some(Pending::Pause);
             cx.notify();
         }
     }
@@ -146,9 +136,11 @@ impl PlayerApp {
     /// Pause/Resume, Next and Stop as the controller currently allows them.
     pub(super) fn controls_enabled(&self) -> [bool; 3] {
         [
-            self.state.can_pause() || self.state.can_resume(),
-            self.state.can_next(),
-            self.state.can_stop(),
+            self.pending.is_none() && (self.state.can_pause() || self.state.can_resume()),
+            self.pending.is_none() && self.state.can_next(),
+            !matches!(self.pending, Some(Pending::Stop))
+                && (self.state.can_stop()
+                    || matches!(self.pending, Some(Pending::Play | Pending::Next))),
         ]
     }
 
@@ -171,9 +163,8 @@ impl PlayerApp {
 
     pub(super) fn controls(&self, cx: &Context<Self>) -> impl IntoElement {
         let resume = self.state.phase == Phase::Paused;
-        let toggle_enabled =
-            !self.control_pending && (self.state.can_pause() || self.state.can_resume());
-        let next_enabled = !self.control_pending && self.state.can_next();
+        let toggle_enabled = self.controls_enabled()[0];
+        let next_enabled = self.controls_enabled()[1];
         div()
             .flex()
             .flex_none()
@@ -211,7 +202,7 @@ impl PlayerApp {
                     .ghost()
                     .label("Stop")
                     .w(px(64.))
-                    .disabled(!self.state.can_stop())
+                    .disabled(!self.controls_enabled()[2])
                     .on_click(cx.listener(|this, _, window, cx| this.stop(window, cx))),
             )
     }

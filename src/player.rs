@@ -24,7 +24,7 @@ pub enum Outcome {
 }
 
 /// What the controller needs from a playing track.
-pub trait Handle: Send + Sync + 'static {
+pub trait Handle: Clone + Send + Sync + 'static {
     fn set_volume(&self, volume: f32) -> TrackResult<()>;
     fn pause(&self) -> TrackResult<()>;
     fn resume(&self) -> TrackResult<()>;
@@ -49,6 +49,8 @@ pub trait Backend: Send + Sync + 'static {
         resolved: Resolved,
         volume: f32,
     ) -> impl Future<Output = Result<(Self::Handle, watch::Receiver<Option<Outcome>>)>> + Send;
+    fn connect(&self) -> impl Future<Output = Result<()>> + Send;
+    fn disconnect(&self) -> impl Future<Output = Result<()>> + Send;
     fn recover(&self) -> impl Future<Output = ()> + Send;
     fn shutdown(&self) -> impl Future<Output = ()> + Send;
 }
@@ -87,6 +89,7 @@ pub async fn run(
                 phase: Phase::Error,
                 error: Some(error.to_string()),
                 volume: loaded.saved.volume,
+                continue_on_error: loaded.saved.continue_on_error,
                 history: loaded.saved.history,
                 notice: loaded.warning,
                 ..State::default()
