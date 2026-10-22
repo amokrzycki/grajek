@@ -6,6 +6,43 @@ use crate::{
     store::{self, HistoryEntry},
 };
 
+/// Completion policy; preferences from older releases default to ordinary FIFO.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatMode {
+    Track,
+    Queue,
+    #[default]
+    #[serde(other)]
+    Off,
+}
+
+impl RepeatMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Repeat: Off",
+            Self::Track => "Repeat Track",
+            Self::Queue => "Repeat Queue",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Track,
+            Self::Track => Self::Queue,
+            Self::Queue => Self::Off,
+        }
+    }
+}
+
+/// Saved queue/playback policies, independent of transient connection state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Preferences {
+    pub continue_on_error: bool,
+    pub remember_queue: bool,
+    pub repeat: RepeatMode,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Initializing,
@@ -15,6 +52,7 @@ pub enum Phase {
     Playing,
     Paused,
     Stopping,
+    Disconnecting,
     Error,
 }
 
@@ -28,6 +66,7 @@ impl Phase {
             Self::Playing => "Playing",
             Self::Paused => "Paused",
             Self::Stopping => "Stopping…",
+            Self::Disconnecting => "Leaving voice…",
             Self::Error => "Error",
         }
     }
@@ -40,8 +79,10 @@ pub struct State {
     pub phase: Phase,
     pub error: Option<String>,
     pub available: bool,
+    /// Local queue/history edits need a running controller, even if the gateway is down.
+    pub controller_ready: bool,
     pub voice_connected: bool,
-    pub continue_on_error: bool,
+    pub preferences: Preferences,
     /// Metadata of the current track while it is playing or paused.
     pub track: Option<TrackInfo>,
     /// Playback position, truncated to whole seconds so it changes at most once per second.
@@ -62,8 +103,9 @@ impl Default for State {
             phase: Phase::Initializing,
             error: None,
             available: false,
+            controller_ready: false,
             voice_connected: false,
-            continue_on_error: false,
+            preferences: Preferences::default(),
             track: None,
             position: Duration::ZERO,
             volume: store::DEFAULT_VOLUME,
@@ -76,6 +118,16 @@ impl Default for State {
 }
 
 impl State {
+    pub fn can_leave_voice(&self) -> bool {
+        self.controller_ready
+            && !matches!(
+                self.phase,
+                Phase::Initializing | Phase::Stopping | Phase::Disconnecting
+            )
+            && (self.voice_connected
+                || matches!(self.phase, Phase::Connecting | Phase::Resolving)
+                || self.available && self.phase == Phase::Error)
+    }
     pub fn can_play(&self) -> bool {
         self.available
             && matches!(
@@ -98,7 +150,18 @@ impl State {
     pub fn can_next(&self) -> bool {
         self.available
             && !self.queue.is_empty()
-            && !matches!(self.phase, Phase::Initializing | Phase::Stopping)
+            && !matches!(
+                self.phase,
+                Phase::Initializing | Phase::Stopping | Phase::Disconnecting
+            )
+    }
+    /// The transport action's idle label comes from the same authoritative snapshot.
+    pub fn next_label(&self) -> &'static str {
+        if matches!(self.phase, Phase::Ready | Phase::Error) && self.track.is_none() {
+            "Play Queue"
+        } else {
+            "Next"
+        }
     }
     /// Queueing only records a URL, so it works in every phase once Discord is up.
     pub fn can_enqueue(&self) -> bool {
@@ -126,6 +189,7 @@ pub enum Command {
     Pause,
     Resume,
     Stop,
+    LeaveVoice,
     Dequeue(u64),
     Shift {
         id: u64,
@@ -135,6 +199,8 @@ pub enum Command {
     ForgetHistory(String),
     ClearHistory,
     ContinueOnError(bool),
+    RememberQueue(bool),
+    Repeat(RepeatMode),
 }
 
 /// The latest volume the slider wants. It travels over a `watch` channel, so a drag

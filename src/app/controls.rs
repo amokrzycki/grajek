@@ -10,7 +10,7 @@ use gpui_kit::{
 };
 
 use super::{Pending, PlayerApp};
-use crate::player::{Command, Phase, VolumeRequest, percent_from};
+use crate::player::{Command, Phase, RepeatMode, VolumeRequest, percent_from};
 
 /// Volume change per arrow key; Page Up/Down move twice as far.
 const VOLUME_STEP: f32 = 5.0;
@@ -43,6 +43,28 @@ impl PlayerApp {
             self.rescue_focus(before, window, cx);
             cx.notify();
         }
+    }
+
+    fn leave_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.pending, Some(Pending::Leave)) || !self.state.can_leave_voice() {
+            return;
+        }
+        if self.send(Command::LeaveVoice) {
+            self.pending = Some(Pending::Leave);
+            window.focus(&self.input.read(cx).focus_handle(cx), cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn leave_button(&self, cx: &Context<Self>) -> impl IntoElement {
+        Button::new("leave-voice")
+            .label("Leave voice")
+            .accessibility_label("Leave voice")
+            .small()
+            .flex_none()
+            .disabled(matches!(self.pending, Some(Pending::Leave)) || !self.state.can_leave_voice())
+            .tooltip("Stop playback and leave Discord voice. Keeps the queue; Play URL or Play Queue reconnects.")
+            .on_click(cx.listener(|this, _, window, cx| this.leave_voice(window, cx)))
     }
 
     fn stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -138,7 +160,7 @@ impl PlayerApp {
         [
             self.pending.is_none() && (self.state.can_pause() || self.state.can_resume()),
             self.pending.is_none() && self.state.can_next(),
-            !matches!(self.pending, Some(Pending::Stop))
+            !matches!(self.pending, Some(Pending::Stop | Pending::Leave))
                 && (self.state.can_stop()
                     || matches!(self.pending, Some(Pending::Play | Pending::Next))),
         ]
@@ -187,12 +209,14 @@ impl PlayerApp {
             .child(
                 Button::new("next")
                     .icon(SpeakerIcon::SkipForward)
-                    .label("Next")
-                    .w(px(88.))
+                    .label(self.state.next_label())
+                    .w(px(116.))
                     .tooltip(if self.state.queue.is_empty() {
                         "Nothing is queued"
+                    } else if self.state.next_label() == "Play Queue" {
+                        "Start the first pending track"
                     } else {
-                        "Skip to the next queued track"
+                        "Skip to the next queued track; bypass repeat"
                     })
                     .disabled(!next_enabled)
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),
@@ -205,6 +229,32 @@ impl PlayerApp {
                     .disabled(!self.controls_enabled()[2])
                     .on_click(cx.listener(|this, _, window, cx| this.stop(window, cx))),
             )
+    }
+
+    pub(super) fn repeat_button(&self, cx: &Context<Self>) -> impl IntoElement {
+        Button::new("repeat")
+            .label(self.state.preferences.repeat.label())
+            .accessibility_label(self.state.preferences.repeat.label())
+            .when(self.state.preferences.repeat != RepeatMode::Off, ButtonVariants::primary)
+            .h(px(28.))
+            .w(px(120.))
+            .disabled(!self.state.available)
+            .tooltip("Change repeat: Off → Repeat Track → Repeat Queue. Successful natural completion repeats; Next and Stop bypass repeat.")
+            .on_click(cx.listener(|this, _, _, _| {
+                this.send(Command::Repeat(this.state.preferences.repeat.next()));
+            }))
+    }
+
+    pub(super) fn remember_button(&self, cx: &Context<Self>) -> impl IntoElement {
+        Button::new("remember-queue")
+            .label(if self.state.preferences.remember_queue { "Remember queue: On" } else { "Remember queue: Off" })
+            .ghost()
+            .xsmall()
+            .disabled(!self.state.available)
+            .tooltip("Save pending entries across restarts without starting playback. Turning off removes saved entries and keeps this session’s queue.")
+            .on_click(cx.listener(|this, _, _, _| {
+                this.send(Command::RememberQueue(!this.state.preferences.remember_queue));
+            }))
     }
 
     pub(super) fn volume_row(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {

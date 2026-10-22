@@ -33,6 +33,7 @@ enum Pending {
     Next,
     Pause,
     Stop,
+    Leave,
 }
 
 pub struct PlayerApp {
@@ -41,6 +42,7 @@ pub struct PlayerApp {
     volume_focus: FocusHandle,
     /// Tracks the Pause/Next/Stop row, to rescue keyboard focus from a control that turns off.
     controls_focus: FocusHandle,
+    voice_focus: FocusHandle,
     commands: mpsc::Sender<Command>,
     volume_requests: watch::Sender<VolumeRequest>,
     state: State,
@@ -117,9 +119,18 @@ impl PlayerApp {
                 if entity
                     .update_in(cx, |this, window, cx| {
                         let before = this.controls_enabled();
+                        let lost_gateway = this.state.available && !state.available;
+                        let lost_voice_control = this.state.can_leave_voice()
+                            && !state.can_leave_voice()
+                            && this.voice_focus.contains_focused(window, cx);
                         this.state = state;
                         this.pending = None;
-                        this.rescue_focus(before, window, cx);
+                        // Gateway loss also disables preferences outside the transport group.
+                        if lost_gateway || lost_voice_control {
+                            window.focus(&this.input.read(cx).focus_handle(cx), cx);
+                        } else {
+                            this.rescue_focus(before, window, cx);
+                        }
                         this.sync_volume(window, cx);
                         cx.notify();
                     })
@@ -134,6 +145,7 @@ impl PlayerApp {
             volume,
             volume_focus: cx.focus_handle(),
             controls_focus: cx.focus_handle(),
+            voice_focus: cx.focus_handle(),
             commands,
             volume_requests,
             state,
@@ -166,7 +178,9 @@ impl PlayerApp {
 }
 
 fn connection(state: &State) -> &'static str {
-    if state.available && state.voice_connected {
+    if state.phase == Phase::Disconnecting {
+        "Leaving Discord voice…"
+    } else if state.available && state.voice_connected {
         "Discord voice connected"
     } else if state.available {
         "Discord ready · voice idle"
@@ -179,7 +193,12 @@ fn connection(state: &State) -> &'static str {
 
 /// A one-line, ellipsized label whose full text appears in a tooltip.
 fn label(id: impl Into<ElementId>, text: String) -> impl IntoElement {
-    let tip: SharedString = text.clone().into();
+    let tip = text.clone();
+    label_with_tooltip(id, text, tip)
+}
+
+fn label_with_tooltip(id: impl Into<ElementId>, text: String, tip: String) -> impl IntoElement {
+    let tip: SharedString = tip.into();
     div()
         .id(id)
         .flex_1()
@@ -208,6 +227,7 @@ impl PlayerApp {
             .gap_2()
             .child(
                 div()
+                    .flex_none()
                     .text_size(px(18.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Grajek"),
@@ -215,8 +235,12 @@ impl PlayerApp {
             .child(
                 div()
                     .flex()
+                    .flex_1()
+                    .min_w_0()
                     .items_center()
                     .gap_2()
+                    .track_focus(&self.voice_focus)
+                    .tab_stop(false)
                     .text_xs()
                     .text_color(if self.state.available {
                         theme.muted_foreground
@@ -224,7 +248,8 @@ impl PlayerApp {
                         color
                     })
                     .child(div().size(px(6.)).flex_none().rounded_full().bg(color))
-                    .child(connection(&self.state)),
+                    .child(label("voice-status", connection(&self.state).into()))
+                    .child(self.leave_button(cx)),
             )
     }
 
@@ -246,8 +271,9 @@ impl PlayerApp {
             .child(
                 div()
                     .flex()
-                    .justify_end()
+                    .justify_between()
                     .gap_2()
+                    .child(self.repeat_button(cx))
                     .child(
                         Button::new("play")
                             .primary()
@@ -294,9 +320,11 @@ impl PlayerApp {
             Phase::Playing => AudioIcon::Play,
             Phase::Paused => AudioIcon::Pause,
             Phase::Ready | Phase::Error => AudioIcon::Square,
-            Phase::Initializing | Phase::Connecting | Phase::Resolving | Phase::Stopping => {
-                AudioIcon::Ellipsis
-            }
+            Phase::Initializing
+            | Phase::Connecting
+            | Phase::Resolving
+            | Phase::Stopping
+            | Phase::Disconnecting => AudioIcon::Ellipsis,
         };
         div()
             .flex()
@@ -409,22 +437,30 @@ impl PlayerApp {
             .flex_col()
             .gap_2()
             .child(
-                TabBar::new("sections")
-                    .underline()
-                    .small()
-                    .selected_index(selected)
-                    .on_click(cx.listener(|this, index: &usize, _, cx| {
-                        this.select_section(
-                            if *index == 0 {
-                                Section::Queue
-                            } else {
-                                Section::History
-                            },
-                            cx,
-                        );
-                    }))
-                    .child(Tab::new().label(format!("Queue ({})", self.state.queue.len())))
-                    .child(Tab::new().label("History")),
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        TabBar::new("sections")
+                            .underline()
+                            .small()
+                            .selected_index(selected)
+                            .on_click(cx.listener(|this, index: &usize, _, cx| {
+                                this.select_section(
+                                    if *index == 0 {
+                                        Section::Queue
+                                    } else {
+                                        Section::History
+                                    },
+                                    cx,
+                                );
+                            }))
+                            .child(Tab::new().label(format!("Queue ({})", self.state.queue.len())))
+                            .child(Tab::new().label("History")),
+                    )
+                    .child(self.remember_button(cx)),
             )
             .child(match self.section {
                 Section::Queue => self.queue_list(cx).into_any_element(),

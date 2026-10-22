@@ -12,12 +12,18 @@ pub struct QueueItem {
     pub id: u64,
     pub url: String,
     pub title: Option<String>,
+    /// Transient lookup outcome; unresolved entries retry after restoration.
+    pub title_unavailable: bool,
 }
 
 impl QueueItem {
-    /// The title, or the video ID until the track has been resolved.
+    /// A truthful loading or failure label until a title is known.
     pub fn label(&self) -> &str {
-        self.title.as_deref().unwrap_or_else(|| video_id(&self.url))
+        self.title.as_deref().unwrap_or(if self.title_unavailable {
+            "Title unavailable"
+        } else {
+            "Loading title…"
+        })
     }
 }
 
@@ -54,8 +60,20 @@ impl Queue {
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.items.push_back(QueueItem { id, url, title });
+        self.items.push_back(QueueItem {
+            id,
+            url,
+            title,
+            title_unavailable: false,
+        });
         Ok(id)
+    }
+
+    pub fn title_of(&self, url: &str) -> Option<String> {
+        self.items
+            .iter()
+            .find(|item| item.url == url && item.title.is_some())
+            .and_then(|item| item.title.clone())
     }
 
     pub fn pop_front(&mut self) -> Option<QueueItem> {
@@ -89,6 +107,16 @@ impl Queue {
 
     pub fn snapshot(&self) -> Vec<QueueItem> {
         self.items.iter().cloned().collect()
+    }
+
+    /// Apply only to the exact entries that requested this lookup, wherever they moved.
+    pub fn resolve_titles(&mut self, ids: &[u64], title: Option<&str>) {
+        for item in &mut self.items {
+            if ids.contains(&item.id) && item.title.is_none() {
+                item.title = title.map(str::to_owned);
+                item.title_unavailable = title.is_none();
+            }
+        }
     }
 
     fn position(&self, id: u64) -> Option<usize> {
@@ -172,7 +200,26 @@ mod tests {
     }
 
     #[test]
-    fn untitled_entries_show_the_video_id() {
+    fn late_out_of_order_titles_follow_ids_and_never_resurrect_entries() {
+        let mut queue = filled(3);
+        let items = queue.snapshot();
+        queue.shift(items[2].id, true);
+        queue.resolve_titles(&[items[2].id], Some("Third"));
+        queue.resolve_titles(&[items[0].id], Some("First"));
+        assert_eq!(queue.snapshot()[1].label(), "Third");
+        assert_eq!(queue.snapshot()[0].label(), "First");
+        queue.remove(items[1].id);
+        queue.resolve_titles(&[items[1].id], Some("Removed"));
+        assert_eq!(queue.snapshot().len(), 2);
+        queue.clear();
+        let new = queue.push(items[0].url.clone(), None);
+        queue.resolve_titles(&[items[0].id], Some("Stale"));
+        assert_ne!(new, Ok(items[0].id));
+        assert_eq!(queue.snapshot()[0].title, None);
+    }
+
+    #[test]
+    fn untitled_entries_show_truthful_lookup_states() {
         // Standard format
         assert_eq!(
             video_id("https://www.youtube.com/watch?v=BaW_jenozKc"),
@@ -194,8 +241,11 @@ mod tests {
             id: 0,
             url: "https://www.youtube.com/watch?v=BaW_jenozKc".into(),
             title: None,
+            title_unavailable: false,
         };
-        assert_eq!(item.label(), "BaW_jenozKc");
+        assert_eq!(item.label(), "Loading title…");
+        item.title_unavailable = true;
+        assert_eq!(item.label(), "Title unavailable");
         item.title = Some("Song".into());
         assert_eq!(item.label(), "Song");
     }

@@ -12,6 +12,7 @@ fn state(phase: Phase) -> State {
     State {
         phase,
         available: true,
+        controller_ready: true,
         ..State::default()
     }
 }
@@ -332,6 +333,7 @@ fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut Te
 fn queue_item(id: u64) -> QueueItem {
     QueueItem {
         id,
+        title_unavailable: false,
         url: format!("https://www.youtube.com/watch?v={id:0>11}"),
         title: Some(format!("Queued {id}")),
     }
@@ -456,7 +458,7 @@ fn next_follows_the_queue_and_ignores_rapid_clicks(cx: &mut TestAppContext) {
     assert!(received.try_recv().is_err());
     states.send_replace(with_lists(Phase::Ready, 2, 0));
     cx.run_until_parked();
-    assert_eq!(button(cx, window, "next"), ("Next".into(), false));
+    assert_eq!(button(cx, window, "next"), ("Play Queue".into(), false));
     click(cx, window, "next");
     click(cx, window, "next");
     assert!(matches!(received.try_recv(), Ok(Command::Next)));
@@ -935,6 +937,7 @@ fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
             Phase::Playing,
             Phase::Paused,
             Phase::Stopping,
+            Phase::Disconnecting,
             Phase::Error,
         ] {
             let mut initial = with_lists(phase, 3, 3);
@@ -952,6 +955,12 @@ fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
                 "next",
                 "stop",
                 "volume-percent",
+                "repeat",
+                "remember-queue",
+                "continue-on-error",
+                "queue-clear",
+                "leave-voice",
+                "voice-status",
             ] {
                 let control = bounds(cx, window, id);
                 assert!(
@@ -983,9 +992,12 @@ fn continue_on_error_uses_the_controller_preference(cx: &mut TestAppContext) {
         received.try_recv(),
         Ok(Command::ContinueOnError(true))
     ));
-    cx.update(|cx| assert!(!view.read(cx).state.continue_on_error));
+    cx.update(|cx| assert!(!view.read(cx).state.preferences.continue_on_error));
     states.send_replace(State {
-        continue_on_error: true,
+        preferences: crate::player::Preferences {
+            continue_on_error: true,
+            ..Default::default()
+        },
         ..state(Phase::Ready)
     });
     cx.run_until_parked();
@@ -994,4 +1006,264 @@ fn continue_on_error_uses_the_controller_preference(cx: &mut TestAppContext) {
         received.try_recv(),
         Ok(Command::ContinueOnError(false))
     ));
+}
+
+#[gpui_kit::test]
+fn queue_preferences_follow_snapshots_and_work_from_keyboard(cx: &mut TestAppContext) {
+    use crate::player::RepeatMode;
+    let (window, view, mut received, states) = open(cx, with_lists(Phase::Ready, 2, 0));
+    assert_eq!(button(cx, window, "repeat").0, "Repeat: Off");
+    assert_eq!(
+        button(cx, window, "remember-queue").0,
+        "Remember queue: Off"
+    );
+    for mode in [RepeatMode::Off, RepeatMode::Track, RepeatMode::Queue] {
+        states.send_replace(State {
+            preferences: crate::player::Preferences {
+                repeat: mode,
+                ..Default::default()
+            },
+            ..with_lists(Phase::Ready, 2, 0)
+        });
+        cx.run_until_parked();
+        assert_eq!(button(cx, window, "repeat").0, mode.label());
+        // Native Tab reaches the new control; Enter dispatches the next explicit enum mode.
+        for _ in 0..20 {
+            let focused = cx
+                .update_window(window, |_, window, _| window.find("repeat").focused())
+                .ok()
+                .flatten();
+            if focused == Some(true) {
+                break;
+            }
+            act(cx, window, |window, cx| window.press("tab", cx));
+        }
+        act(cx, window, |window, cx| window.press("enter", cx));
+        assert!(matches!(received.try_recv(), Ok(Command::Repeat(next)) if next == mode.next()));
+        assert_eq!(
+            button(cx, window, "repeat").0,
+            mode.label(),
+            "wait for controller response"
+        );
+    }
+    click(cx, window, "remember-queue");
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::RememberQueue(true))
+    ));
+    states.send_replace(State {
+        preferences: crate::player::Preferences {
+            remember_queue: true,
+            ..Default::default()
+        },
+        ..with_lists(Phase::Ready, 2, 0)
+    });
+    cx.run_until_parked();
+    assert_eq!(button(cx, window, "remember-queue").0, "Remember queue: On");
+    click(cx, window, "remember-queue");
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::RememberQueue(false))
+    ));
+    show(cx, &view, Section::History);
+    assert!(present(cx, window, "remember-queue"));
+    states.send_replace(State {
+        available: false,
+        ..state(Phase::Error)
+    });
+    cx.run_until_parked();
+    for id in ["repeat", "remember-queue", "next"] {
+        assert!(button(cx, window, id).1);
+        click(cx, window, id);
+    }
+    assert!(received.try_recv().is_err());
+}
+
+#[gpui_kit::test]
+fn restored_lists_are_read_only_after_startup_failure_but_editable_after_gateway_loss(
+    cx: &mut TestAppContext,
+) {
+    let restored = State {
+        phase: Phase::Error,
+        error: Some("Set a real DISCORD_BOT_TOKEN in .env, then restart.".into()),
+        queue: vec![queue_item(10), queue_item(11)],
+        history: vec![history_entry(0)],
+        ..State::default()
+    };
+    let (window, view, mut received, states) = open(cx, restored.clone());
+    for id in [
+        ("queue-up", 11_u64),
+        ("queue-down", 10),
+        ("queue-remove", 10),
+    ] {
+        assert!(button(cx, window, id).1);
+        click(cx, window, id);
+    }
+    assert!(button(cx, window, "queue-clear").1);
+    click(cx, window, "queue-clear");
+    show(cx, &view, Section::History);
+    for id in [
+        ElementId::from(("history-remove", 0_usize)),
+        ElementId::from("history-clear"),
+    ] {
+        assert!(button(cx, window, id.clone()).1);
+        click(cx, window, id);
+    }
+    assert!(received.try_recv().is_err());
+    // An initialized controller stays able to handle local edits when Discord goes down.
+    states.send_replace(State {
+        controller_ready: true,
+        ..restored
+    });
+    cx.run_until_parked();
+    assert!(!button(cx, window, ("history-remove", 0_usize)).1);
+    click(cx, window, ("history-remove", 0_usize));
+    assert!(matches!(received.try_recv(), Ok(Command::ForgetHistory(_))));
+    show(cx, &view, Section::Queue);
+    assert!(!button(cx, window, "queue-clear").1);
+    click(cx, window, "queue-clear");
+    assert!(matches!(received.try_recv(), Ok(Command::ClearQueue)));
+}
+
+#[gpui_kit::test]
+fn keyboard_can_leave_a_preference_disabled_by_gateway_loss(cx: &mut TestAppContext) {
+    for id in ["repeat", "remember-queue"] {
+        let (window, view, _received, states) = open(cx, state(Phase::Ready));
+        for _ in 0..20 {
+            if cx
+                .update_window(window, |_, window, _| window.find(id).focused())
+                .ok()
+                .flatten()
+                == Some(true)
+            {
+                break;
+            }
+            act(cx, window, |window, cx| window.press("tab", cx));
+        }
+        assert_eq!(
+            cx.update_window(window, |_, window, _| window.find(id).focused())
+                .ok()
+                .flatten(),
+            Some(true)
+        );
+        states.send_replace(State {
+            available: false,
+            ..state(Phase::Error)
+        });
+        cx.run_until_parked();
+        act(cx, window, |window, cx| window.press("tab", cx));
+        let focused = cx
+            .update_window(window, |_, window, cx| {
+                view.read(cx)
+                    .input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            })
+            .ok();
+        assert_eq!(
+            focused,
+            Some(true),
+            "{id}: Tab returns to the only enabled input"
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn leave_voice_is_native_keyboard_accessible_and_waits_for_controller(cx: &mut TestAppContext) {
+    let initial = State {
+        voice_connected: true,
+        ..playing(Phase::Paused, Some("Żółć Привет 🎵"), 12)
+    };
+    let (window, view, mut received, states) = open(cx, initial.clone());
+    assert_eq!(
+        button(cx, window, "leave-voice"),
+        ("Leave voice".into(), false)
+    );
+    for _ in 0..20 {
+        if cx
+            .update_window(window, |_, window, _| window.find("leave-voice").focused())
+            .ok()
+            .flatten()
+            == Some(true)
+        {
+            break;
+        }
+        act(cx, window, |window, cx| window.press("tab", cx));
+    }
+    assert_eq!(
+        cx.update_window(window, |_, window, _| window.find("leave-voice").focused())
+            .ok()
+            .flatten(),
+        Some(true)
+    );
+    act(cx, window, |window, cx| window.press("space", cx));
+    assert!(matches!(received.try_recv(), Ok(Command::LeaveVoice)));
+    click(cx, window, "leave-voice");
+    assert!(received.try_recv().is_err());
+    cx.update(|cx| {
+        assert!(view.read(cx).state.voice_connected);
+        assert_eq!(view.read(cx).state.phase, Phase::Paused);
+    });
+    assert_eq!(
+        cx.update_window(window, |_, window, cx| view
+            .read(cx)
+            .input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window))
+            .ok(),
+        Some(true)
+    );
+    for phase in [Phase::Disconnecting, Phase::Ready] {
+        states.send_replace(State {
+            phase,
+            voice_connected: phase == Phase::Disconnecting,
+            ..initial.clone()
+        });
+        cx.run_until_parked();
+        assert!(button(cx, window, "leave-voice").1);
+        click(cx, window, "leave-voice");
+        assert!(received.try_recv().is_err());
+    }
+}
+
+#[gpui_kit::test]
+fn queue_metadata_states_and_unicode_keep_row_actions_visible(cx: &mut TestAppContext) {
+    for (width, height) in [(420., 480.), (520., 560.)] {
+        for title in [
+            None,
+            Some("Żółć Привет 🎵".repeat(30)),
+            Some("x".repeat(300)),
+        ] {
+            for failed in [false, true] {
+                let mut initial = with_lists(Phase::Playing, 3, 0);
+                initial.voice_connected = true;
+                initial.queue[0].title = title.clone();
+                initial.queue[0].title_unavailable = failed;
+                let ((window, _, _, _), _) = open_at(cx, initial, width, height);
+                let row = bounds(cx, window, ("queue-row", 10_u64));
+                let title = bounds(cx, window, ("queue-title", 10_u64));
+                let up = bounds(cx, window, ("queue-up", 10_u64));
+                let down = bounds(cx, window, ("queue-down", 10_u64));
+                let remove = bounds(cx, window, ("queue-remove", 10_u64));
+                assert!(
+                    title.right() <= up.left()
+                        && up.right() <= down.left()
+                        && down.right() <= remove.left()
+                );
+                assert!(remove.right() <= row.right() && row.right() <= px(width));
+                assert!(title.size.width > px(100.));
+                assert!(button(cx, window, ("queue-up", 10_u64)).1);
+                assert!(button(cx, window, ("queue-down", 12_u64)).1);
+                let voice = bounds(cx, window, "voice-status");
+                let leave = bounds(cx, window, "leave-voice");
+                assert!(
+                    voice.right() <= leave.left() && leave.right() <= row.right(),
+                    "width={width} voice={voice:?} leave={leave:?}"
+                );
+                assert_eq!(button(cx, window, "leave-voice").0, "Leave voice");
+            }
+        }
+    }
 }

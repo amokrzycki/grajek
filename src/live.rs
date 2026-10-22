@@ -83,6 +83,10 @@ impl Backend for Live {
         Ok((handle, outcome))
     }
 
+    async fn title(&self, url: String) -> Result<Option<String>> {
+        media::title(url).await
+    }
+
     async fn connect(&self) -> Result<()> {
         self.discord.connect().await
     }

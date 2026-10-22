@@ -205,7 +205,7 @@ Observed spacing: 4px for tight content, 8px for groups/row inset, 12px between 
 
 Default window: 520×560; minimum: 420×480. These are native constraints, not web breakpoints. Larger windows expose more list rows rather than enlarging controls. Fixed controls and flexible lists share aligned edges.
 
-The first player surface orders name/connection header, full-width URL input, separate right-aligned actions, Now Playing, transport, optional error, volume, underline tabs and flexible list. Input/actions have a 12px separation (4px gap plus 8px bottom margin); do not squeeze a URL between two buttons. Preserve Enter to play and Ctrl+Enter to enqueue.
+The first player surface orders name/connection header, full-width URL input, separate actions with a compact repeat selector, Now Playing, transport, optional error, volume, underline tabs and flexible list. Input/actions have a 12px separation (4px gap plus 8px bottom margin); do not squeeze a URL between two buttons. Preserve Enter to play and Ctrl+Enter to enqueue.
 
 | Established geometry | Dimension |
 | --- | --- |
@@ -213,7 +213,7 @@ The first player surface orders name/connection header, full-width URL input, se
 | Play URL / Add to queue | 28px high |
 | Native transport controls | 32px high |
 | Pause / Resume | Flexible width |
-| Next / Stop | 88px / 64px wide |
+| Next (Play Queue while idle) / Stop | 116px / 64px wide |
 | Stamp / internal icon | 40px square / 20px |
 | List row / row icon button | 36px high / 24px square |
 | Queue position column | 24px wide |
@@ -245,6 +245,31 @@ Precise native actions with deliberate priority. Keep `Button`, theme variants, 
 - Native variants own hover/pressed colors and focus treatment. Do not replace the kit focus line with a web rule.
 - Row actions are always-visible 24px native ghost icon buttons with tooltip and explicit accessible label. First/last queue moves retain disabled logic.
 - Clear queue/history are extra-small ghost buttons. History retains two-step confirmation, danger “Yes, clear” and separate Cancel.
+
+### Header voice control and pending metadata
+
+Leave voice is a small native neutral button beside the truncated connection
+status, with an explicit accessible label and explanatory tooltip. It stops audio
+and leaves voice while preserving pending entries; Stop only stops audio. Native
+Tab/Space handling remains, and disabling the focused control returns focus to
+the URL input. The header adds no vertical row and fits both supported sizes.
+Disconnecting shows “Leaving voice…” until the backend finishes; failures keep
+an error and permit retry. Pending rows show “Loading title…” or “Title
+unavailable”, with a full-title or explanatory URL tooltip. The existing single
+line truncation, row height, actions and palette remain unchanged.
+
+### Queue experience controls (v0.3.0)
+
+Repeat uses one 120px native button in the existing URL action row. Its explicit
+label cycles Off, Repeat Track and Repeat Queue; active repeat uses the brass
+primary variant. Its tooltip explains cycling and the natural-completion rule.
+Remember queue: Off/On is an extra-small native ghost button beside the section
+tabs, visible in both sections. Both render saved controller preferences and keep
+native Tab/Enter/Space handling. No new vertical row reduces compact list space.
+The existing Next transport is 116px wide to fit Play Queue while idle; its label
+and availability come from the controller snapshot. Pause remains flexible, Stop
+64px. All controls retain full labels at 420×480, including long-error states and
+two visible list rows. The theme, type, spacing, stamp and row actions are unchanged.
 
 ### Inputs / Fields
 
