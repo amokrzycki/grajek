@@ -69,6 +69,18 @@ impl Queue {
         Ok(id)
     }
 
+    /// Appends a deterministic prefix against the latest capacity in one controller turn.
+    pub fn append(&mut self, entries: Vec<crate::playlist::Entry>) -> usize {
+        let available = QUEUE_LIMIT.saturating_sub(self.items.len());
+        let mut added = 0;
+        for entry in entries.into_iter().take(available) {
+            if self.push(entry.url, entry.title).is_ok() {
+                added += 1;
+            }
+        }
+        added
+    }
+
     pub fn title_of(&self, url: &str) -> Option<String> {
         self.items
             .iter()

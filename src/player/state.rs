@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt::Write as _, time::Duration};
 
 use crate::{
     media::TrackInfo,
@@ -72,6 +72,54 @@ impl Phase {
     }
 }
 
+/// Import feedback is independent of playback phase and errors.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ImportStatus {
+    #[default]
+    Ready,
+    Importing,
+    Cancelled,
+    Finished {
+        added: usize,
+        unavailable: usize,
+        omitted: usize,
+        limited: bool,
+    },
+    Failed(String),
+}
+
+impl ImportStatus {
+    pub fn message(&self) -> String {
+        match self {
+            Self::Ready => "Playlist import · up to 100 pending tracks".into(),
+            Self::Importing => "Importing playlist…".into(),
+            Self::Cancelled => "Import cancelled.".into(),
+            Self::Failed(message) => message.clone(),
+            Self::Finished {
+                added,
+                unavailable,
+                omitted,
+                limited,
+            } => {
+                let mut message = format!(
+                    "Imported {added} {}.",
+                    if *added == 1 { "track" } else { "tracks" }
+                );
+                if *unavailable > 0 {
+                    let _ = write!(message, " {unavailable} entries unavailable.");
+                }
+                if *omitted > 0 {
+                    let _ = write!(message, " {omitted} did not fit; queue limit 100.");
+                }
+                if *limited {
+                    message.push_str(" First 100 playlist entries checked; more may remain.");
+                }
+                message
+            }
+        }
+    }
+}
+
 /// A snapshot of everything the window shows. The controller owns the truth; the GUI
 /// only renders these and sends [`Command`]s and [`VolumeRequest`]s.
 #[derive(Clone, Debug)]
@@ -92,6 +140,7 @@ pub struct State {
     /// The newest [`VolumeRequest::seq`] the controller has handled, applied or not.
     pub volume_seq: u64,
     pub queue: Vec<QueueItem>,
+    pub import: ImportStatus,
     pub history: Vec<HistoryEntry>,
     /// A non-fatal remark from startup, such as a recovered history file.
     pub notice: Option<String>,
@@ -111,6 +160,7 @@ impl Default for State {
             volume: store::DEFAULT_VOLUME,
             volume_seq: 0,
             queue: Vec::new(),
+            import: ImportStatus::Ready,
             history: Vec::new(),
             notice: None,
         }
@@ -118,6 +168,11 @@ impl Default for State {
 }
 
 impl State {
+    pub fn can_import(&self) -> bool {
+        self.controller_ready
+            && self.import != ImportStatus::Importing
+            && self.queue.len() < crate::queue::QUEUE_LIMIT
+    }
     pub fn can_leave_voice(&self) -> bool {
         self.controller_ready
             && !matches!(
@@ -185,6 +240,8 @@ pub enum Command {
     /// Plays now, replacing the current track. The pending queue is untouched.
     Play(String),
     Enqueue(String),
+    ImportPlaylist(String),
+    CancelImport,
     Next,
     Pause,
     Resume,

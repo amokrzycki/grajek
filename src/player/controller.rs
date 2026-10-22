@@ -8,11 +8,11 @@ use tokio::{
 };
 
 use super::{
-    Backend, Command, Handle, Outcome, Phase, Preferences, RepeatMode, State, VolumeRequest,
-    volume_factor,
+    Backend, Command, Handle, ImportStatus, Outcome, Phase, Preferences, RepeatMode, State,
+    VolumeRequest, volume_factor,
 };
 use crate::{
-    config::video_url,
+    config::{playlist_url, video_url},
     discord::Health,
     media::{self, Resolved, TrackInfo},
     queue::{Full, QUEUE_LIMIT, Queue},
@@ -153,7 +153,27 @@ struct Job {
     voice_ready: bool,
 }
 
-/// One metadata subprocess at a time, independent of playback/voice jobs.
+/// The import owns its task even when the controller future is dropped abruptly.
+struct ImportJob {
+    task: JoinHandle<Result<crate::playlist::Playlist>>,
+}
+
+impl Drop for ImportJob {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn import_result(
+    job: &mut Option<ImportJob>,
+) -> Result<Result<crate::playlist::Playlist>, JoinError> {
+    match job {
+        Some(job) => (&mut job.task).await,
+        None => pending().await,
+    }
+}
+
+/// One title subprocess at a time, independent of playback and playlist import.
 struct TitleJob {
     url: String,
     ids: Vec<u64>,
@@ -217,6 +237,8 @@ pub(super) struct Controller<B: Backend> {
     rejoin_attempts: u8,
     left_voice: bool,
     title_job: Option<TitleJob>,
+    import_job: Option<ImportJob>,
+    import: ImportStatus,
 }
 
 impl<B: Backend> Controller<B> {
@@ -246,6 +268,8 @@ impl<B: Backend> Controller<B> {
             rejoin_attempts: 0,
             left_voice: false,
             title_job: None,
+            import_job: None,
+            import: ImportStatus::Ready,
         }
     }
 
@@ -269,6 +293,7 @@ impl<B: Backend> Controller<B> {
         state.volume = self.volume;
         state.volume_seq = self.volume_seq;
         state.queue = self.queue.snapshot();
+        state.import.clone_from(&self.import);
         state.history.clone_from(&self.saved.history);
         state.notice.clone_from(&self.notice);
         state
@@ -418,6 +443,76 @@ impl<B: Backend> Controller<B> {
         self.queue_changed();
     }
 
+    fn start_import(&mut self, value: &str) {
+        if self.import_job.is_some() {
+            return self.sync();
+        }
+        match playlist_url(value) {
+            Err(error) => self.import = ImportStatus::Failed(error.to_string()),
+            Ok(_) if self.queue.snapshot().len() >= QUEUE_LIMIT => {
+                self.import = ImportStatus::Failed(
+                    "Queue full (100 tracks). Remove entries and try again.".into(),
+                );
+            }
+            Ok(url) => {
+                let backend = self.backend.clone();
+                self.import_job = Some(ImportJob {
+                    task: tokio::spawn(async move { backend.playlist(url).await }),
+                });
+                self.import = ImportStatus::Importing;
+            }
+        }
+        self.sync();
+    }
+
+    async fn cancel_import(&mut self) {
+        if let Some(mut job) = self.import_job.take() {
+            job.task.abort();
+            let _ = (&mut job.task).await;
+            self.import = ImportStatus::Cancelled;
+        }
+    }
+
+    fn finish_import(&mut self, result: Result<Result<crate::playlist::Playlist>, JoinError>) {
+        if self.import_job.take().is_none() {
+            return;
+        }
+        match result {
+            Ok(Ok(playlist)) => {
+                let total = playlist.entries.len();
+                let added = self.queue.append(playlist.entries);
+                self.import = if added == 0 {
+                    ImportStatus::Failed(
+                        "Queue full (100 tracks). Remove entries and try again.".into(),
+                    )
+                } else {
+                    ImportStatus::Finished {
+                        added,
+                        unavailable: playlist.unavailable,
+                        omitted: total - added,
+                        limited: playlist.limited,
+                    }
+                };
+                if added > 0 {
+                    self.queue_changed();
+                } else {
+                    self.sync();
+                }
+            }
+            error => {
+                tracing::debug!(?error, "Playlist import failed");
+                self.import = ImportStatus::Failed(match error {
+                    Ok(Err(error)) => error.downcast_ref::<crate::playlist::Error>().map_or_else(
+                        || "Playlist unavailable. Check the public link and try again.".into(),
+                        ToString::to_string,
+                    ),
+                    _ => "Playlist import failed. Try again.".into(),
+                });
+                self.sync();
+            }
+        }
+    }
+
     async fn cancel_job(&mut self) {
         if let Some(job) = self.job.take() {
             job.task.abort();
@@ -507,8 +602,28 @@ impl<B: Backend> Controller<B> {
         }
     }
 
+    fn enqueue(&mut self, value: &str) {
+        match video_url(value) {
+            Ok(url) => {
+                let title = self.known_title(&url);
+                match self.queue.push(url, title) {
+                    Ok(_) => self.queue_changed(),
+                    Err(Full) => {
+                        self.report(format!("The queue is full ({QUEUE_LIMIT} tracks)."));
+                    }
+                }
+            }
+            Err(error) => self.report(error.to_string()),
+        }
+    }
+
     async fn command(&mut self, command: Command) {
         match command {
+            Command::ImportPlaylist(value) => self.start_import(&value),
+            Command::CancelImport => {
+                self.cancel_import().await;
+                self.sync();
+            }
             Command::LeaveVoice => self.leave_voice(true).await,
             Command::Stop => {
                 if !matches!(
@@ -538,18 +653,7 @@ impl<B: Backend> Controller<B> {
                     Err(error) => self.report(error.to_string()),
                 }
             }
-            Command::Enqueue(value) => match video_url(&value) {
-                Ok(url) => {
-                    let title = self.known_title(&url);
-                    match self.queue.push(url, title) {
-                        Ok(_) => self.queue_changed(),
-                        Err(Full) => {
-                            self.report(format!("The queue is full ({QUEUE_LIMIT} tracks)."));
-                        }
-                    }
-                }
-                Err(error) => self.report(error.to_string()),
-            },
+            Command::Enqueue(value) => self.enqueue(&value),
             Command::Next => {
                 self.failure_notice = None;
                 self.rejoin_attempts = 0;
@@ -571,6 +675,7 @@ impl<B: Backend> Controller<B> {
                 self.queue_changed();
             }
             Command::ClearQueue => {
+                self.cancel_import().await;
                 self.queue.clear();
                 self.queue_changed();
             }
@@ -1023,6 +1128,7 @@ impl<B: Backend> Controller<B> {
                     let current = health.borrow_and_update().clone();
                     self.health_changed(current).await;
                 },
+                result = import_result(&mut self.import_job) => self.finish_import(result),
                 result = title_result(&mut self.title_job) => self.finish_title(result),
                 event = job_event(&mut self.job) => match event {
                     JobEvent::Connected(reached) => {
@@ -1055,6 +1161,7 @@ impl<B: Backend> Controller<B> {
                 },
             }
         }
+        self.cancel_import().await;
         if let Some(job) = self.title_job.take() {
             job.task.abort();
             let _ = job.task.await;

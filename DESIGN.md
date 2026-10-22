@@ -260,7 +260,7 @@ line truncation, row height, actions and palette remain unchanged.
 
 ### Queue experience controls (v0.3.0)
 
-Repeat uses one 120px native button in the existing URL action row. Its explicit
+Repeat uses one 104px native small button in the existing URL action row. Its explicit
 label cycles Off, Repeat Track and Repeat Queue; active repeat uses the brass
 primary variant. Its tooltip explains cycling and the natural-completion rule.
 Remember queue: Off/On is an extra-small native ghost button beside the section
@@ -271,9 +271,27 @@ and availability come from the controller snapshot. Pause remains flexible, Stop
 64px. All controls retain full labels at 420×480, including long-error states and
 two visible list rows. The theme, type, spacing, stamp and row actions are unchanged.
 
+### Playlist import (v0.3.1)
+
+The full-width URL input serves both video and playlist links and is labelled
+“YouTube video or playlist URL”. Enter and Ctrl+Enter retain their original meanings.
+The existing 28px action row contains Repeat, Play URL, Add to queue and the explicit
+Import Playlist action. Native small sizing, compact Play/Add padding and a 4px gap
+keep the full labels visible at the minimum width. Repeat reserves 104px and import
+102px; Cancel Import uses the same slot. No additional toolbar row is added.
+
+Import feedback uses a native Status role, full accessible label and full-message
+tooltip in the existing feedback region. It is independent of the transport stamp,
+phase and playback error. With import feedback visible, the playback error clamps
+to two lines (full tooltip retained) so two list rows still fit at 420×480. Import
+states use words rather than fabricated percentages. The action returns keyboard
+focus to the URL input; external completion also rescues focus from the cancel
+control. Native disabled/hover/focus states, Signal Ledger colors and typography
+remain authoritative. No animation is introduced.
+
 ### Inputs / Fields
 
-Full-width native `Input`, surface backing, contrasting border, brass focus/caret and native selection. Preserve placeholder “Paste YouTube URL…”, accessible label “YouTube video URL”, test-support ID, submit handling and focus recovery when transport becomes unavailable.
+Full-width native `Input`, surface backing, contrasting border, brass focus/caret and native selection. Preserve placeholder “Paste YouTube URL…”, accessible label “YouTube video or playlist URL”, test-support ID, submit handling and focus recovery when transport becomes unavailable.
 
 ### Navigation
 

@@ -10,7 +10,7 @@ use gpui_kit::{
 };
 
 use super::{Pending, PlayerApp};
-use crate::player::{Command, Phase, RepeatMode, VolumeRequest, percent_from};
+use crate::player::{Command, ImportStatus, Phase, RepeatMode, VolumeRequest, percent_from};
 
 /// Volume change per arrow key; Page Up/Down move twice as far.
 const VOLUME_STEP: f32 = 5.0;
@@ -236,8 +236,9 @@ impl PlayerApp {
             .label(self.state.preferences.repeat.label())
             .accessibility_label(self.state.preferences.repeat.label())
             .when(self.state.preferences.repeat != RepeatMode::Off, ButtonVariants::primary)
+            .small()
             .h(px(28.))
-            .w(px(120.))
+            .w(px(104.))
             .disabled(!self.state.available)
             .tooltip("Change repeat: Off → Repeat Track → Repeat Queue. Successful natural completion repeats; Next and Stop bypass repeat.")
             .on_click(cx.listener(|this, _, _, _| {
@@ -255,6 +256,39 @@ impl PlayerApp {
             .on_click(cx.listener(|this, _, _, _| {
                 this.send(Command::RememberQueue(!this.state.preferences.remember_queue));
             }))
+    }
+
+    fn import_playlist(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.import_pending {
+            return;
+        }
+        let running = self.state.import == ImportStatus::Importing;
+        if !running && !self.state.can_import() {
+            return;
+        }
+        let command = if running {
+            Command::CancelImport
+        } else {
+            Command::ImportPlaylist(self.input_text(cx))
+        };
+        if self.send(command) {
+            self.import_pending = true;
+            window.focus(&self.input.read(cx).focus_handle(cx), cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn import_button(&self, cx: &Context<Self>) -> impl IntoElement {
+        let running = self.state.import == ImportStatus::Importing;
+        div().flex_none().track_focus(&self.import_focus).tab_stop(false).child(
+            Button::new("import-playlist")
+                .label(if running { "Cancel Import" } else { "Import Playlist" })
+                .accessibility_label(if running { "Cancel Import" } else { "Import Playlist" })
+                .small().w(px(102.)).h(px(28.))
+                .disabled(self.import_pending || (!running && !self.state.can_import()))
+                .tooltip(if running { "Cancel without adding any tracks" } else { "Ready to import a public YouTube playlist. Checks the first 100 entries; queue limit 100. Never starts playback." })
+                .on_click(cx.listener(|this, _, window, cx| this.import_playlist(window, cx))),
+        )
     }
 
     pub(super) fn volume_row(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {

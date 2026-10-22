@@ -87,6 +87,10 @@ impl Backend for Live {
         media::title(url).await
     }
 
+    async fn playlist(&self, url: String) -> Result<crate::playlist::Playlist> {
+        Ok(crate::playlist::extract(url).await?)
+    }
+
     async fn connect(&self) -> Result<()> {
         self.discord.connect().await
     }

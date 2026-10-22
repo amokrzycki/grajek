@@ -15,7 +15,8 @@ use crate::{
 };
 use controller::Controller;
 pub use state::{
-    Command, Phase, Preferences, RepeatMode, State, VolumeRequest, percent_from, volume_factor,
+    Command, ImportStatus, Phase, Preferences, RepeatMode, State, VolumeRequest, percent_from,
+    volume_factor,
 };
 
 /// How a track ended, as reported by its own event mailbox.
@@ -53,6 +54,10 @@ pub trait Backend: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(Self::Handle, watch::Receiver<Option<Outcome>>)>> + Send;
     /// Metadata only; must never join voice or open an audio stream.
     fn title(&self, url: String) -> impl Future<Output = Result<Option<String>>> + Send;
+    fn playlist(
+        &self,
+        url: String,
+    ) -> impl Future<Output = Result<crate::playlist::Playlist>> + Send;
     fn connect(&self) -> impl Future<Output = Result<()>> + Send;
     fn disconnect(&self) -> impl Future<Output = Result<()>> + Send;
     fn recover(&self) -> impl Future<Output = ()> + Send;

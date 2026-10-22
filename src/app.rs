@@ -43,11 +43,13 @@ pub struct PlayerApp {
     /// Tracks the Pause/Next/Stop row, to rescue keyboard focus from a control that turns off.
     controls_focus: FocusHandle,
     voice_focus: FocusHandle,
+    import_focus: FocusHandle,
     commands: mpsc::Sender<Command>,
     volume_requests: watch::Sender<VolumeRequest>,
     state: State,
     /// Prevent duplicate input while keeping the authoritative playback snapshot visible.
     pending: Option<Pending>,
+    import_pending: bool,
     /// The slider is being dragged; controller snapshots must not fight the pointer.
     dragging: bool,
     volume_seq: u64,
@@ -123,10 +125,15 @@ impl PlayerApp {
                         let lost_voice_control = this.state.can_leave_voice()
                             && !state.can_leave_voice()
                             && this.voice_focus.contains_focused(window, cx);
+                        let import_finished = this.state.import
+                            == crate::player::ImportStatus::Importing
+                            && state.import != crate::player::ImportStatus::Importing
+                            && this.import_focus.contains_focused(window, cx);
                         this.state = state;
+                        this.import_pending = false;
                         this.pending = None;
                         // Gateway loss also disables preferences outside the transport group.
-                        if lost_gateway || lost_voice_control {
+                        if lost_gateway || lost_voice_control || import_finished {
                             window.focus(&this.input.read(cx).focus_handle(cx), cx);
                         } else {
                             this.rescue_focus(before, window, cx);
@@ -146,10 +153,12 @@ impl PlayerApp {
             volume_focus: cx.focus_handle(),
             controls_focus: cx.focus_handle(),
             voice_focus: cx.focus_handle(),
+            import_focus: cx.focus_handle(),
             commands,
             volume_requests,
             state,
             pending: None,
+            import_pending: false,
             dragging: false,
             volume_seq: 0,
             volume_pending: None,
@@ -262,7 +271,7 @@ impl PlayerApp {
             .child(
                 Input::new(&self.input)
                     .id("url")
-                    .aria_label("YouTube video URL")
+                    .aria_label("YouTube video or playlist URL")
                     .w_full()
                     .h(px(32.))
                     .mb_2()
@@ -272,12 +281,14 @@ impl PlayerApp {
                 div()
                     .flex()
                     .justify_between()
-                    .gap_2()
+                    .gap_1()
                     .child(self.repeat_button(cx))
                     .child(
                         Button::new("play")
                             .primary()
                             .label("Play URL")
+                            .small()
+                            .compact()
                             .h(px(28.))
                             .disabled(self.pending.is_some() || !self.state.can_play())
                             .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))),
@@ -285,10 +296,13 @@ impl PlayerApp {
                     .child(
                         Button::new("enqueue")
                             .label("Add to queue")
+                            .small()
+                            .compact()
                             .h(px(28.))
                             .disabled(!self.state.can_enqueue())
                             .on_click(cx.listener(|this, _, _, cx| this.enqueue(cx))),
-                    ),
+                    )
+                    .child(self.import_button(cx)),
             )
     }
 
@@ -392,23 +406,51 @@ impl PlayerApp {
     /// Errors wrap and clamp to three lines instead of stretching the window.
     fn error(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let theme = cx.theme();
-        self.state.error.clone().map(|error| {
-            let tip: SharedString = error.clone().into();
+        let import_visible = self.state.import != crate::player::ImportStatus::Ready;
+        if self.state.error.is_none() && !import_visible {
+            return None;
+        }
+        let import = import_visible.then(|| self.state.import.message());
+        Some(
             div()
-                .id("error")
+                .flex()
+                .flex_col()
                 .flex_none()
-                .w_full()
-                .px_2()
-                .py_1()
-                .rounded(theme.radius)
-                .bg(theme.button_danger)
-                .text_xs()
-                .text_color(theme.danger)
-                .line_clamp(3)
-                .child(error)
-                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                .test_support()
-        })
+                .children(import.map(|message| {
+                    div()
+                        .id("import-status")
+                        .role(gpui_kit::Role::Status)
+                        .aria_label(message.clone())
+                        .flex()
+                        .text_xs()
+                        .text_color(
+                            if matches!(self.state.import, crate::player::ImportStatus::Failed(_)) {
+                                theme.danger
+                            } else {
+                                theme.muted_foreground
+                            },
+                        )
+                        .child(label("import-message", message))
+                        .test_support()
+                }))
+                .children(self.state.error.clone().map(|error| {
+                    let tip: SharedString = error.clone().into();
+                    div()
+                        .id("error")
+                        .flex_none()
+                        .w_full()
+                        .px_2()
+                        .py_1()
+                        .rounded(theme.radius)
+                        .bg(theme.button_danger)
+                        .text_xs()
+                        .text_color(theme.danger)
+                        .line_clamp(if import_visible { 2 } else { 3 })
+                        .child(error)
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                        .test_support()
+                })),
+        )
     }
 
     fn empty(id: &'static str, text: &'static str, cx: &Context<Self>) -> impl IntoElement {

@@ -9,7 +9,7 @@ Native Linux desktop (Rust / GPUI Kit 0.7.3). Impeccable's mobile/web platform e
 A user controlling a configured Discord music bot from a compact desktop window. No additional audience assumptions are confirmed.
 
 ## Product Purpose
-Paste a YouTube video URL, play it in a Discord voice channel, and manage transport, volume, upcoming tracks and recent playback without a media-library interface.
+Paste a YouTube video URL, import a public playlist into the pending queue, play it in a Discord voice channel, and manage transport, volume, upcoming tracks and recent playback without a media-library interface.
 
 ## Capabilities and Constraints
 - Existing Play URL, enqueue, Pause/Resume, Next, Stop, live volume and persisted history.
@@ -17,6 +17,9 @@ Paste a YouTube video URL, play it in a Discord voice channel, and manage transp
 - Songbird owns transient retries. At most two fresh joins may follow eligible terminal voice failures; interrupted audio requires explicit Next/Play and never restarts automatically.
 - Leave voice explicitly stops/cancels audio and automatic recovery, disconnects without clearing data, and reports teardown success or failure. Only a subsequent manual Play URL/Next reconnects.
 - New pending titles resolve through one independent metadata-only yt-dlp job at a time, with a 20-second timeout, duplicate sharing and stable-ID results. Loading/failure labels remain playable; Remember queue retains resolved titles.
+- Explicit Import Playlist uses the existing URL field; watch links with a list import the playlist, while Enter/Play URL and Ctrl+Enter/Add to queue keep single-video behavior. Pasting does nothing. Metadata-only import never joins voice, starts or interrupts audio.
+- One owned cancellable import scans the first 100 playlist entries with a 45-second subprocess deadline and bounded output. Valid video IDs/titles become one ordered batch; duplicates remain distinct. Available queue slots are recalculated at completion. Invalid/unavailable entries and known capacity omissions are reported; the scan boundary reports that more may remain without an exact fabricated count.
+- Import status is separate from playback. Cancel Import, Clear queue and shutdown invalidate pending work; Stop/Next and per-entry queue edits remain independent. Playlist titles use existing sanitization; missing titles share the existing worker. Remember queue and repeat apply normally after insertion.
 - Voice leaves after ten idle minutes; Playing, Paused and pending jobs are active. Queue and history survive, and the window stays open.
 - Controller snapshots are the truth. No optimistic playback state, simulated waveform, artwork, seeking or discovery.
 - Queue is FIFO, limited to 100 pending entries; optional Remember queue defaults off, saves pending-only canonical URLs/titles and restores without starting playback. Disabling erases the saved queue while keeping the session queue. History holds 50 unique successfully played videos.
@@ -26,7 +29,7 @@ Paste a YouTube video URL, play it in a Discord voice channel, and manage transp
 - Enter plays; Ctrl+Enter queues; Ctrl+1/2 selects Queue/History. Volume keyboard handling and focus recovery are preserved.
 - Window defaults to 520×560 and permits 420×480. Input and transport stay fixed; lists scroll.
 - Missing configuration still opens a usable window with an error and disabled playback actions. Restored queue/history edits are disabled if no controller started; local edits remain available after gateway loss with a running controller.
-- No added dependencies, remote visual assets, web rendering, backend restructuring, commit or push in this task.
+- No added crates, remote visual assets, web rendering, backend restructuring, commit or push in this task.
 
 ## Brand Commitments
 Name: Grajek. Contemporary, elegant, premium, restrained and recognizable, with warmth from the Polish name. No retro hardware skin, cartoon, music-note ornament, SaaS dashboard or streaming-service clone.
