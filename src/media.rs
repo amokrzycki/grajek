@@ -41,7 +41,7 @@ pub struct Resolved {
 
 pub const FORMAT: &str = "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=m4a]/bestaudio";
 
-pub fn ytdlp_args() -> Vec<&'static str> {
+fn extraction_args() -> Vec<&'static str> {
     vec![
         "--ignore-config",
         "--no-playlist",
@@ -55,10 +55,13 @@ pub fn ytdlp_args() -> Vec<&'static str> {
         "0",
         "--extractor-retries",
         "0",
-        "-f",
-        FORMAT,
-        "-j",
     ]
+}
+
+pub fn ytdlp_args() -> Vec<&'static str> {
+    let mut args = extraction_args();
+    args.extend(["-f", FORMAT, "-j"]);
+    args
 }
 
 pub async fn check_tools() -> Result<()> {
@@ -97,6 +100,35 @@ fn supported_deno(output: &str) -> bool {
         (Some(major), Some(minor)) => major > 2 || (major == 2 && minor >= 3),
         _ => false,
     }
+}
+
+/// Extracts display metadata only: no format selection, stream access or decoding.
+pub async fn title(url: String) -> Result<Option<String>> {
+    let output = Command::new("yt-dlp")
+        .args(title_args())
+        .arg(url)
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .context("Could not start yt-dlp.")?;
+    ensure!(output.status.success(), "yt-dlp title extraction failed");
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    Ok(TrackInfo::from_ytdlp(
+        metadata.get("title").and_then(serde_json::Value::as_str),
+        None,
+    )
+    .title)
+}
+
+fn title_args() -> Vec<&'static str> {
+    let mut args = extraction_args();
+    args.extend([
+        "--skip-download",
+        "--ignore-no-formats-error",
+        "--dump-single-json",
+    ]);
+    args
 }
 
 pub async fn resolve(client: reqwest::Client, url: String) -> Result<Resolved> {
@@ -169,6 +201,23 @@ mod tests {
     use anyhow::{Context, Result, ensure};
     use std::time::Duration;
     use tokio::time::timeout;
+
+    #[test]
+    fn title_extraction_is_metadata_only() {
+        let args = super::title_args();
+        for arg in [
+            "--ignore-config",
+            "--no-playlist",
+            "--skip-download",
+            "--ignore-no-formats-error",
+            "--dump-single-json",
+            "--retries",
+        ] {
+            assert!(args.contains(&arg));
+        }
+        assert!(!args.contains(&"-f"));
+        assert!(super::ytdlp_args().contains(&super::FORMAT));
+    }
 
     #[test]
     fn checks_minimum_deno_version() {

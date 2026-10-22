@@ -354,23 +354,31 @@ impl Discord {
     }
 
     pub async fn disconnect(&self) -> Result<()> {
-        // Invalidate callbacks before removing the call, including its late gateway leave.
+        // Invalidate callbacks before teardown, but keep the last confirmed voice state.
         self.health_tx.send_modify(|health| {
             health.voice_epoch = health.voice_epoch.wrapping_add(1);
             health.voice_requested = false;
             health.voice_session = None;
-            health.voice = false;
             health.voice_retry = false;
             health.voice_error = None;
         });
-        if self.manager.get(self.guild).is_none() {
-            return Ok(());
-        }
-        timeout(Duration::from_secs(3), self.manager.remove(self.guild))
-            .await
-            .context("Leaving Discord voice timed out. Press Play URL to reconnect.")?
-            .context("Could not leave Discord voice. Check the network.")?;
-        Ok(())
+        let result = if self.manager.get(self.guild).is_none() {
+            Ok(())
+        } else {
+            timeout(Duration::from_secs(3), self.manager.remove(self.guild))
+                .await
+                .context("Leaving Discord voice timed out. Try Leave voice again.")
+                .and_then(|result| {
+                    result.context("Could not leave Discord voice. Check the network.")
+                })
+        };
+        self.health_tx.send_modify(|health| {
+            if result.is_ok() {
+                health.voice = false;
+            }
+            health.voice_error = result.as_ref().err().map(ToString::to_string);
+        });
+        result
     }
 
     pub async fn reset_incomplete_connection(&self) {

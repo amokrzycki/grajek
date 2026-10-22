@@ -246,6 +246,18 @@ Precise native actions with deliberate priority. Keep `Button`, theme variants, 
 - Row actions are always-visible 24px native ghost icon buttons with tooltip and explicit accessible label. First/last queue moves retain disabled logic.
 - Clear queue/history are extra-small ghost buttons. History retains two-step confirmation, danger “Yes, clear” and separate Cancel.
 
+### Header voice control and pending metadata
+
+Leave voice is a small native neutral button beside the truncated connection
+status, with an explicit accessible label and explanatory tooltip. It stops audio
+and leaves voice while preserving pending entries; Stop only stops audio. Native
+Tab/Space handling remains, and disabling the focused control returns focus to
+the URL input. The header adds no vertical row and fits both supported sizes.
+Disconnecting shows “Leaving voice…” until the backend finishes; failures keep
+an error and permit retry. Pending rows show “Loading title…” or “Title
+unavailable”, with a full-title or explanatory URL tooltip. The existing single
+line truncation, row height, actions and palette remain unchanged.
+
 ### Queue experience controls (v0.3.0)
 
 Repeat uses one 120px native button in the existing URL action row. Its explicit

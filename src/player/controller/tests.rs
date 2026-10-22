@@ -4,7 +4,7 @@ use anyhow::{Result, bail, ensure};
 use songbird::tracks::ControlError;
 use std::future::Future;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         Mutex, PoisonError,
         atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
@@ -105,6 +105,9 @@ struct Fake {
     failing: Mutex<HashSet<String>>,
     play_failing: Mutex<HashSet<String>>,
     disconnect_hung: AtomicBool,
+    disconnect_failing: AtomicBool,
+    title_requests: Mutex<Vec<String>>,
+    title_replies: Mutex<HashMap<String, oneshot::Receiver<Result<Option<String>>>>>,
     running: AtomicUsize,
     max_running: AtomicUsize,
     cancelled: AtomicUsize,
@@ -129,6 +132,9 @@ impl Fake {
             failing: Mutex::default(),
             play_failing: Mutex::default(),
             disconnect_hung: AtomicBool::new(false),
+            disconnect_failing: AtomicBool::new(false),
+            title_requests: Mutex::default(),
+            title_replies: Mutex::default(),
             running: AtomicUsize::new(0),
             max_running: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
@@ -138,6 +144,20 @@ impl Fake {
             disconnects: AtomicUsize::new(0),
             connect_mode: AtomicUsize::new(0),
         })
+    }
+    fn title_reply(&self, url: &str) -> oneshot::Sender<Result<Option<String>>> {
+        let (sender, receiver) = oneshot::channel();
+        self.title_replies
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(url.into(), receiver);
+        sender
+    }
+    fn title_requests(&self) -> Vec<String> {
+        self.title_requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
     fn hang(&self, url: &str) {
         self.hung
@@ -260,6 +280,21 @@ impl Backend for Fake {
             .push(track.clone());
         std::future::ready(Ok((FakeHandle(track), mailbox)))
     }
+    async fn title(&self, url: String) -> Result<Option<String>> {
+        self.title_requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(url.clone());
+        let reply = self
+            .title_replies
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&url);
+        match reply {
+            Some(reply) => reply.await?,
+            None => Ok(None),
+        }
+    }
     async fn connect(&self) -> Result<()> {
         self.connects.fetch_add(1, SeqCst);
         match self.connect_mode.load(SeqCst) {
@@ -282,14 +317,17 @@ impl Backend for Fake {
     }
     async fn disconnect(&self) -> Result<()> {
         self.disconnects.fetch_add(1, SeqCst);
+        if self.disconnect_hung.load(SeqCst) {
+            pending::<()>().await;
+        }
+        if self.disconnect_failing.load(SeqCst) {
+            bail!("Discord teardown failed");
+        }
         self.health.send_modify(|health| {
             health.voice = false;
             health.voice_error = None;
             health.voice_retry = false;
         });
-        if self.disconnect_hung.load(SeqCst) {
-            pending::<()>().await;
-        }
         Ok(())
     }
     async fn recover(&self) {}
@@ -480,6 +518,7 @@ fn next_needs_a_queued_track_and_a_settled_player() {
     assert!(!value.can_next(), "empty queue");
     value.queue = vec![QueueItem {
         id: 0,
+        title_unavailable: false,
         url: A.into(),
         title: None,
     }];
@@ -1755,16 +1794,21 @@ async fn a_terminal_event_cancels_pending_voice_recovery() -> Result<()> {
 
 #[tokio::test(start_paused = true)]
 async fn play_during_idle_leave_cancels_the_leave_and_starts_normally() -> Result<()> {
-    let mut rig = Rig::new().await?;
+    let rig = Rig::new().await?;
     rig.enqueue(B).await?;
     rig.fake.disconnect_hung.store(true, SeqCst);
     tokio::time::advance(IDLE_TIMEOUT).await;
-    rig.until(|s| !s.voice_connected).await?;
+    eventually(|| rig.fake.disconnects.load(SeqCst) == 1).await?;
+    assert!(rig.state().voice_connected);
     rig.play(A).await?;
     rig.started(1).await?;
     assert_eq!(rig.fake.requests(), [A]);
     assert_eq!(rig.queued(), [B]);
-    assert_eq!(rig.fake.connects.load(SeqCst), 1);
+    assert_eq!(
+        rig.fake.connects.load(SeqCst),
+        0,
+        "cancelled teardown kept voice connected"
+    );
     Ok(())
 }
 
@@ -2136,4 +2180,414 @@ async fn queue_repeat_direct_singleton_and_clear_have_explicit_completion_semant
     rig.until(|s| s.phase == Phase::Ready).await?;
     assert_eq!(rig.queued().len(), 0);
     Ok(())
+}
+
+// ---- queue metadata and explicit leave --------------------------------------------
+
+#[tokio::test]
+async fn fresh_queue_metadata_is_async_shared_and_persisted_without_playback() -> Result<()> {
+    let mut rig = Rig::start(Saved {
+        remember_queue: true,
+        ..Saved::default()
+    });
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    rig.fake.health.send_modify(|health| health.voice = false);
+    let reply = rig.fake.title_reply(A);
+    rig.enqueue("https://youtu.be/aaaaaaaaaaa?t=10").await?;
+    rig.enqueue(A).await?;
+    let pending = rig.until(|s| s.queue.len() == 2).await?;
+    assert!(
+        pending
+            .queue
+            .iter()
+            .all(|item| item.label() == "Loading title…")
+    );
+    let ids: Vec<_> = pending.queue.iter().map(|item| item.id).collect();
+    eventually(|| rig.fake.title_requests() == [A]).await?;
+    reply
+        .send(Ok(Some("  Żółć Привет 🎵  ".into())))
+        .map_err(|_| anyhow::anyhow!("metadata cancelled"))?;
+    let state = rig
+        .until(|s| s.queue.iter().all(|item| item.title.is_some()))
+        .await?;
+    assert_eq!(
+        state.queue.iter().map(|item| item.id).collect::<Vec<_>>(),
+        ids
+    );
+    assert!(
+        state
+            .queue
+            .iter()
+            .all(|item| item.label() == "Żółć Привет 🎵")
+    );
+    assert_eq!(rig.fake.requests(), Vec::<String>::new());
+    assert_eq!(rig.fake.connects.load(SeqCst), 0);
+    assert_eq!(rig.fake.started(), 0);
+    let saved: Saved = serde_json::from_str(&serde_json::to_string(&*rig.saves.borrow())?)?;
+    let mut restored = Rig::start(saved);
+    restored.until(|s| s.phase == Phase::Ready).await?;
+    assert_eq!(restored.state().queue[0].label(), "Żółć Привет 🎵");
+    assert_eq!(restored.fake.title_requests(), Vec::<String>::new());
+    rig.enqueue(A).await?;
+    rig.until(|s| s.queue.len() == 3).await?;
+    assert_eq!(rig.fake.title_requests(), [A]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn history_and_restored_queue_titles_avoid_lookup() -> Result<()> {
+    let mut rig = Rig::start(Saved {
+        remember_queue: true,
+        history: vec![HistoryEntry {
+            url: A.into(),
+            title: Some("Known history".into()),
+            duration_secs: None,
+        }],
+        queue: vec![SavedQueueItem {
+            url: B.into(),
+            title: Some("Known queue".into()),
+        }],
+        ..Saved::default()
+    });
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    rig.enqueue(A).await?;
+    rig.enqueue(B).await?;
+    rig.until(|s| s.queue.len() == 3).await?;
+    assert_eq!(rig.state().queue[1].label(), "Known history");
+    assert_eq!(rig.state().queue[2].label(), "Known queue");
+    assert_eq!(rig.fake.title_requests(), Vec::<String>::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_or_missing_metadata_keeps_queue_and_playback_usable() -> Result<()> {
+    for result in [
+        Ok(None),
+        Err(anyhow::anyhow!("private video: raw diagnostics")),
+    ] {
+        let mut rig = Rig::new().await?;
+        let reply = rig.fake.title_reply(A);
+        rig.enqueue(A).await?;
+        eventually(|| !rig.fake.title_requests().is_empty()).await?;
+        reply
+            .send(result)
+            .map_err(|_| anyhow::anyhow!("metadata cancelled"))?;
+        let state = rig
+            .until(|s| s.queue.first().is_some_and(|item| item.title_unavailable))
+            .await?;
+        assert_eq!(state.queue[0].label(), "Title unavailable");
+        assert!(state.error.is_none());
+        rig.send(Command::Next).await?;
+        rig.started(1).await?;
+        assert_eq!(rig.fake.track(0)?.title, A);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn metadata_targets_survive_reordering_and_cancel_on_removal_or_clear() -> Result<()> {
+    for clear in [false, true] {
+        let mut rig = Rig::new().await?;
+        let mut old_reply = rig.fake.title_reply(A);
+        let reply_b = rig.fake.title_reply(B);
+        rig.enqueue(A).await?;
+        rig.enqueue(B).await?;
+        let state = rig.until(|s| s.queue.len() == 2).await?;
+        let first = state.queue[0].id;
+        rig.send(Command::Shift {
+            id: first,
+            up: false,
+        })
+        .await?;
+        rig.until(|s| s.queue[0].url == B).await?;
+        assert_eq!(rig.fake.title_requests(), [A], "one lookup at a time");
+        rig.send(if clear {
+            Command::ClearQueue
+        } else {
+            Command::Dequeue(first)
+        })
+        .await?;
+        timeout(Duration::from_secs(5), old_reply.closed()).await?;
+        assert!(old_reply.send(Ok(Some("Stale title".into()))).is_err());
+        if clear {
+            rig.until(|s| s.queue.is_empty()).await?;
+            rig.enqueue(B).await?;
+        }
+        eventually(|| rig.fake.title_requests() == [A, B]).await?;
+        reply_b
+            .send(Ok(Some("Correct B".into())))
+            .map_err(|_| anyhow::anyhow!("metadata cancelled"))?;
+        rig.until(|s| {
+            s.queue
+                .first()
+                .is_some_and(|item| item.label() == "Correct B")
+        })
+        .await?;
+        let reply_a = rig.fake.title_reply(A);
+        rig.enqueue(A).await?;
+        eventually(|| rig.fake.title_requests() == [A, B, A]).await?;
+        reply_a
+            .send(Ok(Some("New A".into())))
+            .map_err(|_| anyhow::anyhow!("metadata cancelled"))?;
+        let state = rig
+            .until(|s| s.queue.len() == 2 && s.queue[1].title.is_some())
+            .await?;
+        assert_ne!(state.queue[1].id, first);
+        assert_eq!(state.queue[1].label(), "New A");
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn metadata_timeout_and_shutdown_cancel_the_independent_job() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    let mut reply = rig.fake.title_reply(A);
+    rig.enqueue(A).await?;
+    eventually(|| !rig.fake.title_requests().is_empty()).await?;
+    tokio::time::advance(TITLE_TIMEOUT).await;
+    rig.until(|s| s.queue[0].title_unavailable).await?;
+    assert!(reply.is_closed());
+    let mut reply_b = rig.fake.title_reply(B);
+    rig.enqueue(B).await?;
+    eventually(|| rig.fake.title_requests() == [A, B]).await?;
+    rig.shutdown.send_replace(true);
+    timeout(Duration::from_secs(5), &mut rig.task).await??;
+    assert!(reply_b.is_closed());
+    // closed() also proves the sender cannot deliver into an orphaned worker.
+    reply.closed().await;
+    reply_b.closed().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn full_duplicate_queue_shares_one_lookup_and_rejects_extra_work() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    let reply = rig.fake.title_reply(A);
+    for _ in 0..QUEUE_LIMIT {
+        rig.enqueue(A).await?;
+    }
+    rig.until(|s| s.queue.len() == QUEUE_LIMIT).await?;
+    rig.enqueue(B).await?;
+    rig.until(|s| {
+        s.error
+            .as_deref()
+            .is_some_and(|error| error.contains("full"))
+    })
+    .await?;
+    assert_eq!(rig.fake.title_requests(), [A]);
+    reply
+        .send(Ok(Some("Shared".into())))
+        .map_err(|_| anyhow::anyhow!("metadata cancelled"))?;
+    rig.until(|s| s.queue.iter().all(|item| item.label() == "Shared"))
+        .await?;
+    assert_eq!(rig.state().queue.len(), QUEUE_LIMIT);
+    assert_eq!(rig.fake.title_requests(), [A]);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn leave_voice_stops_active_or_pending_audio_and_explicit_actions_reconnect() -> Result<()> {
+    for phase in [
+        Phase::Playing,
+        Phase::Paused,
+        Phase::Resolving,
+        Phase::Connecting,
+    ] {
+        let mut rig = Rig::start(Saved {
+            volume: 37,
+            repeat: RepeatMode::Queue,
+            continue_on_error: true,
+            ..Saved::default()
+        });
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        rig.enqueue(B).await?;
+        if phase == Phase::Connecting {
+            rig.fake.health.send_modify(|health| health.voice = false);
+            rig.fake.connect_mode.store(2, SeqCst);
+        } else if phase == Phase::Resolving {
+            rig.fake.hang(A);
+        }
+        rig.play(A).await?;
+        if matches!(phase, Phase::Playing | Phase::Paused) {
+            rig.started(1).await?;
+            rig.fake.track(0)?.advance(1);
+            rig.until(|s| s.phase == Phase::Playing).await?;
+            if phase == Phase::Paused {
+                rig.send(Command::Pause).await?;
+            }
+        }
+        rig.until(|s| s.phase == phase).await?;
+        let history = rig.state().history;
+        rig.send(Command::LeaveVoice).await?;
+        let state = rig
+            .until(|s| s.phase == Phase::Ready && !s.voice_connected)
+            .await?;
+        assert_eq!(rig.queued(), [B]);
+        assert_eq!(state.history, history);
+        assert_eq!(state.volume, 37);
+        assert_eq!(state.preferences.repeat, RepeatMode::Queue);
+        assert!(state.preferences.continue_on_error);
+        if matches!(phase, Phase::Playing | Phase::Paused) {
+            assert!(rig.fake.track(0)?.stopped.load(SeqCst));
+            rig.fake.track(0)?.end(); // Stale end must never advance/repeat.
+        } else {
+            assert_eq!(rig.fake.cancelled.load(SeqCst), 1);
+        }
+        let requests = rig.fake.requests();
+        tokio::time::advance(Duration::from_secs(120)).await;
+        rig.settle().await;
+        assert_eq!(rig.fake.requests(), requests);
+        let connects = rig.fake.connects.load(SeqCst);
+        rig.fake.connect_mode.store(0, SeqCst);
+        let before = rig.fake.started();
+        rig.send(if phase == Phase::Paused {
+            Command::Play(C.into())
+        } else {
+            Command::Next
+        })
+        .await?;
+        rig.started(before + 1).await?;
+        assert_eq!(rig.fake.connects.load(SeqCst), connects + 1);
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn leave_cancels_scheduled_skip_rejoin_and_inflight_rejoin() -> Result<()> {
+    for recovery in 0..3 {
+        let mut rig = Rig::start(Saved {
+            continue_on_error: true,
+            ..Saved::default()
+        });
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        rig.enqueue(A).await?;
+        rig.enqueue(B).await?;
+        if recovery == 0 {
+            rig.fake.fail(A);
+            rig.send(Command::Next).await?;
+        } else {
+            rig.fake.health.send_modify(|health| {
+                health.voice = false;
+                health.voice_retry = true;
+                health.voice_error = Some("Transient voice failure".into());
+            });
+        }
+        rig.until(|s| s.phase == Phase::Error).await?;
+        if recovery == 2 {
+            rig.fake.connect_mode.store(2, SeqCst);
+            tokio::time::advance(Duration::from_secs(1)).await;
+            eventually(|| rig.fake.connects.load(SeqCst) == 1).await?;
+        }
+        rig.send(Command::LeaveVoice).await?;
+        rig.until(|s| s.phase == Phase::Ready && !s.voice_connected)
+            .await?;
+        lose_voice(&rig.fake, true); // A late callback cannot restart recovery after leave.
+        let requests = rig.fake.requests();
+        let connects = rig.fake.connects.load(SeqCst);
+        tokio::time::advance(Duration::from_secs(120)).await;
+        rig.settle().await;
+        assert!(rig.state().error.is_none());
+        assert_eq!(rig.fake.requests(), requests);
+        assert_eq!(rig.fake.connects.load(SeqCst), connects);
+        assert_ne!(rig.queued(), Vec::<String>::new());
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn disconnect_failure_or_timeout_never_claims_idle_and_can_be_retried() -> Result<()> {
+    for hung in [false, true] {
+        let mut rig = Rig::new().await?;
+        rig.fake.disconnect_failing.store(!hung, SeqCst);
+        rig.fake.disconnect_hung.store(hung, SeqCst);
+        rig.send(Command::LeaveVoice).await?;
+        if hung {
+            let state = rig.until(|s| s.phase == Phase::Disconnecting).await?;
+            assert!(state.voice_connected);
+            assert!(!state.can_play() && !state.can_next() && !state.can_leave_voice());
+            tokio::time::advance(Duration::from_secs(5)).await;
+        }
+        let state = rig.until(|s| s.phase == Phase::Error).await?;
+        assert!(state.voice_connected && state.can_leave_voice());
+        assert!(
+            state
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("Could not leave"))
+        );
+        tokio::time::advance(IDLE_TIMEOUT * 2).await;
+        rig.settle().await;
+        assert_eq!(rig.fake.disconnects.load(SeqCst), 1);
+        rig.fake.disconnect_failing.store(false, SeqCst);
+        rig.fake.disconnect_hung.store(false, SeqCst);
+        rig.send(Command::LeaveVoice).await?;
+        rig.until(|s| s.phase == Phase::Ready && !s.voice_connected)
+            .await?;
+        rig.send(Command::LeaveVoice).await?; // Already idle remains safe.
+        rig.until(|s| s.phase == Phase::Ready && !s.voice_connected)
+            .await?;
+        assert_eq!(rig.fake.requests(), Vec::<String>::new());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn slow_title_lookup_remains_independent_of_play_and_stop() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    let reply = rig.fake.title_reply(A);
+    rig.enqueue(A).await?;
+    eventually(|| rig.fake.title_requests() == [A]).await?;
+    rig.play(C).await?;
+    rig.started(1).await?;
+    assert!(!reply.is_closed());
+    rig.send(Command::Stop).await?;
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    assert!(!reply.is_closed());
+    reply
+        .send(Ok(Some("Still queued".into())))
+        .map_err(|_| anyhow::anyhow!("metadata cancelled"))?;
+    rig.until(|s| {
+        s.queue
+            .first()
+            .is_some_and(|item| item.label() == "Still queued")
+    })
+    .await?;
+    assert_eq!(rig.fake.requests(), [C]);
+    assert_eq!(rig.queued(), [A]);
+    Ok(())
+}
+
+#[test]
+fn leave_voice_availability_follows_session_and_controller_state() {
+    let mut state = State {
+        available: true,
+        controller_ready: true,
+        ..State::default()
+    };
+    for phase in [
+        Phase::Connecting,
+        Phase::Resolving,
+        Phase::Playing,
+        Phase::Paused,
+        Phase::Error,
+        Phase::Ready,
+    ] {
+        state.phase = phase;
+        state.voice_connected = true;
+        assert!(state.can_leave_voice(), "{phase:?}");
+    }
+    for phase in [Phase::Initializing, Phase::Stopping, Phase::Disconnecting] {
+        state.phase = phase;
+        assert!(!state.can_leave_voice(), "{phase:?}");
+    }
+    state.phase = Phase::Ready;
+    state.voice_connected = false;
+    assert!(!state.can_leave_voice());
+    state.phase = Phase::Resolving;
+    assert!(
+        state.can_leave_voice(),
+        "pending preparation can be cancelled"
+    );
+    state.controller_ready = false;
+    assert!(!state.can_leave_voice());
 }

@@ -45,6 +45,28 @@ impl PlayerApp {
         }
     }
 
+    fn leave_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.pending, Some(Pending::Leave)) || !self.state.can_leave_voice() {
+            return;
+        }
+        if self.send(Command::LeaveVoice) {
+            self.pending = Some(Pending::Leave);
+            window.focus(&self.input.read(cx).focus_handle(cx), cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn leave_button(&self, cx: &Context<Self>) -> impl IntoElement {
+        Button::new("leave-voice")
+            .label("Leave voice")
+            .accessibility_label("Leave voice")
+            .small()
+            .flex_none()
+            .disabled(matches!(self.pending, Some(Pending::Leave)) || !self.state.can_leave_voice())
+            .tooltip("Stop playback and leave Discord voice. Keeps the queue; Play URL or Play Queue reconnects.")
+            .on_click(cx.listener(|this, _, window, cx| this.leave_voice(window, cx)))
+    }
+
     fn stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.controls_enabled();
         if self.controls_enabled()[2] && self.send(Command::Stop) {
@@ -138,7 +160,7 @@ impl PlayerApp {
         [
             self.pending.is_none() && (self.state.can_pause() || self.state.can_resume()),
             self.pending.is_none() && self.state.can_next(),
-            !matches!(self.pending, Some(Pending::Stop))
+            !matches!(self.pending, Some(Pending::Stop | Pending::Leave))
                 && (self.state.can_stop()
                     || matches!(self.pending, Some(Pending::Play | Pending::Next))),
         ]

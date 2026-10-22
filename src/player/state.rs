@@ -52,6 +52,7 @@ pub enum Phase {
     Playing,
     Paused,
     Stopping,
+    Disconnecting,
     Error,
 }
 
@@ -65,6 +66,7 @@ impl Phase {
             Self::Playing => "Playing",
             Self::Paused => "Paused",
             Self::Stopping => "Stopping…",
+            Self::Disconnecting => "Leaving voice…",
             Self::Error => "Error",
         }
     }
@@ -116,6 +118,16 @@ impl Default for State {
 }
 
 impl State {
+    pub fn can_leave_voice(&self) -> bool {
+        self.controller_ready
+            && !matches!(
+                self.phase,
+                Phase::Initializing | Phase::Stopping | Phase::Disconnecting
+            )
+            && (self.voice_connected
+                || matches!(self.phase, Phase::Connecting | Phase::Resolving)
+                || self.available && self.phase == Phase::Error)
+    }
     pub fn can_play(&self) -> bool {
         self.available
             && matches!(
@@ -138,7 +150,10 @@ impl State {
     pub fn can_next(&self) -> bool {
         self.available
             && !self.queue.is_empty()
-            && !matches!(self.phase, Phase::Initializing | Phase::Stopping)
+            && !matches!(
+                self.phase,
+                Phase::Initializing | Phase::Stopping | Phase::Disconnecting
+            )
     }
     /// The transport action's idle label comes from the same authoritative snapshot.
     pub fn next_label(&self) -> &'static str {
@@ -174,6 +189,7 @@ pub enum Command {
     Pause,
     Resume,
     Stop,
+    LeaveVoice,
     Dequeue(u64),
     Shift {
         id: u64,

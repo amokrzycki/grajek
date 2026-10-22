@@ -3,7 +3,7 @@
 A compact native Rust desktop music controller: paste a YouTube video URL, press
 **Play URL** (or Enter), and broadcast one audio stream to a configured Discord
 voice channel. The window shows the track title and elapsed time, and offers
-**Pause / Resume**, **Next** and **Stop**, a **volume** slider, an optionally remembered
+**Pause / Resume**, **Next**, **Stop** and **Leave voice**, a **volume** slider, an optionally remembered
 **queue** and a persistent **history**. Another Play URL replaces the current
 track, even while paused; Stop cancels pending work and stops playback in both
 Playing and Paused states. The bot stays connected for up to ten idle minutes
@@ -62,11 +62,16 @@ History tab and the log, and Grajek starts empty. Entries that are not valid
 video URLs are dropped on load. Nothing is stored in the repository, `.env` or
 the working directory.
 
-**Queue.** A FIFO of at most 100 pending entries (canonical URL plus a
-title if History already knows it, otherwise the video ID). **Remember queue**
-optionally saves pending entries; it defaults to Off. Nothing is resolved or
-downloaded when an entry is added. The controller owns
-the only copy; the window renders snapshots. Exact semantics:
+**Queue.** A FIFO of at most 100 pending entries (canonical URL plus a known
+title). Titles from History, the pending queue or current track are reused. New
+titles load asynchronously through a metadata-only yt-dlp request, independently
+of playback. One title lookup runs at a time with a 20-second timeout; duplicate
+pending URLs share it. Rows show “Loading title…” while waiting, then the title
+or “Title unavailable” with an explanatory tooltip. Lookup failure never
+prevents playback. No audio is downloaded or decoded and voice is not joined
+when an entry is added. **Remember queue** optionally saves pending entries and
+resolved titles; it defaults to Off. The controller owns the only copy; the
+window renders snapshots. Exact semantics:
 
 - **Play URL** plays immediately, replacing the active or paused track, and
   leaves the queue alone. Invalid input never interrupts the current track.
@@ -76,9 +81,14 @@ the only copy; the window renders snapshots. Exact semantics:
   once); with an empty queue the player returns to Ready. Repeat modes are below.
 - **Next** cancels the current track or any request in progress and starts the
   first queued entry; while idle the same button reads **Play Queue**. It is
-  disabled when nothing is queued. Only one extraction ever runs; each Next cancels the previous request.
+  disabled when nothing is queued. Only one audio preparation runs; each Next cancels the previous request. Queue title lookup is separate.
 - **Stop** cancels pending work and the active track, keeps the queue, never
   advances, and starts the ten-minute idle period.
+- **Leave voice**, beside the header connection status, cancels preparation,
+  playback and automatic recovery, then disconnects. It keeps the queue, history,
+  repeat preferences and volume. “Leaving voice…” remains until teardown finishes;
+  failures are reported and can be retried. It never automatically rejoins after
+  an intentional leave; a later **Play URL** or **Play Queue** reconnects.
 - **Pause / Resume** affect only the active track and never advance the queue.
 - **Failure** (yt-dlp, stream or decode) shows the error and keeps the remaining
   queue. By default it does not advance or retry. With **Continue on error**

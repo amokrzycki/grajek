@@ -15,6 +15,8 @@ Paste a YouTube video URL, play it in a Discord voice channel, and manage transp
 - Existing Play URL, enqueue, Pause/Resume, Next, Stop, live volume and persisted history.
 - Opt-in, persisted Continue on error skips queued media failures only, with a one-second cancellable delay and a three-failure limit; only actual playback resets that limit.
 - Songbird owns transient retries. At most two fresh joins may follow eligible terminal voice failures; interrupted audio requires explicit Next/Play and never restarts automatically.
+- Leave voice explicitly stops/cancels audio and automatic recovery, disconnects without clearing data, and reports teardown success or failure. Only a subsequent manual Play URL/Next reconnects.
+- New pending titles resolve through one independent metadata-only yt-dlp job at a time, with a 20-second timeout, duplicate sharing and stable-ID results. Loading/failure labels remain playable; Remember queue retains resolved titles.
 - Voice leaves after ten idle minutes; Playing, Paused and pending jobs are active. Queue and history survive, and the window stays open.
 - Controller snapshots are the truth. No optimistic playback state, simulated waveform, artwork, seeking or discovery.
 - Queue is FIFO, limited to 100 pending entries; optional Remember queue defaults off, saves pending-only canonical URLs/titles and restores without starting playback. Disabling erases the saved queue while keeping the session queue. History holds 50 unique successfully played videos.

@@ -333,6 +333,7 @@ fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut Te
 fn queue_item(id: u64) -> QueueItem {
     QueueItem {
         id,
+        title_unavailable: false,
         url: format!("https://www.youtube.com/watch?v={id:0>11}"),
         title: Some(format!("Queued {id}")),
     }
@@ -936,6 +937,7 @@ fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
             Phase::Playing,
             Phase::Paused,
             Phase::Stopping,
+            Phase::Disconnecting,
             Phase::Error,
         ] {
             let mut initial = with_lists(phase, 3, 3);
@@ -957,6 +959,8 @@ fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
                 "remember-queue",
                 "continue-on-error",
                 "queue-clear",
+                "leave-voice",
+                "voice-status",
             ] {
                 let control = bounds(cx, window, id);
                 assert!(
@@ -1162,5 +1166,104 @@ fn keyboard_can_leave_a_preference_disabled_by_gateway_loss(cx: &mut TestAppCont
             Some(true),
             "{id}: Tab returns to the only enabled input"
         );
+    }
+}
+
+#[gpui_kit::test]
+fn leave_voice_is_native_keyboard_accessible_and_waits_for_controller(cx: &mut TestAppContext) {
+    let initial = State {
+        voice_connected: true,
+        ..playing(Phase::Paused, Some("Żółć Привет 🎵"), 12)
+    };
+    let (window, view, mut received, states) = open(cx, initial.clone());
+    assert_eq!(
+        button(cx, window, "leave-voice"),
+        ("Leave voice".into(), false)
+    );
+    for _ in 0..20 {
+        if cx
+            .update_window(window, |_, window, _| window.find("leave-voice").focused())
+            .ok()
+            .flatten()
+            == Some(true)
+        {
+            break;
+        }
+        act(cx, window, |window, cx| window.press("tab", cx));
+    }
+    assert_eq!(
+        cx.update_window(window, |_, window, _| window.find("leave-voice").focused())
+            .ok()
+            .flatten(),
+        Some(true)
+    );
+    act(cx, window, |window, cx| window.press("space", cx));
+    assert!(matches!(received.try_recv(), Ok(Command::LeaveVoice)));
+    click(cx, window, "leave-voice");
+    assert!(received.try_recv().is_err());
+    cx.update(|cx| {
+        assert!(view.read(cx).state.voice_connected);
+        assert_eq!(view.read(cx).state.phase, Phase::Paused);
+    });
+    assert_eq!(
+        cx.update_window(window, |_, window, cx| view
+            .read(cx)
+            .input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window))
+            .ok(),
+        Some(true)
+    );
+    for phase in [Phase::Disconnecting, Phase::Ready] {
+        states.send_replace(State {
+            phase,
+            voice_connected: phase == Phase::Disconnecting,
+            ..initial.clone()
+        });
+        cx.run_until_parked();
+        assert!(button(cx, window, "leave-voice").1);
+        click(cx, window, "leave-voice");
+        assert!(received.try_recv().is_err());
+    }
+}
+
+#[gpui_kit::test]
+fn queue_metadata_states_and_unicode_keep_row_actions_visible(cx: &mut TestAppContext) {
+    for (width, height) in [(420., 480.), (520., 560.)] {
+        for title in [
+            None,
+            Some("Żółć Привет 🎵".repeat(30)),
+            Some("x".repeat(300)),
+        ] {
+            for failed in [false, true] {
+                let mut initial = with_lists(Phase::Playing, 3, 0);
+                initial.voice_connected = true;
+                initial.queue[0].title = title.clone();
+                initial.queue[0].title_unavailable = failed;
+                let ((window, _, _, _), _) = open_at(cx, initial, width, height);
+                let row = bounds(cx, window, ("queue-row", 10_u64));
+                let title = bounds(cx, window, ("queue-title", 10_u64));
+                let up = bounds(cx, window, ("queue-up", 10_u64));
+                let down = bounds(cx, window, ("queue-down", 10_u64));
+                let remove = bounds(cx, window, ("queue-remove", 10_u64));
+                assert!(
+                    title.right() <= up.left()
+                        && up.right() <= down.left()
+                        && down.right() <= remove.left()
+                );
+                assert!(remove.right() <= row.right() && row.right() <= px(width));
+                assert!(title.size.width > px(100.));
+                assert!(button(cx, window, ("queue-up", 10_u64)).1);
+                assert!(button(cx, window, ("queue-down", 12_u64)).1);
+                let voice = bounds(cx, window, "voice-status");
+                let leave = bounds(cx, window, "leave-voice");
+                assert!(
+                    voice.right() <= leave.left() && leave.right() <= row.right(),
+                    "width={width} voice={voice:?} leave={leave:?}"
+                );
+                assert_eq!(button(cx, window, "leave-voice").0, "Leave voice");
+            }
+        }
     }
 }

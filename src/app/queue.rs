@@ -7,7 +7,7 @@ use gpui_kit::{
     Context, InteractiveElement, IntoElement, ParentElement, Styled, TestSupportExt, div, px,
 };
 
-use super::{PlayerApp, label};
+use super::{PlayerApp, label_with_tooltip};
 use crate::{
     player::Command,
     queue::{QUEUE_LIMIT, QueueItem},
@@ -55,7 +55,20 @@ impl PlayerApp {
                     .text_color(theme.muted_foreground)
                     .child(format!("{:02}", position + 1)),
             )
-            .child(label(("queue-title", id), item.label().to_owned()))
+            .child(label_with_tooltip(
+                ("queue-title", id),
+                item.label().to_owned(),
+                item.title.clone().unwrap_or_else(|| {
+                    if item.title_unavailable {
+                        format!(
+                            "Could not load the title. Playback can still be attempted. {}",
+                            item.url
+                        )
+                    } else {
+                        format!("Waiting for YouTube metadata. {}", item.url)
+                    }
+                }),
+            ))
             .child(
                 Button::new(("queue-up", id))
                     .icon(IconName::ArrowUp)

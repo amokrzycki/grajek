@@ -51,6 +51,8 @@ pub trait Backend: Send + Sync + 'static {
         resolved: Resolved,
         volume: f32,
     ) -> impl Future<Output = Result<(Self::Handle, watch::Receiver<Option<Outcome>>)>> + Send;
+    /// Metadata only; must never join voice or open an audio stream.
+    fn title(&self, url: String) -> impl Future<Output = Result<Option<String>>> + Send;
     fn connect(&self) -> impl Future<Output = Result<()>> + Send;
     fn disconnect(&self) -> impl Future<Output = Result<()>> + Send;
     fn recover(&self) -> impl Future<Output = ()> + Send;

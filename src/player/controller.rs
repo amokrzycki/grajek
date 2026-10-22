@@ -25,6 +25,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_mins(10);
 const SKIP_DELAY: Duration = Duration::from_secs(1);
 const FAILURE_LIMIT: u8 = 3;
 const REJOIN_LIMIT: u8 = 2;
+const TITLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Copy)]
 enum Scheduled {
@@ -36,7 +37,7 @@ enum Scheduled {
 enum JobKind {
     Prepare { url: String, queued: bool },
     Rejoin(u8),
-    Disconnect,
+    Disconnect { manual: bool },
 }
 
 enum JobOutput {
@@ -152,6 +153,20 @@ struct Job {
     voice_ready: bool,
 }
 
+/// One metadata subprocess at a time, independent of playback/voice jobs.
+struct TitleJob {
+    url: String,
+    ids: Vec<u64>,
+    task: JoinHandle<Result<Option<String>>>,
+}
+
+async fn title_result(job: &mut Option<TitleJob>) -> Result<Result<Option<String>>, JoinError> {
+    match job {
+        Some(job) => (&mut job.task).await,
+        None => pending().await,
+    }
+}
+
 enum JobEvent {
     /// Voice is ready (`true`), or the job ended without connecting (`false`).
     Connected(bool),
@@ -200,6 +215,8 @@ pub(super) struct Controller<B: Backend> {
     failure_notice: Option<String>,
     scheduled: Option<(Instant, Scheduled)>,
     rejoin_attempts: u8,
+    left_voice: bool,
+    title_job: Option<TitleJob>,
 }
 
 impl<B: Backend> Controller<B> {
@@ -227,6 +244,8 @@ impl<B: Backend> Controller<B> {
             failure_notice: None,
             scheduled: None,
             rejoin_attempts: 0,
+            left_voice: false,
+            title_job: None,
         }
     }
 
@@ -308,6 +327,97 @@ impl<B: Backend> Controller<B> {
         self.sync();
     }
 
+    fn known_title(&self, url: &str) -> Option<String> {
+        self.saved
+            .title_of(url)
+            .or_else(|| self.queue.title_of(url))
+            .or_else(|| {
+                self.track
+                    .as_ref()
+                    .filter(|track| track.url == url)
+                    .and_then(|track| track.info.title.clone())
+            })
+    }
+
+    async fn refresh_titles(&mut self) {
+        let mut changed = false;
+        for item in self
+            .queue
+            .snapshot()
+            .iter()
+            .filter(|item| item.title.is_none())
+        {
+            if let Some(title) = self.known_title(&item.url) {
+                self.queue.resolve_titles(&[item.id], Some(&title));
+                changed = true;
+            }
+        }
+        if changed {
+            self.queue_changed();
+        }
+        let items = self.queue.snapshot();
+        if let Some(job) = &mut self.title_job {
+            job.ids.retain(|id| {
+                items
+                    .iter()
+                    .any(|item| item.id == *id && item.title.is_none())
+            });
+            if job.ids.is_empty() {
+                if let Some(job) = self.title_job.take() {
+                    job.task.abort();
+                    let _ = job.task.await;
+                }
+            } else {
+                for item in &items {
+                    if item.url == job.url && item.title.is_none() && !job.ids.contains(&item.id) {
+                        job.ids.push(item.id);
+                    }
+                }
+            }
+        }
+        if self.title_job.is_some() {
+            return;
+        }
+        let Some(item) = items
+            .iter()
+            .find(|item| item.title.is_none() && !item.title_unavailable)
+        else {
+            return;
+        };
+        let url = item.url.clone();
+        let ids = items
+            .iter()
+            .filter(|item| item.url == url && item.title.is_none())
+            .map(|item| item.id)
+            .collect();
+        let backend = self.backend.clone();
+        let request = url.clone();
+        self.title_job = Some(TitleJob {
+            url,
+            ids,
+            task: tokio::spawn(async move {
+                timeout(TITLE_TIMEOUT, backend.title(request))
+                    .await
+                    .context("Title lookup timed out.")?
+            }),
+        });
+    }
+
+    fn finish_title(&mut self, result: Result<Result<Option<String>>, JoinError>) {
+        let Some(job) = self.title_job.take() else {
+            return;
+        };
+        let title = match result {
+            Ok(Ok(title)) => title.and_then(|title| crate::store::safe_title(&title)),
+            result => {
+                tracing::debug!(?result, "Queue title lookup failed");
+                None
+            }
+        };
+        self.queue.resolve_titles(&job.ids, title.as_deref());
+        self.queue_changed();
+    }
+
     async fn cancel_job(&mut self) {
         if let Some(job) = self.job.take() {
             job.task.abort();
@@ -331,6 +441,7 @@ impl<B: Backend> Controller<B> {
     /// Starts `url`, cancelling whatever was being prepared or played. Only one request
     /// and one track can exist because everything runs through this single path.
     async fn begin(&mut self, url: String, queued: bool) {
+        self.left_voice = false;
         self.scheduled = None;
         self.queued_track = queued;
         self.cancel_job().await;
@@ -398,13 +509,21 @@ impl<B: Backend> Controller<B> {
 
     async fn command(&mut self, command: Command) {
         match command {
-            Command::Stop => self.stop().await,
+            Command::LeaveVoice => self.leave_voice(true).await,
+            Command::Stop => {
+                if !matches!(
+                    self.job.as_ref().map(|job| &job.kind),
+                    Some(JobKind::Disconnect { manual: true })
+                ) {
+                    self.stop().await;
+                }
+            }
             Command::Pause => self.set_paused(true),
             Command::Resume => self.set_paused(false),
             Command::Play(value) => {
                 if matches!(
                     self.job.as_ref().map(|job| &job.kind),
-                    Some(JobKind::Prepare { .. })
+                    Some(JobKind::Prepare { .. } | JobKind::Disconnect { manual: true })
                 ) || !self.gateway()
                 {
                     return self.sync();
@@ -421,7 +540,7 @@ impl<B: Backend> Controller<B> {
             }
             Command::Enqueue(value) => match video_url(&value) {
                 Ok(url) => {
-                    let title = self.saved.title_of(&url);
+                    let title = self.known_title(&url);
                     match self.queue.push(url, title) {
                         Ok(_) => self.queue_changed(),
                         Err(Full) => {
@@ -487,6 +606,37 @@ impl<B: Backend> Controller<B> {
                 self.sync();
             }
         }
+    }
+
+    async fn leave_voice(&mut self, manual: bool) {
+        if matches!(
+            self.job.as_ref().map(|job| &job.kind),
+            Some(JobKind::Disconnect { manual: true })
+        ) {
+            return self.sync();
+        }
+        self.left_voice = true;
+        self.scheduled = None;
+        self.failure_notice = None;
+        self.rejoin_attempts = 0;
+        self.cancel_job().await;
+        self.stop_track();
+        // Automatic idle leave remains interruptible by explicit Play/Next.
+        if manual {
+            self.publish(Phase::Disconnecting, None);
+        }
+        let backend = self.backend.clone();
+        self.job = Some(Job {
+            task: tokio::spawn(async move {
+                timeout(Duration::from_secs(5), backend.disconnect())
+                    .await
+                    .context("Leaving voice timed out.")??;
+                Ok(JobOutput::Disconnected)
+            }),
+            connected: None,
+            kind: JobKind::Disconnect { manual },
+            voice_ready: false,
+        });
     }
 
     /// Cancels pending work and the active track. The queue is kept and nothing advances.
@@ -666,6 +816,16 @@ impl<B: Backend> Controller<B> {
     }
 
     async fn health_changed(&mut self, current: Health) {
+        // Explicit leave owns teardown; late voice callbacks cannot cancel it or rejoin.
+        if self.left_voice {
+            if current.gateway_error.is_some() && self.states.borrow().phase != Phase::Disconnecting
+            {
+                self.publish(Phase::Error, current.gateway_error);
+            } else {
+                self.sync();
+            }
+            return;
+        }
         let Some(error) = current.error() else {
             self.sync();
             return;
@@ -731,15 +891,7 @@ impl<B: Backend> Controller<B> {
                 if self.job.is_some() || self.track.is_some() || !self.health.borrow().voice {
                     return;
                 }
-                let backend = self.backend.clone();
-                self.job = Some(Job {
-                    task: tokio::spawn(async move {
-                        backend.disconnect().await.map(|()| JobOutput::Disconnected)
-                    }),
-                    connected: None,
-                    kind: JobKind::Disconnect,
-                    voice_ready: false,
-                });
+                self.leave_voice(false).await;
             }
         }
     }
@@ -807,11 +959,20 @@ impl<B: Backend> Controller<B> {
                     }
                 }
             }
-            (JobKind::Disconnect, result) => {
+            (JobKind::Disconnect { .. }, result) => {
                 if let Err(error) = result {
-                    self.report(error.to_string());
+                    tracing::warn!(%error, "Voice disconnect failed");
+                    self.publish(Phase::Error, Some("Could not leave Discord voice. Check the network and try Leave voice again.".into()));
                 } else {
-                    self.sync();
+                    let error = self.health.borrow().error();
+                    self.publish(
+                        if error.is_some() {
+                            Phase::Error
+                        } else {
+                            Phase::Ready
+                        },
+                        error,
+                    );
                 }
             }
             _ => self.fail("Unexpected playback job result. Press Next or Play URL."),
@@ -830,7 +991,9 @@ impl<B: Backend> Controller<B> {
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         self.publish(Phase::Ready, None);
         loop {
-            if self.scheduled.is_none()
+            self.refresh_titles().await;
+            if !self.left_voice
+                && self.scheduled.is_none()
                 && self.job.is_none()
                 && self.track.is_none()
                 && self.health.borrow().voice
@@ -860,6 +1023,7 @@ impl<B: Backend> Controller<B> {
                     let current = health.borrow_and_update().clone();
                     self.health_changed(current).await;
                 },
+                result = title_result(&mut self.title_job) => self.finish_title(result),
                 event = job_event(&mut self.job) => match event {
                     JobEvent::Connected(reached) => {
                         if let Some(job) = &mut self.job { job.voice_ready = reached; }
@@ -890,6 +1054,10 @@ impl<B: Backend> Controller<B> {
                     }
                 },
             }
+        }
+        if let Some(job) = self.title_job.take() {
+            job.task.abort();
+            let _ = job.task.await;
         }
         self.cancel_job().await;
         self.stop_track();
