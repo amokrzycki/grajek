@@ -117,9 +117,15 @@ impl PlayerApp {
                 if entity
                     .update_in(cx, |this, window, cx| {
                         let before = this.controls_enabled();
+                        let lost_gateway = this.state.available && !state.available;
                         this.state = state;
                         this.pending = None;
-                        this.rescue_focus(before, window, cx);
+                        // Gateway loss also disables preferences outside the transport group.
+                        if lost_gateway {
+                            window.focus(&this.input.read(cx).focus_handle(cx), cx);
+                        } else {
+                            this.rescue_focus(before, window, cx);
+                        }
                         this.sync_volume(window, cx);
                         cx.notify();
                     })
@@ -246,8 +252,9 @@ impl PlayerApp {
             .child(
                 div()
                     .flex()
-                    .justify_end()
+                    .justify_between()
                     .gap_2()
+                    .child(self.repeat_button(cx))
                     .child(
                         Button::new("play")
                             .primary()
@@ -409,22 +416,30 @@ impl PlayerApp {
             .flex_col()
             .gap_2()
             .child(
-                TabBar::new("sections")
-                    .underline()
-                    .small()
-                    .selected_index(selected)
-                    .on_click(cx.listener(|this, index: &usize, _, cx| {
-                        this.select_section(
-                            if *index == 0 {
-                                Section::Queue
-                            } else {
-                                Section::History
-                            },
-                            cx,
-                        );
-                    }))
-                    .child(Tab::new().label(format!("Queue ({})", self.state.queue.len())))
-                    .child(Tab::new().label("History")),
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        TabBar::new("sections")
+                            .underline()
+                            .small()
+                            .selected_index(selected)
+                            .on_click(cx.listener(|this, index: &usize, _, cx| {
+                                this.select_section(
+                                    if *index == 0 {
+                                        Section::Queue
+                                    } else {
+                                        Section::History
+                                    },
+                                    cx,
+                                );
+                            }))
+                            .child(Tab::new().label(format!("Queue ({})", self.state.queue.len())))
+                            .child(Tab::new().label("History")),
+                    )
+                    .child(self.remember_button(cx)),
             )
             .child(match self.section {
                 Section::Queue => self.queue_list(cx).into_any_element(),

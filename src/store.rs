@@ -11,7 +11,11 @@ use std::{
 };
 use tokio::{sync::watch, task::JoinHandle};
 
-use crate::config::video_url;
+use crate::{
+    config::video_url,
+    player::RepeatMode,
+    queue::{QUEUE_LIMIT, Queue},
+};
 
 pub const HISTORY_LIMIT: usize = 50;
 pub const DEFAULT_VOLUME: u8 = 100;
@@ -34,6 +38,42 @@ impl HistoryEntry {
     }
 }
 
+/// Durable pending item: runtime IDs and expiring stream data never enter this type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedQueueItem {
+    pub url: String,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+// One malformed item must not throw away unrelated preferences or the rest of the FIFO.
+fn read_queue<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<SavedQueueItem>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| serde_json::from_value(item).ok())
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
+pub(crate) fn safe_title(title: &str) -> Option<String> {
+    let title: String = title
+        .chars()
+        .filter(|ch| !ch.is_control() || ch.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_TITLE_CHARS)
+        .collect();
+    (!title.is_empty()).then_some(title)
+}
+
 const fn default_volume() -> u8 {
     DEFAULT_VOLUME
 }
@@ -46,6 +86,12 @@ pub struct Saved {
     /// Opt-in recovery for queued media failures; older files keep stop-on-error.
     #[serde(default)]
     pub continue_on_error: bool,
+    #[serde(default)]
+    pub remember_queue: bool,
+    #[serde(default)]
+    pub repeat: RepeatMode,
+    #[serde(default, deserialize_with = "read_queue")]
+    pub queue: Vec<SavedQueueItem>,
     /// Newest first, unique by URL, at most [`HISTORY_LIMIT`] entries.
     #[serde(default)]
     pub history: Vec<HistoryEntry>,
@@ -56,12 +102,27 @@ impl Default for Saved {
         Self {
             volume: DEFAULT_VOLUME,
             continue_on_error: false,
+            remember_queue: false,
+            repeat: RepeatMode::Off,
+            queue: Vec::new(),
             history: Vec::new(),
         }
     }
 }
 
 impl Saved {
+    pub fn restored_queue(&self) -> Queue {
+        let mut queue = Queue::default();
+        if self.remember_queue {
+            for entry in &self.queue {
+                if queue.push(entry.url.clone(), entry.title.clone()).is_err() {
+                    break;
+                }
+            }
+        }
+        queue
+    }
+
     /// Moves a replayed video to the top instead of duplicating it.
     pub fn record(&mut self, entry: HistoryEntry) {
         self.history.retain(|known| known.url != entry.url);
@@ -89,6 +150,22 @@ impl Saved {
         let mut clean = Self {
             volume: self.volume,
             continue_on_error: self.continue_on_error,
+            remember_queue: self.remember_queue,
+            repeat: self.repeat,
+            queue: if self.remember_queue {
+                self.queue
+                    .into_iter()
+                    .filter_map(|entry| {
+                        Some(SavedQueueItem {
+                            url: video_url(&entry.url).ok()?,
+                            title: entry.title.as_deref().and_then(safe_title),
+                        })
+                    })
+                    .take(QUEUE_LIMIT)
+                    .collect()
+            } else {
+                Vec::new()
+            },
             history: Vec::new(),
         };
         for mut entry in self.history.into_iter().rev() {
@@ -96,9 +173,7 @@ impl Saved {
                 continue;
             };
             entry.url = url;
-            entry.title = entry
-                .title
-                .map(|title| title.chars().take(MAX_TITLE_CHARS).collect());
+            entry.title = entry.title.as_deref().and_then(safe_title);
             clean.record(entry);
         }
         clean
@@ -225,8 +300,8 @@ pub fn spawn_saver(path: PathBuf, mut snapshots: watch::Receiver<Saved>) -> Join
             let target = path.clone();
             match tokio::task::spawn_blocking(move || write(&target, &saved)).await {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => tracing::warn!(%error, "Could not save history and volume"),
-                Err(error) => tracing::warn!(%error, "Saving history and volume was interrupted"),
+                Ok(Err(error)) => tracing::warn!(%error, "Could not save application state"),
+                Err(error) => tracing::warn!(%error, "Saving application state was interrupted"),
             }
         }
     })
@@ -373,6 +448,15 @@ mod tests {
         let mut saved = Saved {
             volume: 35,
             continue_on_error: true,
+            remember_queue: true,
+            repeat: crate::player::RepeatMode::Queue,
+            queue: vec![
+                super::SavedQueueItem {
+                    url: entry("a").url,
+                    title: Some("Queued".into())
+                };
+                2
+            ],
             ..Saved::default()
         };
         saved.record(entry("a"));
@@ -402,6 +486,25 @@ mod tests {
             volume: 7,
             ..Saved::default()
         };
+        write(&file, &changed)?;
+        assert_eq!(load(Some(file)).saved, changed);
+        Ok(())
+    }
+
+    #[test]
+    fn write_failure_keeps_the_previous_file_and_can_be_retried() -> Result<()> {
+        let scratch = Scratch::new()?;
+        let file = scratch.file();
+        write(&file, &Saved::default())?;
+        fs::create_dir(file.with_extension("json.tmp"))?;
+        let changed = Saved {
+            remember_queue: true,
+            volume: 25,
+            ..Saved::default()
+        };
+        assert!(write(&file, &changed).is_err());
+        assert_eq!(load(Some(file.clone())).saved, Saved::default());
+        fs::remove_dir(file.with_extension("json.tmp"))?;
         write(&file, &changed)?;
         assert_eq!(load(Some(file)).saved, changed);
         Ok(())
@@ -474,6 +577,12 @@ mod tests {
         for volume in 0..20 {
             last = Saved {
                 volume,
+                remember_queue: true,
+                repeat: crate::player::RepeatMode::Track,
+                queue: vec![super::SavedQueueItem {
+                    url: entry(&volume.to_string()).url,
+                    title: None,
+                }],
                 ..Saved::default()
             };
             sender.send_replace(last.clone());
@@ -492,6 +601,70 @@ mod tests {
         assert!(!saved.continue_on_error);
         assert_eq!(saved.volume, 37);
         assert_eq!(saved.history[0].title.as_deref(), Some("Kept"));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+    use crate::{player::RepeatMode, queue::QUEUE_LIMIT};
+    use anyhow::Result;
+
+    #[test]
+    fn old_files_default_to_no_queue_and_repeat_off() -> Result<()> {
+        let saved: Saved =
+            serde_json::from_str(r#"{"volume":37,"continue_on_error":true,"history":[]}"#)?;
+        assert!(!saved.remember_queue);
+        assert_eq!(saved.repeat, RepeatMode::Off);
+        assert_eq!(saved.queue.len(), 0);
+        assert_eq!(saved.volume, 37);
+        assert!(saved.continue_on_error);
+        Ok(())
+    }
+
+    #[test]
+    fn queue_loading_is_bounded_preserves_duplicates_and_isolates_bad_entries() -> Result<()> {
+        let entries = serde_json::json!([
+            null, {"title":"missing URL"}, {"url":42},
+            {"url":"https://evil.example/stream?token=secret"},
+            {"url":"https://youtu.be/aaaaaaaaaaa", "title":"  Hello\nworld\u{0000}  "},
+            {"url":"https://www.youtube.com/watch?v=aaaaaaaaaaa", "title":"x".repeat(500)},
+            {"url":"https://youtu.be/bbbbbbbbbbb", "title":false}
+        ]);
+        let saved: Saved = serde_json::from_value(serde_json::json!({
+            "remember_queue":true, "repeat":"queue", "queue":entries, "volume":42
+        }))?;
+        let saved = saved.sanitized();
+        assert_eq!(saved.queue.len(), 2);
+        assert_eq!(saved.queue[0].url, saved.queue[1].url);
+        assert_eq!(
+            saved.queue[0].url,
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa"
+        );
+        assert_eq!(saved.queue[0].title.as_deref(), Some("Hello world"));
+        assert_eq!(
+            saved.queue[1].title.as_ref().map(|t| t.chars().count()),
+            Some(200)
+        );
+        assert_eq!(saved.repeat, RepeatMode::Queue);
+        let mut huge = saved.clone();
+        huge.queue = vec![saved.queue[0].clone(); QUEUE_LIMIT + 5];
+        assert_eq!(huge.sanitized().queue.len(), QUEUE_LIMIT);
+        let mut disabled = saved;
+        disabled.remember_queue = false;
+        assert_eq!(disabled.sanitized().queue.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_queue_field_and_unknown_repeat_preserve_other_preferences() -> Result<()> {
+        let saved: Saved = serde_json::from_str(
+            r#"{"volume":45,"remember_queue":true,"repeat":"future","queue":{}}"#,
+        )?;
+        assert_eq!(saved.volume, 45);
+        assert_eq!(saved.repeat, RepeatMode::Off);
+        assert_eq!(saved.queue.len(), 0);
         Ok(())
     }
 }

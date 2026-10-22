@@ -26,6 +26,7 @@ impl PlayerApp {
     }
 
     fn queue_row(
+        &self,
         position: usize,
         last: bool,
         item: &QueueItem,
@@ -62,7 +63,7 @@ impl PlayerApp {
                     .small()
                     .accessibility_label("Move up")
                     .tooltip("Move up")
-                    .disabled(position == 0)
+                    .disabled(!self.state.controller_ready || position == 0)
                     .on_click(cx.listener(move |this, _, _, _| {
                         this.send(Command::Shift { id, up: true });
                     })),
@@ -74,7 +75,7 @@ impl PlayerApp {
                     .small()
                     .accessibility_label("Move down")
                     .tooltip("Move down")
-                    .disabled(last)
+                    .disabled(!self.state.controller_ready || last)
                     .on_click(cx.listener(move |this, _, _, _| {
                         this.send(Command::Shift { id, up: false });
                     })),
@@ -86,6 +87,7 @@ impl PlayerApp {
                     .small()
                     .accessibility_label("Remove from queue")
                     .tooltip("Remove from queue")
+                    .disabled(!self.state.controller_ready)
                     .on_click(cx.listener(move |this, _, _, _| {
                         this.send(Command::Dequeue(id));
                     })),
@@ -120,13 +122,13 @@ impl PlayerApp {
                     )
                     .child(
                         Button::new("continue-on-error")
-                            .label(if self.state.continue_on_error { "Continue on error: On" } else { "Continue on error: Off" })
+                            .label(if self.state.preferences.continue_on_error { "Continue on error: On" } else { "Continue on error: Off" })
                             .ghost()
                             .xsmall()
                             .disabled(!self.state.available)
                             .tooltip("Skip queued media failures only; stop after 3 consecutive failures. Saved across restarts.")
                             .on_click(cx.listener(|this, _, _, _| {
-                                this.send(Command::ContinueOnError(!this.state.continue_on_error));
+                                this.send(Command::ContinueOnError(!this.state.preferences.continue_on_error));
                             })),
                     )
                     .child(
@@ -134,7 +136,7 @@ impl PlayerApp {
                             .label("Clear queue")
                             .ghost()
                             .xsmall()
-                            .disabled(count == 0)
+                            .disabled(!self.state.controller_ready || count == 0)
                             .on_click(cx.listener(|this, _, _, _| {
                                 this.send(Command::ClearQueue);
                             })),
@@ -156,7 +158,7 @@ impl PlayerApp {
                     .flex_col()
                     .overflow_y_scrollbar()
                     .children(self.state.queue.iter().enumerate().map(|(position, item)| {
-                        Self::queue_row(position, position == last, item, cx)
+                        self.queue_row(position, position == last, item, cx)
                     }))
                     .into_any_element()
             })

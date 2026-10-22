@@ -14,7 +14,9 @@ use crate::{
     store,
 };
 use controller::Controller;
-pub use state::{Command, Phase, State, VolumeRequest, percent_from, volume_factor};
+pub use state::{
+    Command, Phase, Preferences, RepeatMode, State, VolumeRequest, percent_from, volume_factor,
+};
 
 /// How a track ended, as reported by its own event mailbox.
 #[derive(Clone, Debug)]
@@ -89,7 +91,12 @@ pub async fn run(
                 phase: Phase::Error,
                 error: Some(error.to_string()),
                 volume: loaded.saved.volume,
-                continue_on_error: loaded.saved.continue_on_error,
+                preferences: Preferences {
+                    continue_on_error: loaded.saved.continue_on_error,
+                    remember_queue: loaded.saved.remember_queue,
+                    repeat: loaded.saved.repeat,
+                },
+                queue: loaded.saved.restored_queue().snapshot(),
                 history: loaded.saved.history,
                 notice: loaded.warning,
                 ..State::default()

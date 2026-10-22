@@ -87,6 +87,7 @@ impl PlayerApp {
                     .small()
                     .accessibility_label("Remove from history")
                     .tooltip("Remove from history")
+                    .disabled(!self.state.controller_ready)
                     .on_click(cx.listener(move |this, _, _, _| {
                         this.send(Command::ForgetHistory(forget_url.clone()));
                     })),
@@ -141,7 +142,7 @@ impl PlayerApp {
                                     .when(confirming, ButtonVariants::danger)
                                     .when(!confirming, ButtonVariants::ghost)
                                     .xsmall()
-                                    .disabled(count == 0)
+                                    .disabled(!self.state.controller_ready || count == 0)
                                     .on_click(cx.listener(|this, _, _, cx| this.clear_history(cx))),
                             )
                             .when(confirming, |row| {

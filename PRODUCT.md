@@ -17,10 +17,13 @@ Paste a YouTube video URL, play it in a Discord voice channel, and manage transp
 - Songbird owns transient retries. At most two fresh joins may follow eligible terminal voice failures; interrupted audio requires explicit Next/Play and never restarts automatically.
 - Voice leaves after ten idle minutes; Playing, Paused and pending jobs are active. Queue and history survive, and the window stays open.
 - Controller snapshots are the truth. No optimistic playback state, simulated waveform, artwork, seeking or discovery.
-- Queue is FIFO, limited to 100 and not persisted; history holds 50 unique successfully played videos.
+- Queue is FIFO, limited to 100 pending entries; optional Remember queue defaults off, saves pending-only canonical URLs/titles and restores without starting playback. Disabling erases the saved queue while keeping the session queue. History holds 50 unique successfully played videos.
+- Repeat Off (default), Track (fresh extraction after confirmed success) and Queue (successful queued completions rotate behind pending entries) are saved preferences. Direct Play URL does not enter Queue repeat; a queued singleton cycles. The mode at completion applies. Stop, Next, cancellation and errors never recycle interrupted tracks; Next needs a pending successor. Clear removes pending entries only.
+- Idle Next is labelled Play Queue and starts the first pending entry. The controller owns availability and serializes extraction/cancellation.
+- Saves remain atomic and serialized. Normal close flushes the latest snapshot; abrupt termination may recover an older snapshot. In-flight/dequeued entries are not guaranteed to recover.
 - Enter plays; Ctrl+Enter queues; Ctrl+1/2 selects Queue/History. Volume keyboard handling and focus recovery are preserved.
 - Window defaults to 520×560 and permits 420×480. Input and transport stay fixed; lists scroll.
-- Missing configuration still opens a usable window with an error and disabled playback actions.
+- Missing configuration still opens a usable window with an error and disabled playback actions. Restored queue/history edits are disabled if no controller started; local edits remain available after gateway loss with a running controller.
 - No added dependencies, remote visual assets, web rendering, backend restructuring, commit or push in this task.
 
 ## Brand Commitments

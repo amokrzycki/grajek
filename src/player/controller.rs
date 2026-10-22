@@ -7,13 +7,16 @@ use tokio::{
     time::{Instant, MissedTickBehavior, interval, sleep_until, timeout},
 };
 
-use super::{Backend, Command, Handle, Outcome, Phase, State, VolumeRequest, volume_factor};
+use super::{
+    Backend, Command, Handle, Outcome, Phase, Preferences, RepeatMode, State, VolumeRequest,
+    volume_factor,
+};
 use crate::{
     config::video_url,
     discord::Health,
     media::{self, Resolved, TrackInfo},
     queue::{Full, QUEUE_LIMIT, Queue},
-    store::{HistoryEntry, Saved},
+    store::{HistoryEntry, Saved, SavedQueueItem},
 };
 
 /// How long a track may take to start advancing before it is reported as failed.
@@ -213,8 +216,8 @@ impl<B: Backend> Controller<B> {
             states,
             persist,
             volume: saved.volume,
+            queue: saved.restored_queue(),
             saved,
-            queue: Queue::default(),
             volume_seq: 0,
             notice,
             job: None,
@@ -234,8 +237,13 @@ impl<B: Backend> Controller<B> {
     /// Adds the shared data (volume, queue, history) to a state about the track/phase.
     fn view(&self, mut state: State) -> State {
         state.available = self.gateway();
+        state.controller_ready = true;
         state.voice_connected = self.health.borrow().voice;
-        state.continue_on_error = self.saved.continue_on_error;
+        state.preferences = Preferences {
+            continue_on_error: self.saved.continue_on_error,
+            remember_queue: self.saved.remember_queue,
+            repeat: self.saved.repeat,
+        };
         if state.error.is_none() {
             state.error.clone_from(&self.failure_notice);
         }
@@ -281,6 +289,23 @@ impl<B: Backend> Controller<B> {
 
     fn persist(&self) {
         self.persist.send_replace(self.saved.clone());
+    }
+
+    fn queue_changed(&mut self) {
+        self.saved.queue = if self.saved.remember_queue {
+            self.queue
+                .snapshot()
+                .into_iter()
+                .map(|item| SavedQueueItem {
+                    url: item.url,
+                    title: item.title.as_deref().and_then(crate::store::safe_title),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.persist();
+        self.sync();
     }
 
     async fn cancel_job(&mut self) {
@@ -330,9 +355,44 @@ impl<B: Backend> Controller<B> {
 
     /// Called exactly once per track that ended on its own: the next queued track, or Ready.
     async fn advance(&mut self) {
-        match self.queue.pop_front() {
+        let next = self.queue.pop_front();
+        self.queue_changed();
+        match next {
             Some(item) => self.begin(item.url, true).await,
             None => self.publish(Phase::Ready, None),
+        }
+    }
+
+    /// Only a confirmed natural completion can recycle media. Errors and manual
+    /// cancellation never enter this path; each successor gets fresh extraction.
+    async fn natural_end(&mut self) {
+        let Some(current) = self.track.as_ref() else {
+            return;
+        };
+        if self.saved.repeat != RepeatMode::Off && !current.confirmed {
+            self.media_failure(
+                "Audio ended before playback was confirmed. Press Next or Play URL.",
+            );
+            return;
+        }
+        let completed = current.entry();
+        self.stop_track();
+        match self.saved.repeat {
+            RepeatMode::Track => self.begin(completed.url, self.queued_track).await,
+            RepeatMode::Queue if self.queued_track => {
+                // Pop first: even 100 newly pending entries leave space for rotation.
+                let next = self.queue.pop_front();
+                if let Some(next) = next {
+                    if self.queue.push(completed.url, completed.title).is_err() {
+                        self.report("Could not rotate the completed track: queue is full.".into());
+                    }
+                    self.queue_changed();
+                    self.begin(next.url, true).await;
+                } else {
+                    self.begin(completed.url, true).await;
+                }
+            }
+            RepeatMode::Off | RepeatMode::Queue => self.advance().await,
         }
     }
 
@@ -363,7 +423,7 @@ impl<B: Backend> Controller<B> {
                 Ok(url) => {
                     let title = self.saved.title_of(&url);
                     match self.queue.push(url, title) {
-                        Ok(_) => self.sync(),
+                        Ok(_) => self.queue_changed(),
                         Err(Full) => {
                             self.report(format!("The queue is full ({QUEUE_LIMIT} tracks)."));
                         }
@@ -377,27 +437,37 @@ impl<B: Backend> Controller<B> {
                 if !self.gateway() {
                     return self.sync();
                 }
-                match self.queue.pop_front() {
-                    Some(item) => self.begin(item.url, true).await,
-                    None => self.sync(),
+                if self.states.borrow().can_next() {
+                    self.advance().await;
+                } else {
+                    self.sync();
                 }
             }
             Command::Dequeue(id) => {
                 self.queue.remove(id);
-                self.sync();
+                self.queue_changed();
             }
             Command::Shift { id, up } => {
                 self.queue.shift(id, up);
-                self.sync();
+                self.queue_changed();
             }
             Command::ClearQueue => {
                 self.queue.clear();
-                self.sync();
+                self.queue_changed();
             }
             Command::ForgetHistory(url) => {
                 if self.saved.remove(&url) {
                     self.persist();
                 }
+                self.sync();
+            }
+            Command::RememberQueue(enabled) => {
+                self.saved.remember_queue = enabled;
+                self.queue_changed();
+            }
+            Command::Repeat(mode) => {
+                self.saved.repeat = mode;
+                self.persist();
                 self.sync();
             }
             Command::ContinueOnError(enabled) => {
@@ -503,10 +573,7 @@ impl<B: Backend> Controller<B> {
         }
         let outcome = current.outcome.borrow_and_update().clone();
         match outcome {
-            Some(Outcome::End) => {
-                self.stop_track();
-                true
-            }
+            Some(Outcome::End) => true,
             Some(Outcome::Error(error)) => {
                 self.media_failure(&error);
                 false
@@ -537,7 +604,6 @@ impl<B: Backend> Controller<B> {
                     None
                 }
                 Observed::Done(error) => {
-                    self.stop_track();
                     let ended = error.is_none();
                     if let Some(error) = error {
                         self.media_failure(&error);
@@ -805,7 +871,7 @@ impl<B: Backend> Controller<B> {
                 },
                 alive = track_outcome(&mut self.track) => {
                     if self.handle_outcome(alive) {
-                        self.advance().await;
+                        self.natural_end().await;
                     }
                 },
                 () = async {
@@ -820,7 +886,7 @@ impl<B: Backend> Controller<B> {
                     timeout(Duration::from_secs(2), handle.info()).await.ok()
                 } => {
                     if self.apply(reading) {
-                        self.advance().await;
+                        self.natural_end().await;
                     }
                 },
             }

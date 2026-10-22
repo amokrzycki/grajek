@@ -3,7 +3,7 @@
 A compact native Rust desktop music controller: paste a YouTube video URL, press
 **Play URL** (or Enter), and broadcast one audio stream to a configured Discord
 voice channel. The window shows the track title and elapsed time, and offers
-**Pause / Resume**, **Next** and **Stop**, a **volume** slider, an in-memory
+**Pause / Resume**, **Next** and **Stop**, a **volume** slider, an optionally remembered
 **queue** and a persistent **history**. Another Play URL replaces the current
 track, even while paused; Stop cancels pending work and stops playback in both
 Playing and Paused states. The bot stays connected for up to ten idle minutes
@@ -51,7 +51,7 @@ never merely because yt-dlp succeeded. Replaying a video moves it to the top.
 Only the canonical `watch?v=` URL, title and duration are stored; never
 expiring stream URLs. History is independent of the queue.
 
-**Local data.** One small JSON file holds history, volume and Continue on error:
+**Local data.** One small JSON file holds history, volume, repeat mode, Continue on error and the opt-in pending queue:
 `$XDG_DATA_HOME/grajek/state.json`, else `$HOME/.local/share/grajek/state.json`
 (directory mode 0700). Writes go to `state.json.tmp`, are synced, then renamed
 over the real file, so a crash leaves the old or the new file. A single writer
@@ -62,20 +62,21 @@ History tab and the log, and Grajek starts empty. Entries that are not valid
 video URLs are dropped on load. Nothing is stored in the repository, `.env` or
 the working directory.
 
-**Queue.** An in-memory FIFO of at most 100 pending entries (canonical URL plus a
-title if History already knows it, otherwise the video ID). It is not persisted
-and nothing is resolved or downloaded when an entry is added. The controller owns
+**Queue.** A FIFO of at most 100 pending entries (canonical URL plus a
+title if History already knows it, otherwise the video ID). **Remember queue**
+optionally saves pending entries; it defaults to Off. Nothing is resolved or
+downloaded when an entry is added. The controller owns
 the only copy; the window renders snapshots. Exact semantics:
 
 - **Play URL** plays immediately, replacing the active or paused track, and
   leaves the queue alone. Invalid input never interrupts the current track.
 - **Add to queue** (button, or Ctrl+Enter in the URL field) appends and never stops
   or replaces anything; while idle it does not start playback.
-- **Natural completion** starts the first queued entry (exactly once); with an
-  empty queue the player returns to Ready.
+- **Natural completion** with repeat Off starts the first queued entry (exactly
+  once); with an empty queue the player returns to Ready. Repeat modes are below.
 - **Next** cancels the current track or any request in progress and starts the
-  first queued entry; while idle it starts it. It is disabled when nothing is
-  queued. Only one extraction ever runs; each Next cancels the previous request.
+  first queued entry; while idle the same button reads **Play Queue**. It is
+  disabled when nothing is queued. Only one extraction ever runs; each Next cancels the previous request.
 - **Stop** cancels pending work and the active track, keeps the queue, never
   advances, and starts the ten-minute idle period.
 - **Pause / Resume** affect only the active track and never advance the queue.
@@ -90,13 +91,77 @@ Ctrl+1 / Ctrl+2 switch between the Queue and History tabs (the kit's tabs are no
 focusable). If a focused button turns off (for example Stop after stopping), focus
 returns to the URL field so Tab keeps working.
 
+## Queue experience (v0.3.0)
+
+**Play Queue** starts the first pending entry while idle (Ready or Error), keeping
+all remaining entries. The same transport becomes **Next** during preparation,
+playback or pause. Availability comes from the controller: no gateway, an empty
+queue, initialization or stopping disables it. It reconnects idle voice as before,
+and Next cancels an earlier extraction before starting another.
+
+**Repeat** is a native keyboard-accessible button beside the URL actions. Each
+click or Enter/Space cycles **Off → Repeat Track → Repeat Queue → Off**. Its label
+always shows the controller's selected mode; active repeat uses the existing brass
+selection accent. The preference is saved; older files default to Off.
+
+- **Off:** ordinary FIFO advancement after natural completion, then Ready.
+- **Repeat Track:** a successfully completed track starts again from its canonical
+  video URL with fresh yt-dlp extraction. Pending entries are untouched. Applies
+  to both queued and direct Play URL tracks.
+- **Repeat Queue:** only tracks started through the queue join the cycle. A
+  successfully completed queued track moves behind the pending entries, then the
+  next entry starts: A, B, C, A, B, C. Duplicate URLs remain distinct entries. A
+  single queued track repeats. A direct Play URL track is never inserted into the
+  cycle; its completion advances to the pending queue or Ready. Rotation pops the
+  successor before appending the completed item, retaining the 100-pending limit
+  even if entries were added while playing.
+
+The selected mode at natural completion applies, including changes while playing
+or paused. Only confirmed playback can repeat; an End before position advancement
+is treated as a media failure when repeat is enabled. Extraction/startup/decode
+errors and unexpected termination never recycle a track. Continue on error still
+applies only to queued failures, with its cancellable one-second delay and
+three-consecutive-failure limit. Starting an extraction or changing repeat never
+resets that budget. Stale terminal events cannot repeat or skip a successor.
+
+**Next** bypasses Repeat Track and discards the interrupted track from Repeat Queue;
+it needs a pending successor. **Stop**, replacement Play URL and cancellation do
+not requeue the interrupted track. Stop keeps pending entries. Clear queue removes
+pending entries only: with Repeat Queue the current queued track can still repeat
+alone after success. Use Stop or switch repeat Off to end that cycle.
+
+**Remember queue: Off/On** sits beside Queue/History and uses ordinary native
+Tab/Enter/Space navigation. Turning it on saves the current pending FIFO. Turning
+it off removes stored entries without touching the active in-memory queue. Every
+add, remove, reorder, clear, rotation and dequeue updates the serialized snapshot.
+Restoration preserves duplicates/order, creates unique runtime IDs, drops invalid
+entries, caps the queue at 100 and normalizes titles to 200 characters. Only
+canonical YouTube URLs and safe titles are stored, never streams, credentials,
+audio or active handles. Old v0.2.1 files keep history, volume and recovery settings.
+
+Restoration **never starts playback or joins voice automatically**. If startup
+fails (for example missing credentials or tools), restored lists remain visible
+and their edit controls are disabled until a successful restart. A running
+controller still permits local list edits after gateway loss. Only pending
+entries are saved: an entry leaves the snapshot when dequeued, before extraction
+or startup, and may therefore be lost if playback fails or the app closes then.
+The active track is not restored, including during repeat. Normal shutdown waits
+for the latest snapshot writer. Writes are asynchronous and atomically replaced;
+an abrupt exit can restore the last completed snapshot, so a recent mutation may
+be missing or an already-dequeued entry may reappear. There is no guarantee of
+recovering an in-flight track. Failed writes are logged and leave the prior file
+intact; saving can resume on a later change. No database or extra file format is added.
+
+See [v0.3.0 release evidence](docs/releases/v0.3.0.md) for validation, independent
+review and unverified live scenarios.
+
 ## Reliability and playback polish (v0.2.1)
 
 **Continue on error.** The Queue tab has one native button, **Continue on error:
 Off/On**, usable with the mouse or normal Tab/Space button navigation. It is off
 by default and saved in the existing JSON file. Older files retain their history
-and volume and default to off. There is no queue persistence or retry of a failed
-URL. Only failures after voice is connected, for entries consumed by Next or
+and volume and default to off. Failed URLs are not retried; pending entries are
+saved only when Remember queue is enabled. Only failures after voice is connected, for entries consumed by Next or
 natural completion, can continue. This includes extraction, stream initialization,
 playback-start and decode failures. Explicit Play URL (including History's Play
 now), gateway/authorization failures and voice connection loss never skip media.
@@ -412,7 +477,7 @@ error as designed.
 - **Logs:** `RUST_LOG=grajek=debug,warn cargo run`. Detailed failures go
   to stderr; the window shows short, actionable messages. Do not share your `.env`.
 - One guild, one ordinary voice channel, one track at a time; no seek, playlists,
-  shuffle, repeat, search, Discord commands, drag and drop, or queue persistence.
+  shuffle, search, Discord commands or drag and drop.
   A queued entry is resolved only when it starts, so it can still fail then (private,
   removed or region-blocked videos). Network interruptions stop playback; Play can
   retry after gateway recovery. Fatal configuration/gateway startup failures
@@ -471,4 +536,4 @@ forced live Discord disconnect/reconnect, the complete ten-minute idle cycle in
 a live voice session, and native Wayland for this release. Connection fault and
 idle behavior are covered by deterministic fake-backend/event-handler tests;
 those tests do not prove Discord service behavior. See
-[the release review](docs/releases/v0.2.1.md) for the behavior matrix and review.
+the v0.2.1 validation above for the behavior matrix and review.

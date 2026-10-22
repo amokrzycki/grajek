@@ -713,7 +713,7 @@ async fn current_track_outcomes_end_or_fail_playback() -> Result<()> {
         sender.send_replace(outcome);
         assert_eq!(controller.handle_outcome(true), ended);
         assert_eq!(updates.borrow().phase, phase);
-        assert_eq!(controller.track.is_none(), ended || phase == Phase::Error);
+        assert_eq!(controller.track.is_none(), phase == Phase::Error);
     }
     // Vanished event senders fail the track instead of hanging the UI.
     let (mut controller, fake, updates) = solo(Saved::default());
@@ -746,6 +746,7 @@ async fn history_records_only_when_playback_begins() -> Result<()> {
     assert_eq!(updates.borrow().history.len(), 1);
     // A natural end is reported to the caller, who advances the queue.
     assert!(controller.apply(Some(Ok(info(PlayMode::End, 2.0)))));
+    controller.natural_end().await;
     ensure!(controller.track.is_none());
     Ok(())
 }
@@ -1329,7 +1330,7 @@ async fn shutdown_cancels_work_and_releases_discord() -> Result<()> {
 async fn queued_media_failure_can_continue_but_explicit_play_cannot() -> Result<()> {
     let mut rig = Rig::new().await?;
     rig.send(Command::ContinueOnError(true)).await?;
-    rig.until(|s| s.continue_on_error).await?;
+    rig.until(|s| s.preferences.continue_on_error).await?;
     assert!(rig.saves.borrow().continue_on_error);
     rig.fake.fail(A);
     rig.enqueue(A).await?;
@@ -1797,5 +1798,342 @@ async fn a_rejected_track_start_obeys_the_queue_recovery_preference() -> Result<
         }
         assert_eq!(rig.state().history.len(), 0);
     }
+    Ok(())
+}
+
+// v0.3.0: observable pending-only storage and completion-driven repeat.
+#[tokio::test(start_paused = true)]
+async fn remembering_queue_tracks_edits_consumption_disable_and_restore() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    for url in [A, B, A] {
+        rig.enqueue(url).await?;
+    }
+    rig.until(|s| s.queue.len() == 3).await?;
+    assert_eq!(rig.saves.borrow().queue.len(), 0);
+    rig.send(Command::RememberQueue(true)).await?;
+    let state = rig.until(|s| s.preferences.remember_queue).await?;
+    let ids: HashSet<_> = state.queue.iter().map(|q| q.id).collect();
+    assert_eq!(ids.len(), 3);
+    assert_eq!(
+        rig.saves
+            .borrow()
+            .queue
+            .iter()
+            .map(|q| q.url.as_str())
+            .collect::<Vec<_>>(),
+        [A, B, A]
+    );
+    rig.send(Command::Shift {
+        id: state.queue[1].id,
+        up: true,
+    })
+    .await?;
+    rig.until(|s| s.queue[0].url == B).await?;
+    rig.send(Command::Dequeue(state.queue[0].id)).await?;
+    rig.until(|s| s.queue.len() == 2).await?;
+    rig.enqueue(C).await?;
+    rig.until(|s| s.queue.len() == 3).await?;
+    let saved = rig.saves.borrow().clone();
+    let mut restored = Rig::start(saved);
+    let loaded = restored.until(|s| s.phase == Phase::Ready).await?;
+    assert_eq!(restored.queued(), [B, A, C]);
+    assert_eq!(
+        loaded
+            .queue
+            .iter()
+            .map(|q| q.id)
+            .collect::<HashSet<_>>()
+            .len(),
+        3
+    );
+    assert_eq!(restored.fake.requests().len(), 0);
+    restored.send(Command::Next).await?;
+    restored.started(1).await?;
+    assert_eq!(
+        restored
+            .saves
+            .borrow()
+            .queue
+            .iter()
+            .map(|q| q.url.as_str())
+            .collect::<Vec<_>>(),
+        [A, C]
+    );
+    restored.send(Command::RememberQueue(false)).await?;
+    restored.until(|s| !s.preferences.remember_queue).await?;
+    assert_eq!(restored.saves.borrow().queue.len(), 0);
+    assert_eq!(restored.queued(), [A, C]);
+    restored.send(Command::RememberQueue(true)).await?;
+    restored.until(|s| s.preferences.remember_queue).await?;
+    restored.send(Command::ClearQueue).await?;
+    restored.until(|s| s.queue.is_empty()).await?;
+    restored.shutdown.send_replace(true);
+    restored.task.await?;
+    assert_eq!(restored.saves.borrow().queue.len(), 0);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn repeat_track_resolves_fresh_and_next_stop_and_stale_events_bypass_it() -> Result<()> {
+    let mut rig = Rig::start(Saved {
+        repeat: super::super::RepeatMode::Track,
+        ..Saved::default()
+    });
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    rig.enqueue(B).await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    rig.fake.track(0)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    rig.fake.track(0)?.end();
+    rig.started(2).await?;
+    assert_eq!(rig.fake.requests(), [A, A]);
+    assert_eq!(rig.queued(), [B]);
+    rig.fake.track(0)?.end();
+    rig.settle().await;
+    assert_eq!(rig.fake.started(), 2);
+    rig.send(Command::Next).await?;
+    rig.started(3).await?;
+    assert_eq!(rig.fake.requests(), [A, A, B]);
+    rig.send(Command::Stop).await?;
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    rig.fake.track(2)?.end();
+    rig.settle().await;
+    assert_eq!(rig.fake.started(), 3);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn repeat_queue_cycles_fifo_and_singleton_without_growing() -> Result<()> {
+    for urls in [vec![A], vec![A, B, C], vec![A, A, B]] {
+        let mut rig = Rig::start(Saved {
+            repeat: super::super::RepeatMode::Queue,
+            remember_queue: true,
+            ..Saved::default()
+        });
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        for url in &urls {
+            rig.enqueue(url).await?;
+        }
+        rig.send(Command::Next).await?;
+        for n in 0..7 {
+            rig.started(n + 1).await?;
+            assert_eq!(rig.fake.track(n)?.title, urls[n % urls.len()]);
+            rig.fake.track(n)?.advance(1);
+            rig.until(|s| s.phase == Phase::Playing).await?;
+            assert_eq!(rig.queued().len(), urls.len() - 1);
+            assert_eq!(rig.saves.borrow().queue.len(), urls.len() - 1);
+            rig.fake.track(n)?.end();
+        }
+        rig.started(8).await?;
+        assert_eq!(rig.fake.max_running.load(SeqCst), 1);
+        rig.send(Command::Stop).await?;
+        rig.until(|s| s.phase == Phase::Ready).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn repeat_queue_respects_capacity_edits_direct_play_and_mode_changes() -> Result<()> {
+    use super::super::RepeatMode;
+    let mut rig = Rig::start(Saved {
+        repeat: RepeatMode::Queue,
+        remember_queue: true,
+        ..Saved::default()
+    });
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    rig.enqueue(A).await?;
+    rig.send(Command::Next).await?;
+    rig.started(1).await?;
+    rig.fake.track(0)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    for _ in 0..QUEUE_LIMIT {
+        rig.enqueue(B).await?;
+    }
+    rig.until(|s| s.queue.len() == QUEUE_LIMIT).await?;
+    rig.fake.track(0)?.end();
+    rig.started(2).await?;
+    let queued = rig
+        .until(|s| s.phase == Phase::Resolving && s.queue.len() == QUEUE_LIMIT)
+        .await?;
+    assert_eq!(queued.queue.last().map(|q| q.url.as_str()), Some(A));
+    assert_eq!(rig.saves.borrow().queue.len(), QUEUE_LIMIT);
+    // Manual Next does not recycle B, even if it was confirmed.
+    rig.fake.track(1)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    rig.send(Command::Next).await?;
+    rig.started(3).await?;
+    assert_eq!(rig.queued().len(), QUEUE_LIMIT - 1);
+    // Direct Play URL replaces the track without rewriting pending entries or joining its cycle.
+    rig.fake.track(2)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    let pending = rig.queued();
+    rig.play(C).await?;
+    rig.started(4).await?;
+    assert_eq!(rig.queued(), pending);
+    rig.fake.track(3)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    rig.fake.track(3)?.end();
+    rig.started(5).await?;
+    assert!(!rig.queued().iter().any(|q| q == C));
+    // The mode in force at completion applies to the current queued track.
+    rig.send(Command::Repeat(RepeatMode::Track)).await?;
+    rig.until(|s| s.preferences.repeat == RepeatMode::Track)
+        .await?;
+    assert_eq!(rig.saves.borrow().repeat, RepeatMode::Track);
+    rig.fake.track(4)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    let pending = rig.queued();
+    rig.fake.track(4)?.end();
+    rig.started(6).await?;
+    assert_eq!(rig.queued(), pending);
+    rig.send(Command::Repeat(RepeatMode::Off)).await?;
+    rig.until(|s| s.preferences.repeat == RepeatMode::Off)
+        .await?;
+    rig.fake.track(5)?.end();
+    rig.started(7).await?;
+    assert_eq!(rig.queued().len(), pending.len() - 1);
+    rig.send(Command::ClearQueue).await?;
+    rig.until(|s| s.queue.is_empty()).await?;
+    rig.fake.track(6)?.end();
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn repeat_never_recycles_failed_or_unconfirmed_tracks_and_keeps_failure_budget() -> Result<()>
+{
+    use super::super::RepeatMode;
+    for repeat in [RepeatMode::Track, RepeatMode::Queue] {
+        for failure in ["extract", "startup", "early-end", "stopped", "error"] {
+            let mut rig = Rig::start(Saved {
+                repeat,
+                remember_queue: true,
+                continue_on_error: true,
+                ..Saved::default()
+            });
+            rig.until(|s| s.phase == Phase::Ready).await?;
+            if failure == "extract" {
+                rig.fake.fail(A);
+            }
+            if failure == "startup" {
+                rig.fake
+                    .play_failing
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(A.into());
+            }
+            for url in [A, A, A, B] {
+                rig.enqueue(url).await?;
+            }
+            rig.send(Command::Next).await?;
+            if !matches!(failure, "extract" | "startup") {
+                for index in 0..3 {
+                    rig.started(index + 1).await?;
+                    let track = rig.fake.track(index)?;
+                    match failure {
+                        "early-end" => track.end(),
+                        "stopped" => {
+                            *track.mode.lock().unwrap_or_else(PoisonError::into_inner) =
+                                (PlayMode::Stop, Duration::ZERO);
+                        }
+                        _ => {
+                            track
+                                .outcome
+                                .send_replace(Some(Outcome::Error("decode failure".into())));
+                        }
+                    }
+                }
+            }
+            rig.until(|s| {
+                s.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("3 consecutive"))
+            })
+            .await?;
+            tokio::time::advance(Duration::from_secs(30)).await;
+            rig.settle().await;
+            assert_eq!(rig.fake.requests(), [A, A, A], "{repeat:?}: {failure}");
+            assert_eq!(rig.queued(), [B]);
+            assert_eq!(rig.saves.borrow().queue.len(), 1);
+            assert_eq!(rig.state().history.len(), 0);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn repeat_stop_cancels_fresh_extraction_and_never_restores_consumed_entry() -> Result<()> {
+    use super::super::RepeatMode;
+    for repeat in [RepeatMode::Track, RepeatMode::Queue] {
+        let mut rig = Rig::start(Saved {
+            repeat,
+            remember_queue: true,
+            ..Saved::default()
+        });
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        rig.enqueue(A).await?;
+        rig.enqueue(B).await?;
+        rig.send(Command::Next).await?;
+        rig.started(1).await?;
+        rig.fake.track(0)?.advance(1);
+        rig.until(|s| s.phase == Phase::Playing).await?;
+        rig.fake
+            .hung
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend([A.into(), B.into()]);
+        rig.fake.track(0)?.end();
+        eventually(|| rig.fake.requests().len() == 2).await?;
+        rig.send(Command::Stop).await?;
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        rig.fake.track(0)?.end();
+        rig.settle().await;
+        assert_eq!(rig.fake.requests().len(), 2);
+        assert_eq!(rig.fake.cancelled.load(SeqCst), 1);
+        let saved = rig.saves.borrow().clone();
+        assert_eq!(
+            saved.queue[0].url,
+            if repeat == RepeatMode::Track { B } else { A }
+        );
+        rig.shutdown.send_replace(true);
+        rig.task.await?;
+        assert_eq!(*rig.saves.borrow(), saved);
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn queue_repeat_direct_singleton_and_clear_have_explicit_completion_semantics() -> Result<()>
+{
+    use super::super::RepeatMode;
+    let mut rig = Rig::start(Saved {
+        repeat: RepeatMode::Queue,
+        ..Saved::default()
+    });
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    // A direct URL never becomes part of Repeat Queue, even with no pending entries.
+    rig.play(A).await?;
+    rig.started(1).await?;
+    rig.fake.track(0)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    rig.fake.track(0)?.end();
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    assert_eq!(rig.fake.requests(), [A]);
+    rig.enqueue(B).await?;
+    rig.enqueue(C).await?;
+    rig.send(Command::Next).await?;
+    rig.started(2).await?;
+    rig.fake.track(1)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    rig.send(Command::ClearQueue).await?;
+    rig.until(|s| s.queue.is_empty()).await?;
+    // Clear removes pending entries; the current successful queued track remains a singleton cycle.
+    rig.fake.track(1)?.end();
+    rig.started(3).await?;
+    assert_eq!(rig.fake.requests(), [A, B, B]);
+    rig.send(Command::Stop).await?;
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    assert_eq!(rig.queued().len(), 0);
     Ok(())
 }
