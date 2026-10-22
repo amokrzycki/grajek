@@ -101,6 +101,47 @@ Ctrl+1 / Ctrl+2 switch between the Queue and History tabs (the kit's tabs are no
 focusable). If a focused button turns off (for example Stop after stopping), focus
 returns to the URL field so Tab keeps working.
 
+## YouTube playlist import (v0.3.1)
+
+Paste a public playlist link into the existing URL field and select **Import Playlist**.
+Supported forms are `https://www.youtube.com/playlist?list=…`, the same link on
+`youtube.com` or `music.youtube.com`, and YouTube watch links containing both
+`v=…` and `list=…`. The import action uses the playlist. **Play URL** / Enter and
+**Add to queue** / Ctrl+Enter still use only the selected video; a playlist-only
+link is rejected by those single-video actions. Pasting alone does nothing.
+
+- Import reads metadata only, without joining voice, downloading audio, resolving
+  stream URLs per entry or starting playback. Current playback, pause, transport,
+  volume, repeat and Continue on error remain independent.
+- **Cancel Import** replaces the import action while it runs. Only one import can
+  run. Cancel, **Clear queue** and normal application close terminate the job;
+  cancelled or stale results cannot append tracks. Stop stops audio and leaves
+  the import running. Removing/reordering individual entries remains available.
+- The scan checks at most the **first 100 playlist entries**. Invalid IDs, nested
+  results and known private/deleted/unavailable entries are skipped. Valid entries,
+  including deliberate duplicates, keep their original order. This does not
+  guarantee they will be playable later.
+- One atomic append uses the queue's **available slots at completion**. With 75
+  pending entries, at most 25 are appended; a full queue appends nothing. Queue
+  edits during extraction are respected. Feedback reports imported/unavailable
+  entries and known entries that did not fit. At the scan boundary it says more
+  may remain; it never invents an exact count beyond the scan. Full feedback is
+  available in the status tooltip and native accessibility label.
+- Valid playlist titles are reused and normalized with the existing 200-character
+  persisted-title rules. Missing/invalid titles use the existing serialized title
+  worker and truthful loading/unavailable labels, without a second metadata pipeline.
+- Successful entries participate in the ordinary queue and Repeat Queue cycle.
+  **Remember queue** saves pending URLs/titles only when enabled, including imports,
+  and restores without starting playback. Cancellation/failure saves no imported
+  entries. The usual atomic-save and abrupt-exit limits still apply.
+
+Extraction uses one cancellable yt-dlp process with a 45-second deadline, a 2 MiB
+stdout limit and a 64 KiB stderr limit. It ignores user configuration and plugins;
+no browser cookies, authentication or restriction bypass is used. A restricted,
+unavailable, malformed or completely unusable playlist leaves the queue unchanged.
+No playlist library, private-playlist support or unrestricted scan is provided.
+See [v0.3.1 release evidence](docs/releases/v0.3.1.md) for validation and limitations.
+
 ## Queue experience (v0.3.0)
 
 **Play Queue** starts the first pending entry while idle (Ready or Error), keeping
@@ -486,7 +527,7 @@ error as designed.
   To try X11/Xwayland from a Wayland session, use `env -u WAYLAND_DISPLAY cargo run`.
 - **Logs:** `RUST_LOG=grajek=debug,warn cargo run`. Detailed failures go
   to stderr; the window shows short, actionable messages. Do not share your `.env`.
-- One guild, one ordinary voice channel, one track at a time; no seek, playlists,
+- One guild, one ordinary voice channel, one track at a time; no seek, playlist library,
   shuffle, search, Discord commands or drag and drop.
   A queued entry is resolved only when it starts, so it can still fail then (private,
   removed or region-blocked videos). Network interruptions stop playback; Play can

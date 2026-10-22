@@ -106,6 +106,8 @@ struct Fake {
     play_failing: Mutex<HashSet<String>>,
     disconnect_hung: AtomicBool,
     disconnect_failing: AtomicBool,
+    playlist_reply: Mutex<Option<oneshot::Receiver<Result<crate::playlist::Playlist>>>>,
+    playlist_calls: AtomicUsize,
     title_requests: Mutex<Vec<String>>,
     title_replies: Mutex<HashMap<String, oneshot::Receiver<Result<Option<String>>>>>,
     running: AtomicUsize,
@@ -133,6 +135,8 @@ impl Fake {
             play_failing: Mutex::default(),
             disconnect_hung: AtomicBool::new(false),
             disconnect_failing: AtomicBool::new(false),
+            playlist_reply: Mutex::default(),
+            playlist_calls: AtomicUsize::new(0),
             title_requests: Mutex::default(),
             title_replies: Mutex::default(),
             running: AtomicUsize::new(0),
@@ -144,6 +148,14 @@ impl Fake {
             disconnects: AtomicUsize::new(0),
             connect_mode: AtomicUsize::new(0),
         })
+    }
+    fn import_reply(&self) -> oneshot::Sender<Result<crate::playlist::Playlist>> {
+        let (sender, receiver) = oneshot::channel();
+        *self
+            .playlist_reply
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(receiver);
+        sender
     }
     fn title_reply(&self, url: &str) -> oneshot::Sender<Result<Option<String>>> {
         let (sender, receiver) = oneshot::channel();
@@ -294,6 +306,15 @@ impl Backend for Fake {
             Some(reply) => reply.await?,
             None => Ok(None),
         }
+    }
+    async fn playlist(&self, _url: String) -> Result<crate::playlist::Playlist> {
+        self.playlist_calls.fetch_add(1, SeqCst);
+        let reply = self
+            .playlist_reply
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        reply.context("not configured")?.await?
     }
     async fn connect(&self) -> Result<()> {
         self.connects.fetch_add(1, SeqCst);
@@ -2591,3 +2612,5 @@ fn leave_voice_availability_follows_session_and_controller_state() {
     state.controller_ready = false;
     assert!(!state.can_leave_voice());
 }
+
+mod playlist;

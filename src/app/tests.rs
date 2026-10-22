@@ -951,6 +951,7 @@ fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
             for id in [
                 "play",
                 "enqueue",
+                "import-playlist",
                 "pause-resume",
                 "next",
                 "stop",
@@ -1151,7 +1152,22 @@ fn keyboard_can_leave_a_preference_disabled_by_gateway_loss(cx: &mut TestAppCont
             ..state(Phase::Error)
         });
         cx.run_until_parked();
-        act(cx, window, |window, cx| window.press("tab", cx));
+        for _ in 0..3 {
+            act(cx, window, |window, cx| window.press("tab", cx));
+            if cx
+                .update_window(window, |_, window, cx| {
+                    view.read(cx)
+                        .input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                })
+                .ok()
+                == Some(true)
+            {
+                break;
+            }
+        }
         let focused = cx
             .update_window(window, |_, window, cx| {
                 view.read(cx)
@@ -1164,7 +1180,7 @@ fn keyboard_can_leave_a_preference_disabled_by_gateway_loss(cx: &mut TestAppCont
         assert_eq!(
             focused,
             Some(true),
-            "{id}: Tab returns to the only enabled input"
+            "{id}: Tab cycles through local import and returns to the input"
         );
     }
 }
@@ -1266,4 +1282,166 @@ fn queue_metadata_states_and_unicode_keep_row_actions_visible(cx: &mut TestAppCo
             }
         }
     }
+}
+
+#[gpui_kit::test]
+fn playlist_import_is_explicit_and_cancellation_recovers_focus(cx: &mut TestAppContext) {
+    use crate::player::ImportStatus;
+    let initial = playing(Phase::Playing, Some("Current track"), 27);
+    let (window, view, mut received, states) = open(cx, initial.clone());
+    act(cx, window, |window, cx| {
+        window.click("url", cx);
+        window.input(
+            "https://youtube.com/watch?v=aaaaaaaaaaa&list=PL_test123",
+            cx,
+        );
+    });
+    assert!(
+        received.try_recv().is_err(),
+        "pasting never starts playback"
+    );
+    click(cx, window, "import-playlist");
+    assert!(
+        matches!(received.try_recv(), Ok(Command::ImportPlaylist(url)) if url.contains("list=PL_test123"))
+    );
+    click(cx, window, "import-playlist");
+    assert!(received.try_recv().is_err());
+    assert_eq!(
+        button(cx, window, "import-playlist"),
+        ("Import Playlist".into(), true)
+    );
+    states.send_replace(State {
+        import: ImportStatus::Importing,
+        ..initial.clone()
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        button(cx, window, "import-playlist"),
+        ("Cancel Import".into(), false)
+    );
+    assert!(!button(cx, window, "pause-resume").1);
+    assert!(
+        !button(cx, window, "queue-clear").1,
+        "even an empty queue can invalidate import"
+    );
+    for _ in 0..20 {
+        if cx
+            .update_window(window, |_, window, _| {
+                window.find("import-playlist").focused()
+            })
+            .ok()
+            .flatten()
+            == Some(true)
+        {
+            break;
+        }
+        act(cx, window, |window, cx| window.press("tab", cx));
+    }
+    assert_eq!(
+        cx.update_window(window, |_, window, _| window
+            .find("import-playlist")
+            .focused())
+            .ok()
+            .flatten(),
+        Some(true)
+    );
+    act(cx, window, |window, cx| window.press("space", cx));
+    assert!(matches!(received.try_recv(), Ok(Command::CancelImport)));
+    states.send_replace(State {
+        import: ImportStatus::Cancelled,
+        ..initial
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update_window(window, |_, window, cx| view
+            .read(cx)
+            .input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window))
+            .ok(),
+        Some(true)
+    );
+    act(cx, window, |window, cx| window.press("ctrl-enter", cx));
+    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(url)) if url.contains("list=")));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert!(matches!(received.try_recv(), Ok(Command::Play(url)) if url.contains("list=")));
+    cx.update(|cx| assert_eq!(view.read(cx).state.position, Duration::from_secs(27)));
+}
+
+#[gpui_kit::test]
+fn import_feedback_and_actions_fit_both_native_sizes(cx: &mut TestAppContext) {
+    use crate::player::ImportStatus;
+    for (width, height) in [(420., 480.), (520., 560.)] {
+        for import in [
+            ImportStatus::Importing,
+            ImportStatus::Cancelled,
+            ImportStatus::Finished {
+                added: 12,
+                unavailable: 3,
+                omitted: 77,
+                limited: true,
+            },
+            ImportStatus::Failed(
+                "Playlist unavailable. Check the public link and network, then try again.".into(),
+            ),
+        ] {
+            let mut initial = with_lists(Phase::Paused, 3, 3);
+            initial.error = Some("A long playback error. ".repeat(40));
+            initial.import = import.clone();
+            initial.preferences.repeat = crate::player::RepeatMode::Queue;
+            let ((window, view, _, _), _) = open_at(cx, initial, width, height);
+            let right = bounds(cx, window, "url").right();
+            let mut edge = px(0.);
+            for id in ["repeat", "play", "enqueue", "import-playlist"] {
+                let button = bounds(cx, window, id);
+                assert!(
+                    button.left() >= edge && button.right() <= right,
+                    "{width}: overlapping {id}, edge={edge:?}, bounds={button:?}"
+                );
+                edge = button.right();
+            }
+            let status = cx
+                .update_window(window, |_, window, _| {
+                    window
+                        .find("import-status")
+                        .label()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
+                .ok();
+            assert_eq!(status, Some(import.message()));
+            for section in [Section::Queue, Section::History] {
+                show(cx, &view, section);
+                let second = if section == Section::Queue {
+                    bounds(cx, window, ("queue-row", 11_u64))
+                } else {
+                    bounds(cx, window, ("history-row", 1_usize))
+                };
+                assert!(
+                    second.bottom() <= px(height - 16.),
+                    "import + error must leave two rows"
+                );
+            }
+        }
+    }
+    let mut full = state(Phase::Ready);
+    full.queue = (0..100)
+        .map(|id| QueueItem {
+            id,
+            url: "https://www.youtube.com/watch?v=aaaaaaaaaaa".into(),
+            title: Some("Track".into()),
+            title_unavailable: false,
+        })
+        .collect();
+    let (window, _, mut received, _) = open(cx, full.clone());
+    assert!(button(cx, window, "import-playlist").1);
+    click(cx, window, "import-playlist");
+    assert!(received.try_recv().is_err());
+    full.import = ImportStatus::Importing;
+    let (window, _, _, _) = open(cx, full);
+    assert!(
+        !button(cx, window, "import-playlist").1,
+        "cancel stays available at capacity"
+    );
 }

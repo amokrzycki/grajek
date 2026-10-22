@@ -4,6 +4,7 @@ mod discord;
 mod live;
 mod media;
 mod player;
+mod playlist;
 mod queue;
 mod store;
 mod style;

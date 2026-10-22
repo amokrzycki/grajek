@@ -149,7 +149,7 @@ impl PlayerApp {
                             .label("Clear queue")
                             .ghost()
                             .xsmall()
-                            .disabled(!self.state.controller_ready || count == 0)
+                            .disabled(!self.state.controller_ready || (count == 0 && self.state.import != crate::player::ImportStatus::Importing))
                             .on_click(cx.listener(|this, _, _, _| {
                                 this.send(Command::ClearQueue);
                             })),

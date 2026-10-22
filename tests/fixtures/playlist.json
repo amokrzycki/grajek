@@ -1,0 +1,17 @@
+{
+  "_type": "playlist",
+  "id": "PL_fixture",
+  "title": "Public playlist",
+  "playlist_count": 9,
+  "entries": [
+    {"_type":"url", "ie_key":"Youtube", "id":"aaaaaaaaaaa", "url":"https://www.youtube.com/watch?v=aaaaaaaaaaa", "title":"  First\n title  ", "duration":12},
+    {"_type":"url", "id":"bbbbbbbbbbb", "url":"https://evil.invalid/", "title":null},
+    {"_type":"url", "id":"aaaaaaaaaaa", "title":"Repeated occurrence"},
+    {"_type":"url", "id":"ccccccccccc", "title":"[Private video]", "availability":"private"},
+    {"_type":"url", "id":"ddddddddddd", "title":"[Deleted video]"},
+    {"_type":"playlist", "id":"eeeeeeeeeee", "title":"Nested playlist"},
+    {"id":"bad id", "title":"Untrusted"},
+    null,
+    {"_type":"url", "id":"fffffffffff", "title":42, "duration":-1}
+  ]
+}
