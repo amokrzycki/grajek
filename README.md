@@ -3,7 +3,7 @@
 A compact native Rust desktop music controller: paste a YouTube video URL, press
 **Play URL** (or Enter), and broadcast one audio stream to a configured Discord
 voice channel. The window shows the track title and elapsed time, and offers
-**Pause / Resume**, **Next**, **Stop** and **Leave voice**, a **volume** slider, an optionally remembered
+**Pause / Resume**, **Next**, **Stop** and **Leave voice**, a playback progress slider, a **volume** slider, an optionally remembered
 **queue** and a persistent **history**. Another Play URL replaces the current
 track, even while paused; Stop cancels pending work and stops playback in both
 Playing and Paused states. The bot stays connected for up to ten idle minutes
@@ -25,7 +25,60 @@ It also leaves on window close.
   streams, missing metadata). It is read from the existing 250 ms
   `TrackHandle::get_info()` poll and published to the UI only when the displayed
   second changes. It stops while paused and restarts at 00:00 for a new track.
-  There is no seeking.
+  Known-duration, range-compatible tracks also have a native seek slider (v0.3.2).
+
+## Playback seeking (v0.3.2)
+
+The native progress slider follows Songbird's actual position. Drag to preview a
+labelled timestamp, then release to seek once. Playback continues during the drag;
+release returns the thumb to the confirmed position until Songbird answers.
+“Seeking…” indicates pending work. Playing seeks keep playing; paused seeks stay
+paused. Seeking does not add history, change volume, consume the queue or reset
+recovery budgets.
+
+Click or Tab to the progress slider: **Left/Right** seek by 5 seconds,
+**Page Down/Page Up** by 10 seconds, **Home** goes to zero, and **End** goes to one
+second before the reported duration (zero for tracks shorter than one second).
+Targets outside this range clamp to those bounds. Keys affect only the focused
+progress slider; the URL editor and volume slider keep their existing controls.
+Native accessibility Increment/Decrement actions use the same 5-second intents;
+Set Value accepts seconds. Disabled controls reject these actions.
+
+Both directions are verified on public YouTube WebM/Opus and streamable M4A/AAC.
+The custom yt-dlp/Deno/EJS extraction and headers remain in use. A bounded HTTP
+range source lets Symphonia use container indexes without downloading the entire
+video, running FFmpeg or re-extracting on each seek. Missing/zero duration and
+livestreams show elapsed time only. Servers that reject byte ranges retain ordinary
+playback with seeking disabled. A failed/timed-out seek shows an error and disables
+further seeks for that track; Play URL reopens it. A genuine terminal audio failure
+still follows the existing recovery policy.
+
+The controller owns one timed seek task and one latest pending target. Stop, Next,
+Leave voice, replacement, disconnection and shutdown cancel it. Track IDs reject
+stale gestures and results. Dropping a Songbird callback cannot cancel its worker;
+source cancellation, a 5-second HTTP request timeout and an 8-second/4 MiB container
+read budget bound that work. A stalled network read can still delay audio-thread
+teardown up to the HTTP deadline; the controller and window remain responsive.
+The last confirmed position remains stable during delayed info callbacks. A
+15-second liveness deadline tolerates bounded range reads before reporting a dead
+driver. Range read failures remain playback errors, even when Songbird emits End;
+they never count as successful completion for repeat or queue rotation.
+
+See [v0.3.2 engineering evidence](docs/releases/v0.3.2.md), including the real
+Songbird mixer spike, native-input tests and independent review. To repeat the
+public YouTube mixer check without Discord credentials:
+
+```bash
+python3 scripts/seek-spike.py
+```
+
+Use `python3 scripts/seek-spike.py --local` for an offline loopback check of a
+later HTTP 403 and a valid three-second range response through the real mixer.
+
+It exposes Songbird 0.6.1's existing offline test harness in a temporary copy and
+runs the production media pipeline against both formats. Grajek's dependencies
+are unchanged. This captures real mixed audio, but does not prove audible output
+in a live Discord channel.
 
 ## Volume, history and queue (v0.2.0)
 

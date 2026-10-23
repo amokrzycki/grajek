@@ -1,5 +1,6 @@
 mod controls;
 mod history;
+mod progress;
 mod queue;
 
 use gpui_kit::assets::IconName as AudioIcon;
@@ -11,6 +12,7 @@ use gpui_kit::component::{
     tab::{Tab, TabBar},
     tooltip::Tooltip,
 };
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AppContext, Context, ElementId, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
     IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
@@ -40,6 +42,10 @@ pub struct PlayerApp {
     input: Entity<InputState>,
     volume: Entity<SliderState>,
     volume_focus: FocusHandle,
+    progress: Entity<SliderState>,
+    progress_focus: FocusHandle,
+    progress_gesture: Option<u64>,
+    progress_preview: Option<Duration>,
     /// Tracks the Pause/Next/Stop row, to rescue keyboard focus from a control that turns off.
     controls_focus: FocusHandle,
     voice_focus: FocusHandle,
@@ -92,6 +98,13 @@ impl PlayerApp {
                 .step(1.0)
                 .default_value(f32::from(volume_requests.borrow().percent))
         });
+        let progress = cx.new(|_| {
+            SliderState::new()
+                .min(0.)
+                .max(1000.)
+                .step(1.)
+                .default_value(0.)
+        });
         let subscriptions = vec![
             cx.subscribe_in(&input, window, |this, _, event, window, cx| {
                 if let InputEvent::PressEnter { secondary, .. } = event {
@@ -113,6 +126,9 @@ impl PlayerApp {
                     this.request_volume(value.end(), true, cx);
                 }
             }),
+            cx.subscribe_in(&progress, window, |this, _, event, window, cx| {
+                this.progress_event(event, window, cx);
+            }),
         ];
         let state = states.borrow_and_update().clone();
         let updates = cx.spawn_in(window, async move |entity, cx| {
@@ -120,26 +136,7 @@ impl PlayerApp {
                 let state = states.borrow_and_update().clone();
                 if entity
                     .update_in(cx, |this, window, cx| {
-                        let before = this.controls_enabled();
-                        let lost_gateway = this.state.available && !state.available;
-                        let lost_voice_control = this.state.can_leave_voice()
-                            && !state.can_leave_voice()
-                            && this.voice_focus.contains_focused(window, cx);
-                        let import_finished = this.state.import
-                            == crate::player::ImportStatus::Importing
-                            && state.import != crate::player::ImportStatus::Importing
-                            && this.import_focus.contains_focused(window, cx);
-                        this.state = state;
-                        this.import_pending = false;
-                        this.pending = None;
-                        // Gateway loss also disables preferences outside the transport group.
-                        if lost_gateway || lost_voice_control || import_finished {
-                            window.focus(&this.input.read(cx).focus_handle(cx), cx);
-                        } else {
-                            this.rescue_focus(before, window, cx);
-                        }
-                        this.sync_volume(window, cx);
-                        cx.notify();
+                        this.accept_state(state, window, cx);
                     })
                     .is_err()
                 {
@@ -147,10 +144,14 @@ impl PlayerApp {
                 }
             }
         });
-        Self {
+        let app = Self {
             input,
             volume,
             volume_focus: cx.focus_handle(),
+            progress,
+            progress_focus: cx.focus_handle(),
+            progress_gesture: None,
+            progress_preview: None,
             controls_focus: cx.focus_handle(),
             voice_focus: cx.focus_handle(),
             import_focus: cx.focus_handle(),
@@ -166,7 +167,38 @@ impl PlayerApp {
             confirm_clear: false,
             _subscriptions: subscriptions,
             _updates: updates,
+        };
+        app.sync_progress(window, cx);
+        app
+    }
+
+    fn accept_state(&mut self, state: State, window: &mut Window, cx: &mut Context<Self>) {
+        let before = self.controls_enabled();
+        let lost_gateway = self.state.available && !state.available;
+        let lost_voice_control = self.state.can_leave_voice()
+            && !state.can_leave_voice()
+            && self.voice_focus.contains_focused(window, cx);
+        let import_finished = self.state.import == crate::player::ImportStatus::Importing
+            && state.import != crate::player::ImportStatus::Importing
+            && self.import_focus.contains_focused(window, cx);
+        let lost_progress = self.state.can_seek()
+            && (!state.can_seek() || self.state.track_id != state.track_id)
+            && self.progress_focus.is_focused(window);
+        if self.state.track_id != state.track_id || !state.can_seek() {
+            self.progress_preview = None;
         }
+        self.state = state;
+        self.import_pending = false;
+        self.pending = None;
+        // Gateway loss also disables preferences outside the transport group.
+        if lost_gateway || lost_voice_control || import_finished || lost_progress {
+            window.focus(&self.input.read(cx).focus_handle(cx), cx);
+        } else {
+            self.rescue_focus(before, window, cx);
+        }
+        self.sync_volume(window, cx);
+        self.sync_progress(window, cx);
+        cx.notify();
     }
 
     /// Fire-and-forget: the controller answers every command with a new snapshot, and the
@@ -385,9 +417,15 @@ impl PlayerApp {
                             .text_xs()
                             .child(
                                 div()
+                                    .id("seek-status")
                                     .flex_none()
+                                    .role(gpui_kit::Role::Status)
                                     .text_color(phase_color)
-                                    .child(self.state.phase.label()),
+                                    .when(self.progress_preview.is_some(), |status| {
+                                        status.font_family(theme.mono_font_family.clone())
+                                    })
+                                    .child(self.progress_status())
+                                    .test_support(),
                             )
                             .children(progress.map(|progress| {
                                 div()
@@ -407,7 +445,12 @@ impl PlayerApp {
     fn error(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let theme = cx.theme();
         let import_visible = self.state.import != crate::player::ImportStatus::Ready;
-        if self.state.error.is_none() && !import_visible {
+        let seek_error = match &self.state.seek {
+            crate::player::SeekStatus::Failed(message) => Some(message.clone()),
+            _ => None,
+        };
+        let error = self.state.error.clone().or(seek_error);
+        if error.is_none() && !import_visible {
             return None;
         }
         let import = import_visible.then(|| self.state.import.message());
@@ -433,7 +476,7 @@ impl PlayerApp {
                         .child(label("import-message", message))
                         .test_support()
                 }))
-                .children(self.state.error.clone().map(|error| {
+                .children(error.map(|error| {
                     let tip: SharedString = error.clone().into();
                     div()
                         .id("error")
@@ -536,7 +579,14 @@ impl Render for PlayerApp {
             }))
             .child(self.header(cx))
             .child(self.url_row(cx))
-            .child(self.now_playing(cx))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .child(self.now_playing(cx))
+                    .child(self.progress_row(window, cx)),
+            )
             .child(self.controls(cx))
             .children(self.error(cx))
             .child(self.volume_row(window, cx))

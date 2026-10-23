@@ -3,6 +3,10 @@ use songbird::input::{AudioStream, Input, LiveInput, YoutubeDl, metadata::Youtub
 use std::{process::Stdio, time::Duration};
 use tokio::{process::Command, time::timeout};
 
+#[path = "media/range.rs"]
+mod range;
+pub(crate) use range::SourceControl;
+
 const MAX_TITLE_CHARS: usize = 200;
 
 /// What yt-dlp reported about a track, taken from the same extraction as the stream.
@@ -10,6 +14,7 @@ const MAX_TITLE_CHARS: usize = 200;
 pub struct TrackInfo {
     pub title: Option<String>,
     pub duration: Option<Duration>,
+    pub seekable: bool,
 }
 
 impl TrackInfo {
@@ -29,7 +34,11 @@ impl TrackInfo {
         let duration = seconds
             .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
             .filter(|duration| !duration.is_zero());
-        Self { title, duration }
+        Self {
+            title,
+            duration,
+            seekable: false,
+        }
     }
 }
 
@@ -37,6 +46,7 @@ impl TrackInfo {
 pub struct Resolved {
     pub input: Input,
     pub info: TrackInfo,
+    pub source: Option<SourceControl>,
 }
 
 pub const FORMAT: &str = "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=m4a]/bestaudio";
@@ -132,10 +142,23 @@ fn title_args() -> Vec<&'static str> {
 }
 
 pub async fn resolve(client: reqwest::Client, url: String) -> Result<Resolved> {
+    resolve_format(client, url, FORMAT).await
+}
+
+/// Also used by the isolated real-audio spike to exercise the M4A fallback explicitly.
+pub(super) async fn resolve_format(
+    client: reqwest::Client,
+    url: String,
+    format: &str,
+) -> Result<Resolved> {
     timeout(Duration::from_secs(60), async {
         // Songbird's query() does not kill yt-dlp on cancellation; own only that subprocess.
         let output = Command::new("yt-dlp")
-            .args(ytdlp_args())
+            .args(
+                ytdlp_args()
+                    .into_iter()
+                    .map(|arg| if arg == FORMAT { format } else { arg }),
+            )
             .arg(&url)
             .stdin(Stdio::null())
             .kill_on_drop(true)
@@ -151,25 +174,91 @@ pub async fn resolve(client: reqwest::Client, url: String) -> Result<Resolved> {
             let diagnostic = String::from_utf8_lossy(&output.stderr);
             tracing::warn!(diagnostic = %diagnostic.trim(), "yt-dlp diagnostic");
         }
-        let metadata: YoutubeDlOutput = serde_json::from_slice(&output.stdout)
+        let description: serde_json::Value =
+            serde_json::from_slice(&output.stdout).context("yt-dlp returned invalid metadata.")?;
+        let live = description
+            .get("is_live")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
+        let metadata: YoutubeDlOutput = serde_json::from_value(description)
             .context("yt-dlp returned an unsupported stream description.")?;
-        let info = TrackInfo::from_ytdlp(metadata.title.as_deref(), metadata.duration);
-        let loader = YoutubeDl::new(client, url);
-        let stream: AudioStream<_> = loader
-            .get_stream(&metadata)
-            .await
-            .context("Cannot open the audio stream. Check media access and the network.")?;
-        let input = Input::Live(LiveInput::Raw(stream), None)
+        let mut info = TrackInfo::from_ytdlp(metadata.title.as_deref(), metadata.duration);
+        if live {
+            info.duration = None;
+        }
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(values) = &metadata.http_headers {
+            for (name, value) in values {
+                headers.insert(
+                    reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
+                    value.parse()?,
+                );
+            }
+        }
+        let ranged =
+            if info.duration.is_some() && metadata.protocol.as_deref() != Some("m3u8_native") {
+                range::RangeSource::open(client.clone(), metadata.url.clone(), headers)
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+        let source = ranged.as_ref().map(|source| source.control.clone());
+        if let Some(source) = &source {
+            source.limit();
+        }
+        let mut guard = ResolutionGuard(source.clone());
+        let stream = if let Some(source) = ranged {
+            info.seekable = true;
+            AudioStream {
+                input: Box::new(source) as Box<dyn symphonia::core::io::MediaSource>,
+            }
+        } else {
+            YoutubeDl::new(client, url)
+                .get_stream(&metadata)
+                .await
+                .context("Cannot open the audio stream. Check media access and the network.")?
+        };
+        let mut input = Input::Live(LiveInput::Raw(stream), None)
             .make_playable_async(
                 songbird::input::codecs::get_codec_registry(),
                 songbird::input::codecs::get_probe(),
             )
             .await
             .context("Cannot initialize or decode the audio stream.")?;
-        Ok(Resolved { input, info })
+        if let Some(control) = &source {
+            control.clear_limit();
+            control.enable_seeking();
+            input = match input {
+                Input::Live(LiveInput::Parsed(mut parsed), compose) => {
+                    parsed.supports_backseek = true;
+                    parsed.format = Box::new(range::SeekReader {
+                        inner: parsed.format,
+                        control: control.clone(),
+                    });
+                    Input::Live(LiveInput::Parsed(parsed), compose)
+                }
+                other => other,
+            };
+        }
+        guard.0 = None;
+        Ok(Resolved {
+            input,
+            info,
+            source,
+        })
     })
     .await
     .context("Audio resolution timed out. Check the network and yt-dlp/EJS installation.")?
+}
+
+struct ResolutionGuard(Option<SourceControl>);
+impl Drop for ResolutionGuard {
+    fn drop(&mut self) {
+        if let Some(source) = &self.0 {
+            source.stop();
+        }
+    }
 }
 
 pub fn user_error(error: &anyhow::Error) -> String {
@@ -293,7 +382,7 @@ mod tests {
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(15))
             .build()?;
-        let Resolved { input, info } =
+        let Resolved { input, info, .. } =
             resolve(client, "https://www.youtube.com/watch?v=aqz-KE-bpKQ".into()).await?;
         ensure!(info.title.is_some(), "yt-dlp reported no title");
         ensure!(
@@ -317,6 +406,63 @@ mod tests {
         )
         .await
         .context("audio decode test timed out")???;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "real YouTube/Songbird seek spike; requires network and yt-dlp/Deno"]
+    async fn public_video_bidirectional_seek() -> Result<()> {
+        use symphonia::core::{
+            formats::{SeekMode, SeekTo},
+            units::Time,
+        };
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(15))
+            .build()?;
+        let Resolved {
+            mut input, info, ..
+        } = resolve(client, "https://www.youtube.com/watch?v=aqz-KE-bpKQ".into()).await?;
+        ensure!(info.seekable, "HTTP range source unavailable");
+        let task = tokio::task::spawn_blocking(move || -> Result<()> {
+            let parsed = input.parsed_mut().context("not parsed")?;
+            ensure!(parsed.supports_backseek, "Symphonia source not seekable");
+            for second in [0, 10, 90, 20, 45, 100, 5] {
+                let result = parsed.format.seek(
+                    SeekMode::Accurate,
+                    SeekTo::Time {
+                        time: Time::new(second, 0.0),
+                        track_id: Some(parsed.track_id),
+                    },
+                )?;
+                parsed.decoder.reset();
+                let tb = parsed
+                    .decoder
+                    .codec_params()
+                    .time_base
+                    .context("no time base")?;
+                let actual = tb.calc_time(result.actual_ts);
+                ensure!(
+                    (Duration::from_secs(actual.seconds) + Duration::from_secs_f64(actual.frac))
+                        .abs_diff(Duration::from_secs(second))
+                        < Duration::from_millis(200),
+                    "wrong seek position: {actual:?}"
+                );
+                loop {
+                    let packet = parsed.format.next_packet()?;
+                    if packet.track_id() == parsed.track_id {
+                        ensure!(
+                            parsed.decoder.decode(&packet)?.frames() > 0,
+                            "no audio after seek"
+                        );
+                        break;
+                    }
+                }
+                tracing::info!(second, ?actual, "Real YouTube seek decoded");
+            }
+            Ok(())
+        });
+        timeout(Duration::from_secs(60), task).await???;
         Ok(())
     }
 }

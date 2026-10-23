@@ -8,8 +8,8 @@ use tokio::{
 };
 
 use super::{
-    Backend, Command, Handle, ImportStatus, Outcome, Phase, Preferences, RepeatMode, State,
-    VolumeRequest, volume_factor,
+    Backend, Command, Handle, ImportStatus, Outcome, Phase, Preferences, RepeatMode, SeekStatus,
+    State, VolumeRequest, seek_target, volume_factor,
 };
 use crate::{
     config::{playlist_url, video_url},
@@ -26,6 +26,28 @@ const SKIP_DELAY: Duration = Duration::from_secs(1);
 const FAILURE_LIMIT: u8 = 3;
 const REJOIN_LIMIT: u8 = 2;
 const TITLE_TIMEOUT: Duration = Duration::from_secs(20);
+const SEEK_TIMEOUT: Duration = Duration::from_secs(10);
+const UNRESPONSIVE_TIMEOUT: Duration = Duration::from_secs(15);
+
+struct SeekJob {
+    task: JoinHandle<Result<Duration>>,
+    track_id: u64,
+    target: Duration,
+    next: Option<Duration>,
+}
+
+impl Drop for SeekJob {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn seek_result(job: &mut Option<SeekJob>) -> Result<Result<Duration>, JoinError> {
+    match job {
+        Some(job) => (&mut job.task).await,
+        None => pending().await,
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Scheduled {
@@ -57,11 +79,14 @@ enum Observed {
 /// The one live track. Its event mailbox belongs to it, so a replaced track can never
 /// report an outcome for its successor.
 struct Active<H> {
+    id: u64,
+    seek: SeekStatus,
     handle: H,
     outcome: watch::Receiver<Option<Outcome>>,
     info: TrackInfo,
     url: String,
     started: Instant,
+    last_info: Instant,
     /// Position has advanced at least once; Playing is not claimed before this.
     confirmed: bool,
     /// The video has been added to the history (once, when playback begins).
@@ -78,11 +103,14 @@ impl<H: Handle> Active<H> {
         url: String,
     ) -> Self {
         Self {
+            id: 0,
+            seek: SeekStatus::Ready,
             handle,
             outcome,
             info,
             url,
             started: Instant::now(),
+            last_info: Instant::now(),
             confirmed: false,
             recorded: false,
             paused: false,
@@ -104,6 +132,8 @@ impl<H: Handle> Active<H> {
             available: true,
             track: Some(self.info.clone()),
             position: self.position,
+            track_id: self.id,
+            seek: self.seek.clone(),
             ..State::default()
         }
     }
@@ -239,6 +269,8 @@ pub(super) struct Controller<B: Backend> {
     title_job: Option<TitleJob>,
     import_job: Option<ImportJob>,
     import: ImportStatus,
+    seek_job: Option<SeekJob>,
+    track_id: u64,
 }
 
 impl<B: Backend> Controller<B> {
@@ -270,6 +302,8 @@ impl<B: Backend> Controller<B> {
             title_job: None,
             import_job: None,
             import: ImportStatus::Ready,
+            seek_job: None,
+            track_id: 0,
         }
     }
 
@@ -279,6 +313,11 @@ impl<B: Backend> Controller<B> {
 
     /// Adds the shared data (volume, queue, history) to a state about the track/phase.
     fn view(&self, mut state: State) -> State {
+        state.track_id = self.track.as_ref().map_or(0, |track| track.id);
+        state.seek = self
+            .track
+            .as_ref()
+            .map_or(SeekStatus::Ready, |track| track.seek.clone());
         state.available = self.gateway();
         state.controller_ready = true;
         state.voice_connected = self.health.borrow().voice;
@@ -521,6 +560,7 @@ impl<B: Backend> Controller<B> {
     }
 
     fn stop_track(&mut self) {
+        self.seek_job = None;
         if let Some(track) = self.track.take()
             && let Err(error) = track.handle.stop()
         {
@@ -619,6 +659,7 @@ impl<B: Backend> Controller<B> {
 
     async fn command(&mut self, command: Command) {
         match command {
+            Command::Seek { track_id, position } => self.seek(track_id, position),
             Command::ImportPlaylist(value) => self.start_import(&value),
             Command::CancelImport => {
                 self.cancel_import().await;
@@ -708,6 +749,72 @@ impl<B: Backend> Controller<B> {
                     self.saved.history.clear();
                     self.persist();
                 }
+                self.sync();
+            }
+        }
+    }
+
+    fn seek(&mut self, track_id: u64, position: Duration) {
+        if !self.states.borrow().can_seek()
+            || self.track.as_ref().is_none_or(|track| track.id != track_id)
+        {
+            return self.sync();
+        }
+        let Some(current) = &mut self.track else {
+            return;
+        };
+        let Some(target) = seek_target(position, current.info.duration) else {
+            return;
+        };
+        if self.seek_job.is_none() && target == current.position {
+            return self.sync();
+        }
+        if let Some(job) = &mut self.seek_job {
+            job.next = (target != job.target).then_some(target);
+        } else {
+            let handle = current.handle.clone();
+            self.seek_job = Some(SeekJob {
+                track_id,
+                target,
+                next: None,
+                task: tokio::spawn(async move {
+                    timeout(SEEK_TIMEOUT, handle.seek(target)).await
+                        .context("Seeking timed out. This stream cannot be sought again; use Play URL to reopen it.")?
+                        .context("This stream could not seek. Use Play URL to reopen it.")
+                }),
+            });
+        }
+        current.seek = SeekStatus::Pending(target);
+        self.sync();
+    }
+
+    fn finish_seek(&mut self, result: Result<Result<Duration>, JoinError>) {
+        let Some(job) = self.seek_job.take() else {
+            return;
+        };
+        let Some(current) = &mut self.track else {
+            return;
+        };
+        if job.track_id != current.id {
+            return;
+        }
+        match result
+            .context("Seek task failed.")
+            .and_then(|result| result)
+        {
+            Ok(actual) => {
+                current.last_info = Instant::now();
+                current.position = Duration::from_secs(actual.as_secs());
+                current.seek = SeekStatus::Complete(actual);
+                let state = current.state(None);
+                self.emit(state);
+                if let Some(next) = job.next {
+                    self.seek(job.track_id, next);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Seek failed");
+                current.seek = SeekStatus::Failed(error.to_string());
                 self.sync();
             }
         }
@@ -842,40 +949,44 @@ impl<B: Backend> Controller<B> {
             return false;
         };
         let failure = match reading {
-            Some(Ok(info)) => match current.observe(&info) {
-                Observed::Changed => {
-                    let state = current.state(None);
-                    // History records a video once it is really playing, not when yt-dlp succeeds.
-                    let entry = (!current.recorded).then(|| {
-                        current.recorded = true;
-                        current.entry()
-                    });
-                    self.failures = 0;
-                    if let Some(entry) = entry {
-                        self.saved.record(entry);
-                        self.persist();
+            Some(Ok(info)) => {
+                current.last_info = Instant::now();
+                match current.observe(&info) {
+                    Observed::Changed => {
+                        let state = current.state(None);
+                        // History records a video once it is really playing, not when yt-dlp succeeds.
+                        let entry = (!current.recorded).then(|| {
+                            current.recorded = true;
+                            current.entry()
+                        });
+                        self.failures = 0;
+                        if let Some(entry) = entry {
+                            self.saved.record(entry);
+                            self.persist();
+                        }
+                        self.emit(state);
+                        None
                     }
-                    self.emit(state);
-                    None
-                }
-                Observed::Done(error) => {
-                    let ended = error.is_none();
-                    if let Some(error) = error {
-                        self.media_failure(&error);
+                    Observed::Done(error) => {
+                        let ended = error.is_none();
+                        if let Some(error) = error {
+                            self.media_failure(&error);
+                        }
+                        return ended;
                     }
-                    return ended;
+                    Observed::Idle => current
+                        .stalled()
+                        .then_some("Audio playback did not start. Try another video."),
                 }
-                Observed::Idle => current
-                    .stalled()
-                    .then_some("Audio playback did not start. Try another video."),
-            },
+            }
             Some(Err(error)) => {
                 tracing::debug!(%error, "Track handle finished");
                 // Allow terminal events to arrive; a dead driver cannot hold the UI forever.
                 (current.started.elapsed() > START_TIMEOUT)
                     .then_some("Audio track terminated unexpectedly. Try again.")
             }
-            None => Some("Audio driver stopped responding. Try again."),
+            None => (current.last_info.elapsed() >= UNRESPONSIVE_TIMEOUT)
+                .then_some("Audio driver stopped responding. Try again."),
         };
         if let Some(message) = failure {
             self.media_failure(message);
@@ -1019,9 +1130,12 @@ impl<B: Backend> Controller<B> {
                 .await
                 {
                     Ok(Ok((handle, outcome))) => {
-                        let current = Active::new(handle, outcome, info, url);
-                        self.emit(current.state(None));
+                        self.track_id = self.track_id.wrapping_add(1);
+                        let mut current = Active::new(handle, outcome, info, url);
+                        current.id = self.track_id;
+                        let state = current.state(None);
                         self.track = Some(current);
+                        self.emit(state);
                     }
                     Ok(Err(error)) => {
                         tracing::error!(error = %format!("{error:#}"), "Could not start audio playback");
@@ -1106,7 +1220,11 @@ impl<B: Backend> Controller<B> {
                 self.scheduled = Some((Instant::now() + IDLE_TIMEOUT, Scheduled::Idle));
             }
             let deadline = self.scheduled.map(|(deadline, _)| deadline);
-            let poll_handle = self.track.as_ref().map(|track| track.handle.clone());
+            let poll_handle = self
+                .track
+                .as_ref()
+                .filter(|_| self.seek_job.is_none())
+                .map(|track| track.handle.clone());
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
@@ -1130,6 +1248,7 @@ impl<B: Backend> Controller<B> {
                 },
                 result = import_result(&mut self.import_job) => self.finish_import(result),
                 result = title_result(&mut self.title_job) => self.finish_title(result),
+                result = seek_result(&mut self.seek_job) => self.finish_seek(result),
                 event = job_event(&mut self.job) => match event {
                     JobEvent::Connected(reached) => {
                         if let Some(job) = &mut self.job { job.voice_ready = reached; }
@@ -1155,7 +1274,7 @@ impl<B: Backend> Controller<B> {
                     tick.tick().await;
                     timeout(Duration::from_secs(2), handle.info()).await.ok()
                 } => {
-                    if self.apply(reading) {
+                    if self.seek_job.is_none() && self.apply(reading) {
                         self.natural_end().await;
                     }
                 },

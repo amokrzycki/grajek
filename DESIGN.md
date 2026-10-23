@@ -301,6 +301,10 @@ Use `TabBar::underline().small()`: canvas backing, muted inactive text, brass ac
 
 Existing speaker icon, native `Slider`, fixed-width right-aligned mono percentage. Bar uses control-border; thumb brass. Volume2/VolumeX follows the actual percentage. Focus uses the reserved wrapper border. Preserve Tab availability, custom keyboard support, live watch updates, release persistence and controller rollback.
 
+### Playback progress
+
+Use the existing native kit slider and volume focus-border convention for playback progress. Its brass thumb follows authoritative position snapshots; a drag may show an explicitly labelled monospaced “Preview” time. Release returns to confirmed position until the controller reports the actual result. “Seeking…” accompanies pending work; failures use the existing callout. Disable seeking for incompatible sources and omit the percentage-like track entirely when duration is unknown. Focused keyboard actions stay within this control and focus returns to the URL input when the track is replaced or the control becomes unavailable. Preserve scrolling queue space at both supported window sizes.
+
 ### Lists and empty states
 
 The Queue header includes a native extra-small ghost button, “Continue on error:
@@ -316,7 +320,7 @@ Empty guidance is truthful and left-aligned near the top, with 8px horizontal an
 
 The outlined 40px stamp is a status display, not a button. It appears once beside the title. Playing shows Play; Paused Pause; Initializing/Connecting/Resolving/Stopping Ellipsis; Ready/Error Square. Controller snapshots alone select symbol and explicit phase. Error presence takes precedence with danger color; playing/paused otherwise use brass, remaining phases muted.
 
-Stamp/title separation is 12px. Now Playing has 8px vertical padding and one bottom rule. Keep the prominent title, explicit 12px phase and measured time readable without waveform or seeking affordance.
+Stamp/title separation is 12px. Now Playing has 8px vertical padding and one bottom rule. Keep the prominent title, explicit 12px phase and measured time readable without waveform decoration. Known-duration media places the native progress slider directly below this group.
 
 ### Errors and micro-interactions
 
@@ -337,7 +341,7 @@ No application animations or extra frame requests are introduced. The v0.2.1 idl
 
 ### Don't:
 
-- **Don't** invent artwork, waveform data, seeking, optimistic playback or animated loading percentages.
+- **Don't** invent artwork, waveform data, playback positions, optimistic playback or animated loading percentages.
 - **Don't** add music-note ornaments, a retro hardware skin, streaming-service navigation or SaaS dashboard vocabulary.
 - **Don't** add nested rounded cards, gradients, glows, glass, arbitrary shadows or inconsistent radii.
 - **Don't** repeat the stamp in rows or let healthy connection status compete with the title.

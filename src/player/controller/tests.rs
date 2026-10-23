@@ -21,6 +21,8 @@ const C: &str = "https://www.youtube.com/watch?v=ccccccccccc";
 /// A track whose position, end and failures the test controls. Songbird's own handle
 /// only answers while a real voice connection is mixing, so it cannot be driven offline.
 struct FakeTrack {
+    seek_reply: Mutex<Option<oneshot::Receiver<TrackResult<Duration>>>>,
+    seeks: Mutex<Vec<Duration>>,
     title: String,
     start_volume: f32,
     volume: Mutex<f32>,
@@ -65,6 +67,27 @@ impl FakeTrack {
 struct FakeHandle(Arc<FakeTrack>);
 
 impl Handle for FakeHandle {
+    async fn seek(&self, position: Duration) -> TrackResult<Duration> {
+        self.0.record("seek")?;
+        self.0
+            .seeks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(position);
+        let reply = self
+            .0
+            .seek_reply
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let actual = if let Some(reply) = reply {
+            reply.await.map_err(|_| ControlError::Finished)??
+        } else {
+            position
+        };
+        self.0.mode.lock().unwrap_or_else(PoisonError::into_inner).1 = actual;
+        Ok(actual)
+    }
     fn set_volume(&self, volume: f32) -> TrackResult<()> {
         self.0.record("volume")?;
         *self.0.volume.lock().unwrap_or_else(PoisonError::into_inner) = volume;
@@ -96,6 +119,30 @@ impl Handle for FakeHandle {
             ..TrackState::default()
         })
     }
+}
+
+#[test]
+fn seek_bounds_reject_unreliable_duration_and_clamp_before_end() {
+    use crate::player::seek_target;
+    for duration in [None, Some(Duration::ZERO)] {
+        assert_eq!(seek_target(Duration::ZERO, duration), None);
+    }
+    let duration = Some(Duration::from_secs(60));
+    for (request, expected) in [
+        (Duration::ZERO, 0),
+        (Duration::from_secs(20), 20),
+        (Duration::from_secs(60), 59),
+        (Duration::MAX, 59),
+    ] {
+        assert_eq!(
+            seek_target(request, duration),
+            Some(Duration::from_secs(expected))
+        );
+    }
+    assert_eq!(
+        seek_target(Duration::MAX, Some(Duration::from_millis(500))),
+        Some(Duration::ZERO)
+    );
 }
 
 struct Fake {
@@ -255,9 +302,11 @@ impl Backend for Fake {
         }
         Ok(Resolved {
             input: Vec::<u8>::new().into(),
+            source: None,
             info: TrackInfo {
                 title: Some(url),
                 duration: Some(Duration::from_secs(60)),
+                seekable: true,
             },
         })
     }
@@ -276,6 +325,8 @@ impl Backend for Fake {
         }
         let (outcome, mailbox) = watch::channel(None);
         let track = Arc::new(FakeTrack {
+            seek_reply: Mutex::default(),
+            seeks: Mutex::default(),
             title: resolved.info.title.unwrap_or_default(),
             start_volume: volume,
             volume: Mutex::new(volume),
@@ -593,6 +644,7 @@ fn active(track: &Arc<FakeTrack>) -> Active<FakeHandle> {
         TrackInfo {
             title: Some("Song".into()),
             duration: Some(Duration::from_secs(225)),
+            seekable: true,
         },
         A.into(),
     )
@@ -610,6 +662,7 @@ async fn track_of(fake: &Arc<Fake>) -> Result<Arc<FakeTrack>> {
     fake.play(
         Resolved {
             input: Vec::<u8>::new().into(),
+            source: None,
             info: TrackInfo::default(),
         },
         1.0,
@@ -2614,3 +2667,4 @@ fn leave_voice_availability_follows_session_and_controller_state() {
 }
 
 mod playlist;
+mod seek;
