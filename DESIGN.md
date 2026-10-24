@@ -114,7 +114,7 @@ components:
 
 Grajek is precise, warm, quiet and independent. Premium comes from readable hierarchy, consistent geometry and native interaction quality. One useful transport stamp makes real playback state recognizable without artwork, meters or animation. The track is the visual anchor; the surrounding controls stay compact and familiar.
 
-This is the lasting visual contract for a native Linux desktop application built with Rust and GPUI Kit 0.7.3. Product behavior belongs to `PRODUCT.md` and controller snapshots; the first player composition belongs to `.impeccable/surfaces/player.md`. The implementation is the evidence for these tokens. Frontmatter values are normative; `src/style.rs` is the runtime authority. Extend the existing native controls rather than introduce a web renderer or another component system.
+This is the lasting visual contract for a native Linux and Windows desktop application built with Rust and GPUI Kit 0.7.3. Product behavior belongs to `PRODUCT.md` and controller snapshots; the first player composition belongs to `.impeccable/surfaces/player.md`. The implementation is the evidence for these tokens. Frontmatter values are normative; `src/style.rs` is the runtime authority. Extend the existing native controls rather than introduce a web renderer or another component system.
 
 **Key Characteristics:**
 
@@ -177,9 +177,9 @@ Future light mode must retain these roles with warm paper, dark ink and a darker
 
 ## Typography
 
-**Sans family:** choose once at startup from installed `Noto Sans`, then `Inter`, then `DejaVu Sans`; otherwise retain the kit-resolved system family. These are native candidates, not a CSS comma-separated stack. Do not download fonts. Frontmatter omits a fixed `fontFamily` because the actual family depends on the Linux machine.
+**Sans family:** on Linux choose once at startup from installed `Noto Sans`, then `Inter`, then `DejaVu Sans`. On Windows prefer installed `Segoe UI`, then `Segoe UI Variable Text`, then `Arial`. Otherwise retain the kit-resolved system family. These are native candidates, not a CSS comma-separated stack. Do not download fonts. Frontmatter omits a fixed `fontFamily` because the actual family depends on the machine.
 
-**Measurement family:** `theme.mono_font_family`, resolved by the kit to an installed family. The normal Linux default is DejaVu Sans Mono; the kit probes installed alternatives when needed. Preserve runtime resolution rather than passing an assumed family name.
+**Measurement family:** `theme.mono_font_family`, resolved by the kit to an installed family. The normal Linux default is DejaVu Sans Mono and Windows uses Consolas; the kit probes installed alternatives when needed. Preserve runtime resolution rather than passing an assumed family name.
 
 The single sans hierarchy is direct and compact. Mono is reserved for measured time, volume percentage and queue positions, not control labels.
 
@@ -335,7 +335,7 @@ No application animations or extra frame requests are introduced. The v0.2.1 idl
 - **Do** use the centralized semantic palette through `Theme::update` and preserve native kit variants.
 - **Do** use one controller-driven stamp beside the track, paired with explicit phase text.
 - **Do** preserve the 16px root inset, 8px main gap, fixed controls and flexible 36px scrolling rows.
-- **Do** preserve installed Linux font resolution, the 22px track anchor, 14px body and 12px metadata/measurements.
+- **Do** use installed Segoe UI on Windows and preserve installed Linux font resolution, the 22px track anchor, 14px body and 12px metadata/measurements.
 - **Do** retain visible keyboard focus, accessible icon labels, full-text tooltips and existing test-support identifiers.
 - **Do** inspect both native window sizes and error/disabled/loading layouts before extending the surface.
 
@@ -356,3 +356,13 @@ Reconciled against `src/style.rs`, `src/main.rs`, `src/app.rs`, `src/app/{contro
 `.impeccable/review/` contains `before-default.png` and `before-minimum.png` from the incumbent executable, plus `after-default.png` and `after-minimum.png` from the rebuilt production executable at 520×560 and 420×480. The after frames show missing-configuration feedback, disabled playback actions, focused URL input and an empty queue. They do not show synthetic playback or populated history. Local integration tests cover the eight controller phases, populated queue/history, long titles/errors, scrolling and commands; the captures establish local rendering/layout only. Neither screenshots nor tests establish live Discord connectivity, audio, compositor integration or fractional scaling. Final strict Cargo validation must come from actual command results, not be inferred from screenshots.
 
 `.impeccable/design.json` uses schemaVersion 2 for documentation-panel extensions and self-contained translated component previews. Synthesized tonal ramps are exploration metadata, not runtime colors. Native source/frontmatter remain authoritative. No craft defect was canonized; absent light mode and live-service proof remain explicit limitations.
+
+### Windows platform conventions
+
+Signal Ledger remains one Operate-mode surface. Use the native titlebar and GPUI's
+DPI-aware window/input APIs; retain visible focus, keyboard access and existing
+compact dimensions. Prefer installed Segoe UI on Windows and the existing Linux
+font order; the kit supplies the platform monospaced measurement font. OS media
+controls complement the window, with no extra transport row or invented metadata.
+Mixed-DPI, Narrator and actual Windows window interaction require native runtime
+verification; headless tests and cross-compilation cannot establish them.

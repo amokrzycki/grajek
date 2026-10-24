@@ -66,6 +66,8 @@ pub struct PlayerApp {
     confirm_clear: bool,
     _subscriptions: Vec<Subscription>,
     _updates: Task<()>,
+    #[cfg(target_os = "windows")]
+    media: Option<crate::native::windows::MediaSession>,
 }
 
 fn clock(position: Duration) -> String {
@@ -82,6 +84,11 @@ fn format_progress(position: Duration, duration: Option<Duration>) -> String {
 }
 
 impl PlayerApp {
+    #[cfg(target_os = "windows")]
+    pub fn with_media(mut self, media: Option<crate::native::windows::MediaSession>) -> Self {
+        self.media = media;
+        self
+    }
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -167,6 +174,8 @@ impl PlayerApp {
             confirm_clear: false,
             _subscriptions: subscriptions,
             _updates: updates,
+            #[cfg(target_os = "windows")]
+            media: None,
         };
         app.sync_progress(window, cx);
         app

@@ -10,7 +10,7 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Result<Self> {
-        match dotenvy::dotenv() {
+        match load_dotenv() {
             Ok(_) => {}
             Err(dotenvy::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => bail!("Cannot read .env. Check its syntax and permissions."),
@@ -27,6 +27,35 @@ impl Config {
             channel: ChannelId::new(env_id("DISCORD_VOICE_CHANNEL_ID")?),
         })
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn load_dotenv() -> dotenvy::Result<std::path::PathBuf> {
+    dotenvy::dotenv()
+}
+
+/// Explorer launches use the per-user file first, then the executable's directory.
+#[cfg(any(target_os = "windows", test))]
+fn windows_config_paths(
+    data: Option<std::path::PathBuf>,
+    exe: Option<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    data.map(|path| path.join(".env"))
+        .into_iter()
+        .chain(exe.and_then(|path| path.parent().map(|parent| parent.join(".env"))))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn load_dotenv() -> dotenvy::Result<std::path::PathBuf> {
+    for path in windows_config_paths(crate::store::app_data_dir(), std::env::current_exe().ok()) {
+        match dotenvy::from_path(&path) {
+            Ok(()) => return Ok(path),
+            Err(dotenvy::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(dotenvy::Error::Io(std::io::ErrorKind::NotFound.into()))
 }
 
 fn env_id(name: &str) -> Result<u64> {
@@ -139,6 +168,25 @@ pub fn video_url(value: &str) -> Result<String> {
 mod tests {
     use super::{parse_id, playlist_url, video_url};
     use anyhow::Result;
+
+    #[test]
+    fn explorer_configuration_lookup_is_independent_of_working_directory() {
+        let root = std::env::temp_dir();
+        let data = root.join("Grajek");
+        let executable = root.join("portable").join("grajek.exe");
+        assert_eq!(
+            super::windows_config_paths(Some(data.clone()), Some(executable.clone())),
+            vec![data.join(".env"), root.join("portable/.env")]
+        );
+        assert_eq!(
+            super::windows_config_paths(None, Some(executable)),
+            vec![root.join("portable/.env")]
+        );
+        assert_eq!(
+            super::windows_config_paths(None, None),
+            Vec::<std::path::PathBuf>::new()
+        );
+    }
 
     #[test]
     fn accepts_video_links_and_discards_playlist_parameters() -> Result<()> {

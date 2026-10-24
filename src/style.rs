@@ -5,7 +5,11 @@ use gpui_kit::{App, px, rgb};
 pub fn init(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
     let installed = cx.text_system().all_font_names();
-    let family = ["Noto Sans", "Inter", "DejaVu Sans"]
+    #[cfg(target_os = "windows")]
+    let preferred = ["Segoe UI", "Segoe UI Variable Text", "Arial"];
+    #[cfg(not(target_os = "windows"))]
+    let preferred = ["Noto Sans", "Inter", "DejaVu Sans"];
+    let family = preferred
         .into_iter()
         .find(|name| installed.iter().any(|installed| installed == name));
     Theme::update(cx, |theme| {

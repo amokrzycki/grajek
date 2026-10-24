@@ -1,0 +1,18 @@
+Native X11 window on isolated Xvfb display opened; MPRIS identity discoverable
+External Play reached confirmed Playing; metadata: a{sv} 3 "mpris:length" x 635000000 "mpris:trackid" o "/io/github/amokrzycki/grajek/track/t1" "xesam:title" s "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film"
+External Pause confirmed
+External Resume confirmed
+CanSeek=true
+Forward seek position=11000000
+Backward seek position=7000000
+External Next reached confirmed Playing with changed track identity: a{sv} 3 "mpris:length" x 635000000 "mpris:trackid" o "/io/github/amokrzycki/grajek/track/t2" "xesam:title" s "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film"
+External Stop confirmed; metadata=
+Process exit=0
+Saved pending queue=1; history=1
+MPRIS remains=false
+
+Restart check (same persistence implementation):
+Restart restored pending queue without starting playback; metadata=
+Process exit=0
+Saved pending queue=1; history=1
+MPRIS remains=false

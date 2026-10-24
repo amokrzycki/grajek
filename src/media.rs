@@ -74,11 +74,22 @@ pub fn ytdlp_args() -> Vec<&'static str> {
     args
 }
 
+/// Avoid console flashes when a Windows GUI app invokes the extractor tools.
+pub(crate) fn tool_command(tool: &str) -> Command {
+    #[cfg(windows)]
+    let mut command = Command::new(tool);
+    #[cfg(not(windows))]
+    let command = Command::new(tool);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    command
+}
+
 pub async fn check_tools() -> Result<()> {
     for tool in ["yt-dlp", "deno"] {
         let output = timeout(
             Duration::from_secs(5),
-            Command::new(tool)
+            tool_command(tool)
                 .arg("--version")
                 .kill_on_drop(true)
                 .output(),
@@ -114,7 +125,7 @@ fn supported_deno(output: &str) -> bool {
 
 /// Extracts display metadata only: no format selection, stream access or decoding.
 pub async fn title(url: String) -> Result<Option<String>> {
-    let output = Command::new("yt-dlp")
+    let output = tool_command("yt-dlp")
         .args(title_args())
         .arg(url)
         .stdin(Stdio::null())
@@ -153,7 +164,7 @@ pub(super) async fn resolve_format(
 ) -> Result<Resolved> {
     timeout(Duration::from_secs(60), async {
         // Songbird's query() does not kill yt-dlp on cancellation; own only that subprocess.
-        let output = Command::new("yt-dlp")
+        let output = tool_command("yt-dlp")
             .args(
                 ytdlp_args()
                     .into_iter()
