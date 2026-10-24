@@ -6,19 +6,29 @@ permissions:
   contents: read
 
 jobs:
-  linux:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 15
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy, rustfmt
-      - name: Install native build dependencies
+      - name: Configure MSVC and Windows SDK
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang cmake pkg-config libopus-dev \
+            build-essential clang cmake pkg-config libopus-dev dbus-daemon \
             libfontconfig1-dev libfreetype6-dev libwayland-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev \
             libssl-dev libzstd-dev libvulkan-dev
@@ -26,7 +36,21 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check lints
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: Run tests
+      - name: Run headless tests
         run: cargo test --locked --workspace --all-features
       - name: Build native application
         run: cargo build --locked
+      - name: Build Windows portable executable
+        if: runner.os == 'Windows'
+        run: cargo build --locked --release
+      - name: Save unsigned Windows build
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: grajek-0.4.0-windows-x64
+          path: |
+            target/release/grajek.exe
+            .env.example
+            README.md
+          include-hidden-files: true
+          if-no-files-found: error

@@ -1,8 +1,11 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod app;
 mod config;
 mod discord;
 mod live;
 mod media;
+mod native;
 mod player;
 mod playlist;
 mod queue;
@@ -53,6 +56,12 @@ fn main() -> Result<()> {
     let (volume, volume_rx) = watch::channel(player::VolumeRequest::default());
     let (states, updates) = watch::channel(player::State::default());
     let (shutdown, shutdown_rx) = watch::channel(false);
+    let endpoint = native::Endpoint {
+        commands: commands.clone(),
+        states: updates.clone(),
+    };
+    #[cfg(target_os = "linux")]
+    let media_session = runtime.spawn(native::linux::run(endpoint, shutdown_rx.clone()));
     let controller = runtime.spawn(player::run(
         config,
         receiver,
@@ -83,7 +92,14 @@ fn main() -> Result<()> {
             ..Default::default()
         };
         if let Err(error) = open_window(options, cx, |window, cx| {
-            cx.new(|cx| app::PlayerApp::new(window, cx, commands, volume, updates))
+            #[cfg(target_os = "windows")]
+            let media = native::windows::attach(window, cx, &endpoint);
+            cx.new(|cx| {
+                let app = app::PlayerApp::new(window, cx, commands, volume, updates);
+                #[cfg(target_os = "windows")]
+                let app = app.with_media(media);
+                app
+            })
         }) {
             tracing::error!(%error, "Could not open native window");
             cx.quit();
@@ -91,6 +107,16 @@ fn main() -> Result<()> {
     });
     shutdown.send_replace(true);
     runtime.block_on(async {
+        #[cfg(target_os = "linux")]
+        {
+            let mut media_session = media_session;
+            if tokio::time::timeout(Duration::from_secs(2), &mut media_session)
+                .await
+                .is_err()
+            {
+                media_session.abort();
+            }
+        }
         let mut controller = controller;
         match tokio::time::timeout(Duration::from_secs(8), &mut controller).await {
             Ok(Ok(())) => {}

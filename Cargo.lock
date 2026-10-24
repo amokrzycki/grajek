@@ -3532,11 +3532,13 @@ checksum = "4b0d73e1bc02eef886a5947f41b8512708792e9e5d3053d181843311a487f96f"
 
 [[package]]
 name = "grajek"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "dotenvy",
+ "futures-lite",
  "gpui-kit",
+ "grajek-smtc",
  "reqwest",
  "serde",
  "serde_json",
@@ -3547,6 +3549,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zbus",
+]
+
+[[package]]
+name = "grajek-smtc"
+version = "0.4.0"
+dependencies = [
+ "raw-window-handle",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -8662,6 +8673,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2 0.6.5",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -10710,6 +10722,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",

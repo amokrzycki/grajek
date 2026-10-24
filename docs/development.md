@@ -13,8 +13,8 @@ GPUI 0.3.9, Serenity 0.12.5, Songbird 0.6.1 and Symphonia 0.5.5. Kit's Linux
 
 Use the selected toolchain; a project override is unnecessary. If Clippy or
 rustfmt is missing, install the components with `rustup component add clippy rustfmt`.
-The [Linux CI workflow](../.github/workflows/ci.yml) uses Rust 1.99.0 on Ubuntu
-22.04 and lists its native build packages. It runs:
+The [cross-platform CI workflow](../.github/workflows/ci.yml) uses Rust 1.99.0 on Ubuntu
+22.04 and Windows Server 2022 (MSVC) and lists its native build packages. It runs:
 
 ```sh
 cargo fmt --all -- --check
@@ -32,8 +32,10 @@ cancellation, seeking and playback/recovery events. Controller tests use fake
 `Backend`/`Handle` implementations; the production backend is
 [`src/live.rs`](../src/live.rs). GPUI tests exercise input, focus, controls and
 compact layouts without Discord credentials. These tests do not prove audible
-Discord output. The child-cancellation test uses `/proc`; a historical sandbox
-restriction and its effect are recorded in [validation](validation.md#v010-wayland-audit-2026-10-12).
+Discord output. The subprocess fixtures run the Rust test executable on both OSes; cancellation
+proves release of a child-owned loopback socket. No test depends on sh, sleep,
+head or /proc. HTTP fixtures need loopback permission. Linux MPRIS tests spawn
+an isolated `dbus-daemon`, never the normal desktop service name on the user bus.
 
 ### Optional media checks
 
@@ -230,7 +232,9 @@ still permits local list edits.
 [`Cargo.toml`](../Cargo.toml) follows the
 [Random Frame desktop policy](https://github.com/amokrzycki/random-frame/blob/main/src-tauri/Cargo.toml)
 and [server policy](https://github.com/amokrzycki/random-frame-server/blob/main/Cargo.toml).
-Unsafe code is forbidden. Unused code, Clippy `all`/`pedantic`, panic paths,
+Unsafe code is forbidden in the application. The local `grajek-smtc` crate denies
+unsafe code except in `interop.rs`, which documents its three WinRT/ HWND FFI
+calls. Its apartment guard is not Send; the UI owns it and all COM objects. Unused code, Clippy `all`/`pedantic`, panic paths,
 debugging artifacts and selected ownership/async/restriction checks warn locally
 and fail under `-D warnings`. The full `nursery` and `restriction` groups are not
 enabled; checks already in `all`/`pedantic` are not declared twice.
@@ -254,3 +258,89 @@ return `Result`.
 - [yt-dlp EJS setup](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
 - [Discord voice/DAVE](https://docs.discord.com/developers/topics/voice-connections).
 - [Arch yt-dlp package](https://archlinux.org/packages/extra/any/yt-dlp/).
+
+## Native media adapters and Windows
+
+`src/native.rs` projects authoritative snapshots and translates external intents
+inside the controller. `Endpoint::send` uses the existing 16-slot command channel
+with `try_send`; native callbacks never await network work. Duplicate Play/Pause
+are evaluated when consumed. Track IDs reject stale absolute/relative seek
+intents; a controller seek serial records successful discontinuities even if
+watch updates coalesce. Queue, recovery, repeat and seek implementation stay in
+the existing controller.
+
+`src/native/linux.rs` implements the MPRIS root/player interfaces with zbus's
+Tokio backend, already present in the locked Linux graph. It explicitly checks
+exclusive name acquisition, emits only changed properties, omits Position change
+signals, and emits Seeked only after confirmed seek completion. Position queries
+return the last controller position, never interpolation. Volume is the reported
+bot gain; setting volume/rate is unsupported. Startup is bounded to five seconds;
+missing bus, collisions and connection loss are nonfatal. Shutdown closes the
+connection with no retry loop.
+
+`src/native/windows.rs` owns a foreground GPUI task, cancelled with PlayerApp.
+`crates/grajek-smtc` borrows GPUI's HasWindowHandle only during GetForWindow and
+retains no raw HWND. RoInitialize joins the existing GPUI OLE STA and balances
+RoUninitialize on the same thread after COM objects drop. Button/timeline tokens
+are removed on Drop, including partial registration failures. Callbacks capture
+only a bounded controller sender; each position delegate captures its registered
+track ID, so a queued old callback cannot acquire a successor's identity. Unsupported
+buttons are disabled. Timeline seek bounds collapse to the confirmed position
+for unseekable media. Unknown duration clears the Windows timeline to zero
+rather than fabricating an end time; MPRIS can still report elapsed position.
+No keyboard hook or local MediaPlayer is created.
+
+Build Windows from an x64 Visual Studio developer shell with CMake, the MSVC
+Rust toolchain and the Windows SDK installed (see README). The pinned GPUI
+release build uses SDK fxc.exe; set GPUI_FXC_PATH if SDK discovery fails. Tests
+are headless; hosted CI does not prove actual Windows rendering or shell media
+session discovery. Native release CI additionally saves an unsigned executable,
+README and .env.example as a build artifact; it never includes real .env files.
+
+Windows configuration uses the first existing per-user .env or executable-side
+.env, independently of cwd. Linux dotenv lookup is unchanged. Windows state
+uses LOCALAPPDATA/Grajek; std::fs::rename replaces an existing file through the
+platform API without deleting it first. The same-directory temporary, sync,
+serialized latest-snapshot writer and corrupt-file preservation remain. Windows
+tests cover a locked destination failing safely and successful replacement after
+closing the lock. Unix directory mode 0700 remains behind cfg(unix).
+
+For manual Linux inspection, start Grajek with an isolated XDG_DATA_HOME, then:
+
+```sh
+qdbus6 org.mpris.MediaPlayer2.grajek /org/mpris/MediaPlayer2
+qdbus6 org.mpris.MediaPlayer2.grajek /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Pause
+qdbus6 org.mpris.MediaPlayer2.grajek /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Play
+qdbus6 org.mpris.MediaPlayer2.grajek /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Seek 5000000
+```
+
+For native Windows acceptance use a test LOCALAPPDATA and launch the release exe
+from Explorer with cwd outside the executable folder. Verify 100/150/200% DPI,
+Tab/Space/Enter, Ctrl+Enter and Ctrl+1/2, queue/history, both slider input methods,
+playlist import, persistence/restart and normal titlebar close. With a Discord
+listener, test actual audible playback and volume. Then use the shell's media
+panel/multimedia keys while Grajek is unfocused; verify title, Pause/Play/Next/Stop,
+seek when offered, and removal on close. Record OS build, GPU, results and any
+shell-specific limitations in the release report. No native result may be
+inferred from a successful hosted build or Wine run.
+
+Authoritative references: [MPRIS Player specification](https://specifications.freedesktop.org/mpris/latest/Player_Interface.html),
+[desktop GetForWindow](https://learn.microsoft.com/en-us/windows/win32/api/systemmediatransportcontrolsinterop/nf-systemmediatransportcontrolsinterop-isystemmediatransportcontrolsinterop-getforwindow),
+[SMTC manual integration](https://learn.microsoft.com/en-us/windows/apps/develop/media-playback/integrate-with-systemmediatransportcontrols),
+[Windows DPI testing](https://learn.microsoft.com/en-gb/windows/win32/hidpi/high-dpi-desktop-application-development-on-windows).
+
+### Linux-hosted Windows release evidence
+
+A supplementary optimized cross-build was completed with cargo-xwin 0.23.1.
+The pinned GPUI Windows build script runs shader generation only on Windows
+hosts, so the Linux attempt initially lacked shaders_bytes.rs. Microsoft Windows
+SDK CPP 10.0.26100.9169's x64 FXC and compiler DLL were extracted to /tmp from
+Microsoft's NuGet feed and run under isolated Wine. All 18 unchanged GPUI shader
+entry points compiled with the exact upstream /O3 vs_4_1/ps_4_1 flags; upstream's
+header-to-Rust byte-array conversion populated only the ignored OUT_DIR. The
+release executable then linked normally. No shader, GPUI source, Cargo dependency
+version or shipped build script was patched. The local clang-cl/libopus cache
+workarounds described in the release report also apply. Native Windows builds
+and CI run the existing GPUI shader build script directly and need none of these
+cross-host steps. Debug builds reference source-tree shader files and should not
+be distributed as a portable executable; use the release profile.

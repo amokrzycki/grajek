@@ -1,0 +1,13 @@
+[package]
+name = "grajek-smtc"
+version = "0.4.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "0.6"
+windows = { version = "0.62", features = ["Media", "Foundation", "Win32_System_WinRT", "Win32_Foundation"] }
+
+[lints.rust]
+unsafe_code = "deny"

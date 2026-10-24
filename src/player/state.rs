@@ -154,6 +154,8 @@ pub struct State {
     /// Changes for every newly started track, even when repeating the same URL.
     pub track_id: u64,
     pub seek: SeekStatus,
+    /// Increments on each confirmed seek, including repeated seeks to the same timestamp.
+    pub seek_serial: u64,
     /// Bot volume in percent, as actually applied.
     pub volume: u8,
     /// The newest [`VolumeRequest::seq`] the controller has handled, applied or not.
@@ -178,6 +180,7 @@ impl Default for State {
             position: Duration::ZERO,
             track_id: 0,
             seek: SeekStatus::Ready,
+            seek_serial: 0,
             volume: store::DEFAULT_VOLUME,
             volume_seq: 0,
             queue: Vec::new(),
@@ -266,6 +269,7 @@ impl State {
 }
 
 pub enum Command {
+    Media(crate::native::Command),
     Seek {
         track_id: u64,
         position: Duration,

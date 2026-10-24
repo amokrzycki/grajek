@@ -2668,3 +2668,5 @@ fn leave_voice_availability_follows_session_and_controller_state() {
 
 mod playlist;
 mod seek;
+
+mod native;

@@ -81,6 +81,7 @@ enum Observed {
 struct Active<H> {
     id: u64,
     seek: SeekStatus,
+    seek_serial: u64,
     handle: H,
     outcome: watch::Receiver<Option<Outcome>>,
     info: TrackInfo,
@@ -105,6 +106,7 @@ impl<H: Handle> Active<H> {
         Self {
             id: 0,
             seek: SeekStatus::Ready,
+            seek_serial: 0,
             handle,
             outcome,
             info,
@@ -134,6 +136,7 @@ impl<H: Handle> Active<H> {
             position: self.position,
             track_id: self.id,
             seek: self.seek.clone(),
+            seek_serial: self.seek_serial,
             ..State::default()
         }
     }
@@ -318,6 +321,7 @@ impl<B: Backend> Controller<B> {
             .track
             .as_ref()
             .map_or(SeekStatus::Ready, |track| track.seek.clone());
+        state.seek_serial = self.track.as_ref().map_or(0, |track| track.seek_serial);
         state.available = self.gateway();
         state.controller_ready = true;
         state.voice_connected = self.health.borrow().voice;
@@ -657,8 +661,20 @@ impl<B: Backend> Controller<B> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One exhaustive dispatcher preserves transport cancellation and ordering"
+    )]
     async fn command(&mut self, command: Command) {
         match command {
+            Command::Media(request) => {
+                let command = crate::native::translate(request, &self.states.borrow());
+                if let Some(command) = command {
+                    Box::pin(self.command(command)).await;
+                } else {
+                    self.sync();
+                }
+            }
             Command::Seek { track_id, position } => self.seek(track_id, position),
             Command::ImportPlaylist(value) => self.start_import(&value),
             Command::CancelImport => {
@@ -806,6 +822,7 @@ impl<B: Backend> Controller<B> {
                 current.last_info = Instant::now();
                 current.position = Duration::from_secs(actual.as_secs());
                 current.seek = SeekStatus::Complete(actual);
+                current.seek_serial = current.seek_serial.wrapping_add(1);
                 let state = current.state(None);
                 self.emit(state);
                 if let Some(next) = job.next {

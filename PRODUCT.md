@@ -3,7 +3,7 @@
 <!-- impeccable:product-schema 1 -->
 
 ## Platform
-Native Linux desktop (Rust / GPUI Kit 0.7.3). Impeccable's mobile/web platform enum does not describe this app; do not apply browser CSS or mobile conventions.
+Native Linux and Windows 10/11 x64 desktop (Rust / GPUI Kit 0.7.3). Impeccable's mobile/web platform enum does not describe this app; do not apply browser CSS or mobile conventions.
 
 ## Users
 A user controlling a configured Discord music bot from a compact desktop window. No additional audience assumptions are confirmed.
@@ -32,7 +32,11 @@ Paste a YouTube video URL, import a public playlist into the pending queue, play
 - Enter plays; Ctrl+Enter queues; Ctrl+1/2 selects Queue/History. Volume keyboard handling and focus recovery are preserved.
 - Window defaults to 520×560 and permits 420×480. Input and transport stay fixed; lists scroll.
 - Missing configuration still opens a usable window with an error and disabled playback actions. Restored queue/history edits are disabled if no controller started; local edits remain available after gateway loss with a running controller.
-- No added crates, remote visual assets, web rendering, backend restructuring, commit or push in this task.
+- Native sessions observe controller snapshots and submit bounded intents; they never own queue/playback state. Linux uses session D-Bus MPRIS; Windows uses HWND-based SMTC. Previous is unsupported, metadata is factual, and failed OS registration cannot disable playback.
+- External Play resumes Paused or starts a pending queue from Ready/Error. Loading/empty Play is a no-op; Stop retains pending items. Seeks validate the current track identity and capabilities at controller consumption. Confirmed seek serials support discontinuity signals without polling.
+- Linux keeps existing XDG storage/dotenv behavior. Windows uses LOCALAPPDATA/Grajek for compatible JSON state and first-choice .env, then .env beside the executable. Explicit environment variables win; no token enters state or distribution artifacts.
+- Signal Ledger stays shared across platforms; Windows selects installed Segoe UI, Linux retains its font preference. Native titlebar, 520×560 default and 420×480 minimum, controls, focus and shortcuts remain.
+- Only target-specific native dependencies are added. No remote visual assets, web rendering, installer, updater, commit, push or release publishing. Windows native runtime acceptance remains pending; cross-compilation and Wine tests do not establish it.
 
 ## Brand Commitments
 Name: Grajek. Contemporary, elegant, premium, restrained and recognizable, with warmth from the Polish name. No retro hardware skin, cartoon, music-note ornament, SaaS dashboard or streaming-service clone.

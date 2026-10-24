@@ -3,7 +3,7 @@
 use std::{fmt, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _},
-    process::{Child, Command},
+    process::Child,
     time::timeout,
 };
 
@@ -88,7 +88,7 @@ fn args() -> [&'static str; 18] {
 
 pub async fn extract(url: String) -> Result<Playlist, Error> {
     let url = playlist_url(&url).map_err(|_| Error::InvalidUrl)?;
-    let child = Command::new("yt-dlp")
+    let child = crate::media::tool_command("yt-dlp")
         .args(args())
         .arg(url)
         .stdin(Stdio::null())
