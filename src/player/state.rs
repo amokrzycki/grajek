@@ -56,6 +56,22 @@ pub enum Phase {
     Error,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SeekStatus {
+    #[default]
+    Ready,
+    Pending(Duration),
+    Complete(Duration),
+    Failed(String),
+}
+
+/// Keep End away from natural completion. Duration makes negative/nonfinite intents unrepresentable.
+pub fn seek_target(position: Duration, duration: Option<Duration>) -> Option<Duration> {
+    duration
+        .filter(|duration| !duration.is_zero())
+        .map(|duration| position.min(duration.saturating_sub(Duration::from_secs(1))))
+}
+
 impl Phase {
     pub fn label(self) -> &'static str {
         match self {
@@ -135,6 +151,9 @@ pub struct State {
     pub track: Option<TrackInfo>,
     /// Playback position, truncated to whole seconds so it changes at most once per second.
     pub position: Duration,
+    /// Changes for every newly started track, even when repeating the same URL.
+    pub track_id: u64,
+    pub seek: SeekStatus,
     /// Bot volume in percent, as actually applied.
     pub volume: u8,
     /// The newest [`VolumeRequest::seq`] the controller has handled, applied or not.
@@ -157,6 +176,8 @@ impl Default for State {
             preferences: Preferences::default(),
             track: None,
             position: Duration::ZERO,
+            track_id: 0,
+            seek: SeekStatus::Ready,
             volume: store::DEFAULT_VOLUME,
             volume_seq: 0,
             queue: Vec::new(),
@@ -168,6 +189,14 @@ impl Default for State {
 }
 
 impl State {
+    pub fn can_seek(&self) -> bool {
+        self.available
+            && matches!(self.phase, Phase::Playing | Phase::Paused)
+            && self.track.as_ref().is_some_and(|track| {
+                track.seekable && seek_target(Duration::ZERO, track.duration).is_some()
+            })
+            && !matches!(self.seek, SeekStatus::Failed(_))
+    }
     pub fn can_import(&self) -> bool {
         self.controller_ready
             && self.import != ImportStatus::Importing
@@ -237,6 +266,10 @@ impl State {
 }
 
 pub enum Command {
+    Seek {
+        track_id: u64,
+        position: Duration,
+    },
     /// Plays now, replacing the current track. The pending queue is untouched.
     Play(String),
     Enqueue(String),

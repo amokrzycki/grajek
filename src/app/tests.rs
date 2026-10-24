@@ -8,6 +8,8 @@ use gpui_kit::{
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
+mod seek;
+
 fn state(phase: Phase) -> State {
     State {
         phase,
@@ -19,9 +21,11 @@ fn state(phase: Phase) -> State {
 
 fn playing(phase: Phase, title: Option<&str>, seconds: u64) -> State {
     State {
+        track_id: 1,
         track: Some(TrackInfo {
             title: title.map(Into::into),
             duration: Some(Duration::from_secs(225)),
+            seekable: true,
         }),
         position: Duration::from_secs(seconds),
         ..state(phase)
@@ -265,14 +269,17 @@ fn missing_title_duration_and_long_titles_render(cx: &mut TestAppContext) {
         TrackInfo {
             title: None,
             duration: None,
+            seekable: true,
         },
         TrackInfo {
             title: Some(long.clone()),
             duration: Some(Duration::from_hours(3)),
+            seekable: true,
         },
         TrackInfo {
             title: Some("ż".repeat(5000)),
             duration: None,
+            seekable: true,
         },
     ] {
         states.send_replace(State {

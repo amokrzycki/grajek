@@ -6,7 +6,7 @@ use songbird::{
     Event, EventContext, EventHandler, TrackEvent,
     tracks::{PlayMode, Track, TrackHandle, TrackResult, TrackState},
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::{oneshot, watch};
 
 use crate::{
@@ -26,26 +26,41 @@ impl Live {
     }
 }
 
-impl Handle for TrackHandle {
+#[derive(Clone)]
+pub struct LiveHandle {
+    track: TrackHandle,
+    source: Option<media::SourceControl>,
+}
+
+impl Handle for LiveHandle {
     fn set_volume(&self, volume: f32) -> TrackResult<()> {
-        Self::set_volume(self, volume)
+        self.track.set_volume(volume)
     }
     fn pause(&self) -> TrackResult<()> {
-        Self::pause(self)
+        self.track.pause()
     }
     fn resume(&self) -> TrackResult<()> {
-        Self::play(self)
+        self.track.play()
     }
     fn stop(&self) -> TrackResult<()> {
-        Self::stop(self)
+        if let Some(source) = &self.source {
+            source.stop();
+        }
+        self.track.stop()
     }
     async fn info(&self) -> TrackResult<TrackState> {
-        self.get_info().await
+        self.track
+            .get_info()
+            .await
+            .map(|state| source_state(state, self.source.as_ref()))
+    }
+    async fn seek(&self, position: Duration) -> TrackResult<Duration> {
+        self.track.seek_async(position).await
     }
 }
 
 impl Backend for Live {
-    type Handle = TrackHandle;
+    type Handle = LiveHandle;
 
     fn health(&self) -> watch::Receiver<Health> {
         self.discord.health.clone()
@@ -65,7 +80,7 @@ impl Backend for Live {
         &self,
         resolved: Resolved,
         volume: f32,
-    ) -> Result<(TrackHandle, watch::Receiver<Option<Outcome>>)> {
+    ) -> Result<(LiveHandle, watch::Receiver<Option<Outcome>>)> {
         let call = self.discord.manager.get_or_insert(self.discord.guild);
         // The volume is part of the track, so even its first frame uses it.
         let handle = call
@@ -74,13 +89,30 @@ impl Backend for Live {
             .play_only(Track::from(resolved.input).volume(volume));
         let (sender, outcome) = watch::channel(None);
         let registration = handle
-            .add_event(Event::Track(TrackEvent::End), TrackEvents(sender.clone()))
-            .and_then(|()| handle.add_event(Event::Track(TrackEvent::Error), TrackEvents(sender)));
+            .add_event(
+                Event::Track(TrackEvent::End),
+                TrackEvents(sender.clone(), resolved.source.clone()),
+            )
+            .and_then(|()| {
+                handle.add_event(
+                    Event::Track(TrackEvent::Error),
+                    TrackEvents(sender, resolved.source.clone()),
+                )
+            });
         if let Err(error) = registration {
+            if let Some(source) = &resolved.source {
+                source.stop();
+            }
             let _ = handle.stop();
             return Err(error).context("Could not observe audio track");
         }
-        Ok((handle, outcome))
+        Ok((
+            LiveHandle {
+                track: handle,
+                source: resolved.source,
+            },
+            outcome,
+        ))
     }
 
     async fn title(&self, url: String) -> Result<Option<String>> {
@@ -108,13 +140,30 @@ impl Backend for Live {
     }
 }
 
-struct TrackEvents(watch::Sender<Option<Outcome>>);
+/// Songbird 0.6.1 maps packet-read errors to End. Preserve range failures in both
+/// event and info paths so they never count as successful natural completion.
+pub(crate) fn source_state(
+    mut state: TrackState,
+    source: Option<&media::SourceControl>,
+) -> TrackState {
+    if state.playing == PlayMode::End && source.is_some_and(media::SourceControl::failed) {
+        state.playing = PlayMode::Errored(songbird::tracks::PlayError::Decode(Arc::new(
+            symphonia::core::errors::Error::IoError(std::io::Error::other(
+                "Audio stream read failed. Check media access and the network.",
+            )),
+        )));
+    }
+    state
+}
+
+struct TrackEvents(watch::Sender<Option<Outcome>>, Option<media::SourceControl>);
 
 #[async_trait]
 impl EventHandler for TrackEvents {
     async fn act(&self, context: &EventContext<'_>) -> Option<Event> {
         if let EventContext::Track(tracks) = context {
             for (state, _) in *tracks {
+                let state = source_state((*state).clone(), self.1.as_ref());
                 let outcome = match &state.playing {
                     PlayMode::Errored(error) => {
                         tracing::error!(%error, "Audio track failed");
@@ -157,7 +206,7 @@ mod tests {
         let mut driver = Driver::new(songbird::Config::default());
         let handle = driver.play_only_input(Vec::<u8>::new().into());
         let (sender, receiver) = watch::channel(None);
-        let handler = TrackEvents(sender);
+        let handler = TrackEvents(sender, None);
         let state = songbird::tracks::TrackState {
             playing: PlayMode::Errored(songbird::tracks::PlayError::Decode(Arc::new(
                 symphonia::core::errors::Error::DecodeError("invalid packet"),
@@ -175,6 +224,39 @@ mod tests {
             playing: PlayMode::End,
             ..Default::default()
         };
+        handler
+            .act(&EventContext::Track(&[(&ended, &handle)]))
+            .await;
+        assert!(matches!(&*receiver.borrow(), Some(Outcome::Error(_))));
+        driver.stop();
+    }
+
+    #[tokio::test]
+    async fn range_failure_cannot_be_natural_completion_in_events_or_polling() {
+        let source = crate::media::SourceControl::default();
+        let ended = songbird::tracks::TrackState {
+            playing: PlayMode::End,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::source_state(ended.clone(), Some(&source)).playing,
+            PlayMode::End
+        );
+        source.record_failure();
+        assert!(matches!(
+            super::source_state(ended.clone(), Some(&source)).playing,
+            PlayMode::Errored(_)
+        ));
+        let playing = songbird::tracks::TrackState::default();
+        assert_eq!(
+            super::source_state(playing, Some(&source)).playing,
+            PlayMode::Play,
+            "source signal alone must not fabricate a terminal event"
+        );
+        let mut driver = Driver::new(songbird::Config::default());
+        let handle = driver.play_only_input(Vec::<u8>::new().into());
+        let (sender, receiver) = watch::channel(None);
+        let handler = TrackEvents(sender, Some(source));
         handler
             .act(&EventContext::Track(&[(&ended, &handle)]))
             .await;

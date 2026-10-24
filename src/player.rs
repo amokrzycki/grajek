@@ -15,8 +15,8 @@ use crate::{
 };
 use controller::Controller;
 pub use state::{
-    Command, ImportStatus, Phase, Preferences, RepeatMode, State, VolumeRequest, percent_from,
-    volume_factor,
+    Command, ImportStatus, Phase, Preferences, RepeatMode, SeekStatus, State, VolumeRequest,
+    percent_from, seek_target, volume_factor,
 };
 
 /// How a track ended, as reported by its own event mailbox.
@@ -33,6 +33,7 @@ pub trait Handle: Clone + Send + Sync + 'static {
     fn resume(&self) -> TrackResult<()>;
     fn stop(&self) -> TrackResult<()>;
     fn info(&self) -> impl Future<Output = TrackResult<TrackState>> + Send;
+    fn seek(&self, position: Duration) -> impl Future<Output = TrackResult<Duration>> + Send;
 }
 
 /// The Discord and yt-dlp side of the controller, replaceable in tests.
