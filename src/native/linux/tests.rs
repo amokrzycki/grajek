@@ -70,6 +70,11 @@ async fn isolated_bus_exposes_interfaces_commands_properties_and_releases_name()
         .await?
         .context("no initial cached value")?;
     assert!(!initial.get().await?);
+    let mut can_seek_changes = player.receive_property_changed::<bool>("CanSeek").await;
+    let initial = timeout(Duration::from_secs(2), can_seek_changes.next())
+        .await?
+        .context("no initial CanSeek value")?;
+    assert!(!initial.get().await?);
     let before = endpoint.snapshot();
     states.send_replace(playing);
     publish(&server, &before, &endpoint.snapshot()).await?;
@@ -86,6 +91,11 @@ async fn isolated_bus_exposes_interfaces_commands_properties_and_releases_name()
         "Playing"
     );
     assert!(!player.get_property::<bool>("CanGoPrevious").await?);
+    // CanPlay and CanSeek arrive in separate signals; wait for each cached property.
+    let changed = timeout(Duration::from_secs(2), can_seek_changes.next())
+        .await?
+        .context("no CanSeek readiness change")?;
+    assert!(changed.get().await?);
     assert!(player.get_property::<bool>("CanSeek").await?);
     let meta = player
         .get_property::<HashMap<String, OwnedValue>>("Metadata")
@@ -171,6 +181,7 @@ async fn isolated_bus_exposes_interfaces_commands_properties_and_releases_name()
             .is_empty()
     );
     drop(can_play_changes);
+    drop(can_seek_changes);
     drop(seeked);
     drop(player);
     drop(root);
