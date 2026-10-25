@@ -154,8 +154,9 @@ impl Session {
             MediaStatus::Playing => MediaPlaybackStatus::Playing,
             MediaStatus::Paused => MediaPlaybackStatus::Paused,
         })?;
-        let metadata = (view.track_id, view.title.map(str::to_owned));
-        if self.metadata.as_ref() != Some(&metadata) {
+        let track_changed = self.metadata.as_ref().and_then(|(id, _)| *id) != view.track_id;
+        let title_changed = self.metadata.as_ref().and_then(|(_, t)| t.as_deref()) != view.title;
+        if track_changed || title_changed {
             let updater = self.controls.DisplayUpdater()?;
             updater.ClearAll()?;
             updater.SetType(MediaPlaybackType::Music)?;
@@ -163,7 +164,7 @@ impl Session {
                 .MusicProperties()?
                 .SetTitle(&view.title.unwrap_or_default().into())?;
             updater.Update()?;
-            self.metadata = Some(metadata);
+            self.metadata = Some((view.track_id, view.title.map(str::to_owned)));
         }
         let timeline = SystemMediaTransportControlsTimelineProperties::new()?;
         timeline.SetStartTime(timespan(Duration::ZERO))?;

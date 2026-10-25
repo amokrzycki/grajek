@@ -56,6 +56,7 @@ fn main() -> Result<()> {
     let (volume, volume_rx) = watch::channel(player::VolumeRequest::default());
     let (states, updates) = watch::channel(player::State::default());
     let (shutdown, shutdown_rx) = watch::channel(false);
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let endpoint = native::Endpoint {
         commands: commands.clone(),
         states: updates.clone(),

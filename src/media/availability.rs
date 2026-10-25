@@ -33,7 +33,7 @@ fn delay(timestamp: Option<&Value>, now: Duration, remaining: Duration) -> Resul
     let delay = available_at.saturating_sub(Duration::from_secs(now.as_secs()));
     ensure!(
         delay.is_zero() || delay < remaining,
-        "Stream availability wait ({:.2}s) exceeds the remaining audio preparation deadline ({:.2}s). Try again.",
+        "Stream availability wait ({:.2}s) equals or exceeds the remaining audio preparation deadline ({:.2}s). Try again.",
         delay.as_secs_f64(),
         remaining.as_secs_f64()
     );

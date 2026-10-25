@@ -47,5 +47,6 @@ pub(super) fn for_window(window: &impl HasWindowHandle) -> Result<SystemMediaTra
     let interop = factory::<SystemMediaTransportControls, ISystemMediaTransportControlsInterop>()?;
     // SAFETY: HasWindowHandle borrows a live window for this call. GPUI supplies its own
     // top-level process window. GetForWindow validates ownership; we never retain the HWND.
+    // HWND is a transparent wrapper over a pointer; the cast is safe.
     unsafe { interop.GetForWindow(HWND(handle.hwnd.get() as *mut _)) }
 }

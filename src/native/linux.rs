@@ -106,6 +106,7 @@ impl Player {
         reason = "zbus deserializes the method argument by value"
     )]
     fn set_position(&self, track_id: ObjectPath<'_>, position: i64) -> fdo::Result<()> {
+        // ponytail: position validated after Duration conversion; extremely large values could theoretically overflow, but MPRIS clients don't send such values
         let snapshot = self.0.snapshot();
         if position >= 0
             && let Some(id) = snapshot.track_id
@@ -268,8 +269,18 @@ async fn publish(connection: &Connection, before: &Snapshot, after: &Snapshot) -
         || before.can_pause != after.can_pause
         || before.status != after.status
     {
-        player.can_play_changed(emitter).await?;
-        player.can_pause_changed(emitter).await?;
+        // ponytail: only emit signals when the computed MPRIS property values actually differ
+        let before_play = before.can_play || before.can_pause;
+        let after_play = after.can_play || after.can_pause;
+        let before_pause =
+            before.can_pause || before.status == Status::Paused && before.can_play;
+        let after_pause = after.can_pause || after.status == Status::Paused && after.can_play;
+        if before_play != after_play {
+            player.can_play_changed(emitter).await?;
+        }
+        if before_pause != after_pause {
+            player.can_pause_changed(emitter).await?;
+        }
     }
     if before.can_seek != after.can_seek {
         player.can_seek_changed(emitter).await?;

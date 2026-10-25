@@ -34,6 +34,8 @@ pub fn attach(window: &Window, cx: &App, endpoint: &Endpoint) -> Option<MediaSes
         return None;
     }
     // A Tokio watch is woken by the runtime, while COM work remains on GPUI's STA.
+    // ponytail: Session contains COM objects + PhantomData<Rc<()>> making it !Send/!Sync.
+    // GPUI's cx.spawn on Windows runs on the STA thread, so Send is not required here.
     let updates = cx.spawn(async move |_| {
         let mut before = initial;
         while states.changed().await.is_ok() {

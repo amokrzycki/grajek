@@ -43,6 +43,7 @@ impl PlayerApp {
             return;
         }
         if self.send_transport(Command::Play(url), Pending::Play) {
+            // ponytail: always focuses input for next URL entry, unlike rescue_focus pattern in next/leave_voice/stop
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
             cx.notify();
         }

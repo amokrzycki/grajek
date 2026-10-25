@@ -672,6 +672,7 @@ impl<B: Backend> Controller<B> {
         match command {
             Command::Transport { id, command } => {
                 self.transport_ack = id;
+                // ponytail: no recursion guard; translate() never returns Transport/Media, so unbounded recursion cannot occur
                 Box::pin(self.command(*command)).await;
                 // Validation errors and ignored commands must acknowledge the request too.
                 self.sync();
@@ -679,6 +680,7 @@ impl<B: Backend> Controller<B> {
             Command::Media(request) => {
                 let command = crate::native::translate(request, &self.states.borrow());
                 if let Some(command) = command {
+                    // ponytail: no recursion guard; translate() never returns Transport/Media, so unbounded recursion cannot occur
                     Box::pin(self.command(command)).await;
                 } else {
                     self.sync();

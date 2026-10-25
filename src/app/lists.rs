@@ -33,7 +33,8 @@ impl ListNavigation {
 
     fn sync(&mut self, ids: impl Iterator<Item = ElementId>, cx: &Context<PlayerApp>) {
         let ids: Vec<_> = ids.collect();
-        if self.rows.iter().map(|(id, _)| id).eq(&ids) {
+        // ponytail: Vec allocation unavoidable (Iterator consumed by comparison); sync fires only on state changes, not per-frame
+        if self.rows.len() == ids.len() && self.rows.iter().map(|(id, _)| id).eq(ids.iter()) {
             return;
         }
         let offset = self.state.logical_scroll_top();
@@ -169,6 +170,7 @@ impl PlayerApp {
             navigation.state.scroll_to_reveal_item(next_row);
             cx.notify();
             if next_row == row {
+                // ponytail: same-row focus relies on GPUI skipping disabled buttons; fragile if non-button focusable elements added to row
                 if backwards {
                     window.focus_prev(cx);
                 } else {

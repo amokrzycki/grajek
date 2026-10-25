@@ -18,6 +18,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - name: Configure MSVC and Windows SDK
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -47,7 +48,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: grajek-0.4.0-windows-x64
+          name: grajek-${{ github.sha }}-windows-x64
           path: |
             target/release/grajek.exe
             .env.example

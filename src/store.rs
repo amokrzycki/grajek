@@ -214,7 +214,7 @@ pub fn app_data_dir() -> Option<PathBuf> {
     {
         windows_data_dir(std::env::var_os("LOCALAPPDATA"))
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
         data_dir(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
     }
