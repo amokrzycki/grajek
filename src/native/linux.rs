@@ -272,8 +272,7 @@ async fn publish(connection: &Connection, before: &Snapshot, after: &Snapshot) -
         // ponytail: only emit signals when the computed MPRIS property values actually differ
         let before_play = before.can_play || before.can_pause;
         let after_play = after.can_play || after.can_pause;
-        let before_pause =
-            before.can_pause || before.status == Status::Paused && before.can_play;
+        let before_pause = before.can_pause || before.status == Status::Paused && before.can_play;
         let after_pause = after.can_pause || after.status == Status::Paused && after.can_play;
         if before_play != after_play {
             player.can_play_changed(emitter).await?;
