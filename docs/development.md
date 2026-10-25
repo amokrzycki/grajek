@@ -46,6 +46,9 @@ Discord token:
 ```sh
 # Network: extract, open and decode a public video stream.
 cargo test --locked public_video_stream_initializes_with_songbird -- --ignored --nocapture
+# Network: investigate a specific video through the same resolver and decoder.
+GRAJEK_TEST_VIDEO_URL='https://www.youtube.com/watch?v=Gz1AVEf5K-8' \
+  cargo test --locked public_video_stream_initializes_with_songbird -- --ignored --nocapture
 # Network: seek in both directions through the production range source.
 cargo test --locked public_video_bidirectional_seek -- --ignored --nocapture
 # Network: capture mixed audio through Songbird's real mixer for both formats.
@@ -114,6 +117,53 @@ whitespace, use a 200-character cap and fall back to "Untitled track". Compatibl
 known-duration streams use the [HTTP range source](../src/media/range.rs);
 other streams use `YoutubeDl::get_stream` with the extracted metadata. A range
 probe failure can fall back to ordinary playback with seeking disabled.
+
+Before either HTTP path opens, Grajek respects the selected stream's `available_at`
+Unix timestamp in seconds. yt-dlp 2026.10.21 derives this YouTube field from
+pre-roll ad timing and its downloader waits until the timestamp; JSON extraction
+alone does not perform that wait. Single-audio selection copies the selected
+format's field to the top level. If metadata instead contains `requested_formats`,
+Grajek can read the entry matching the URL it will open; unselected `formats`
+do not delay playback. See the upstream [timestamp calculation](https://github.com/yt-dlp/yt-dlp/blob/2026.10.21/yt_dlp/extractor/youtube/_video.py)
+and [downloader wait](https://github.com/yt-dlp/yt-dlp/blob/2026.10.21/yt_dlp/downloader/common.py).
+
+Missing, invalid, zero and past timestamps add no wait. Future values use a
+cancellable Tokio sleep, matching yt-dlp's whole-second current-time calculation;
+fractional timestamps are supported. Extraction, waiting, opening and parsing
+share the existing 60-second resolution deadline. A wait that would consume the
+remaining budget fails immediately with an availability/deadline error. Stop,
+Next, replacement, Leave voice and shutdown abort the same preparation task;
+Pause/Resume do not resolve streams again.
+
+### Investigating HTTP 403
+
+The `stream_availability` log stage reports the required delay. A failed range
+probe logs `http_range_probe` and its cause before attempting Songbird's existing
+fallback: HTTP rejection includes the status (for example 403), a successful
+response ignoring ranges reports unsupported byte ranges (for example 200), and
+transport/read failures retain their error context. Request URLs are removed
+from range and fallback-opening transport errors so signed stream query parameters
+are not logged. Raw yt-dlp stderr is not logged: failed extraction exposes a
+classified access/challenge error, while other diagnostics direct you to reproduce
+the extraction manually. Keep that command's verbose output private.
+Probe failure alone does not establish that ordinary streaming will fail.
+
+For the affected video `Gz1AVEf5K-8`, a controlled test of the same fresh format-251
+URL and yt-dlp headers returned 403 before its future `available_at`, then 206
+after a four-second availability wait. This demonstrates premature access for
+that attempt; other 403s may have different causes. Compare the selected format,
+protocol, availability time and current Unix time using the extraction command
+above with `--print '%(format_id)s %(protocol)s %(available_at)s'`. Check the system
+clock and update yt-dlp/Deno/EJS before investigating other access restrictions.
+Use the optional production decode test with `GRAJEK_TEST_VIDEO_URL` to distinguish
+successful metadata extraction from successful HTTP access and decoded audio.
+In PowerShell, set `$env:GRAJEK_TEST_VIDEO_URL` before running the same Cargo test.
+For a before/after comparison, reuse one fresh URL and the exact extracted headers;
+keep signed URLs, query parameters, cookies and authentication headers private.
+Do not infer an availability issue from status 403 alone, or infer audible Discord
+playback from a successful decode test.
+
+### Controller state
 
 The [controller](../src/player/controller.rs) owns queue state and track handles;
 the window renders snapshots. A 250 ms `TrackHandle::get_info()` poll supplies
