@@ -1,8 +1,15 @@
 use anyhow::{Context, Result, ensure};
-use songbird::input::{AudioStream, Input, LiveInput, YoutubeDl, metadata::YoutubeDlOutput};
+use songbird::input::{
+    AudioStream, AudioStreamError, Input, LiveInput, YoutubeDl, metadata::YoutubeDlOutput,
+};
 use std::{process::Stdio, time::Duration};
-use tokio::{process::Command, time::timeout};
+use tokio::{
+    process::Command,
+    time::{Instant, timeout, timeout_at},
+};
 
+#[path = "media/availability.rs"]
+mod availability;
 #[path = "media/range.rs"]
 mod range;
 pub(crate) use range::SourceControl;
@@ -74,11 +81,22 @@ pub fn ytdlp_args() -> Vec<&'static str> {
     args
 }
 
+/// Avoid console flashes when a Windows GUI app invokes the extractor tools.
+pub(crate) fn tool_command(tool: &str) -> Command {
+    #[cfg(windows)]
+    let mut command = Command::new(tool);
+    #[cfg(not(windows))]
+    let command = Command::new(tool);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    command
+}
+
 pub async fn check_tools() -> Result<()> {
     for tool in ["yt-dlp", "deno"] {
         let output = timeout(
             Duration::from_secs(5),
-            Command::new(tool)
+            tool_command(tool)
                 .arg("--version")
                 .kill_on_drop(true)
                 .output(),
@@ -114,7 +132,7 @@ fn supported_deno(output: &str) -> bool {
 
 /// Extracts display metadata only: no format selection, stream access or decoding.
 pub async fn title(url: String) -> Result<Option<String>> {
-    let output = Command::new("yt-dlp")
+    let output = tool_command("yt-dlp")
         .args(title_args())
         .arg(url)
         .stdin(Stdio::null())
@@ -151,9 +169,10 @@ pub(super) async fn resolve_format(
     url: String,
     format: &str,
 ) -> Result<Resolved> {
-    timeout(Duration::from_secs(60), async {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    timeout_at(deadline, async {
         // Songbird's query() does not kill yt-dlp on cancellation; own only that subprocess.
-        let output = Command::new("yt-dlp")
+        let output = tool_command("yt-dlp")
             .args(
                 ytdlp_args()
                     .into_iter()
@@ -165,17 +184,8 @@ pub(super) async fn resolve_format(
             .output()
             .await
             .context("Could not start yt-dlp. Check PATH.")?;
-        ensure!(
-            output.status.success(),
-            "yt-dlp extraction failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        if !output.stderr.is_empty() {
-            let diagnostic = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!(diagnostic = %diagnostic.trim(), "yt-dlp diagnostic");
-        }
-        let description: serde_json::Value =
-            serde_json::from_slice(&output.stdout).context("yt-dlp returned invalid metadata.")?;
+        let description = stream_description(&output)?;
+        availability::wait_for_stream(&description, deadline).await?;
         let live = description
             .get("is_live")
             .and_then(serde_json::Value::as_bool)
@@ -197,9 +207,7 @@ pub(super) async fn resolve_format(
         }
         let ranged =
             if info.duration.is_some() && metadata.protocol.as_deref() != Some("m3u8_native") {
-                range::RangeSource::open(client.clone(), metadata.url.clone(), headers)
-                    .await
-                    .ok()
+                range::RangeSource::probe(client.clone(), metadata.url.clone(), headers).await
             } else {
                 None
             };
@@ -217,6 +225,7 @@ pub(super) async fn resolve_format(
             YoutubeDl::new(client, url)
                 .get_stream(&metadata)
                 .await
+                .map_err(stream_error)
                 .context("Cannot open the audio stream. Check media access and the network.")?
         };
         let mut input = Input::Live(LiveInput::Raw(stream), None)
@@ -258,6 +267,40 @@ impl Drop for ResolutionGuard {
         if let Some(source) = &self.0 {
             source.stop();
         }
+    }
+}
+
+fn stream_description(output: &std::process::Output) -> Result<serde_json::Value> {
+    ensure!(
+        output.status.success(),
+        "{}",
+        extraction_error(&output.stderr)
+    );
+    if !output.stderr.is_empty() {
+        tracing::warn!(
+            stage = "yt_dlp",
+            "yt-dlp reported diagnostics; run extraction manually for details"
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("yt-dlp returned invalid metadata.")
+}
+
+fn extraction_error(stderr: &[u8]) -> String {
+    // Classify stderr without exposing signed URLs or authentication diagnostics.
+    let error = anyhow::anyhow!(String::from_utf8_lossy(stderr).into_owned())
+        .context("yt-dlp extraction failed. Run extraction manually for details.");
+    user_error(&error)
+}
+
+fn stream_error(error: AudioStreamError) -> AudioStreamError {
+    match error {
+        AudioStreamError::Fail(cause) => {
+            AudioStreamError::Fail(match cause.downcast::<reqwest::Error>() {
+                Ok(error) => Box::new(error.without_url()),
+                Err(cause) => cause,
+            })
+        }
+        other => other,
     }
 }
 
@@ -330,6 +373,28 @@ mod tests {
     }
 
     #[test]
+    fn extractor_diagnostics_never_echo_sensitive_stderr() {
+        for prefix in ["", "403", "timed out", "Sign in", "EJS challenge"] {
+            let stderr = format!(
+                "{prefix} https://example.invalid/audio?signature=secret Cookie: private-cookie Authorization: private-token"
+            );
+            let message = super::extraction_error(stderr.as_bytes());
+            for sensitive in [
+                "https://",
+                "signature",
+                "secret",
+                "private-cookie",
+                "private-token",
+            ] {
+                assert!(!message.contains(sensitive), "{message}");
+            }
+        }
+        assert!(super::extraction_error(b"HTTP 403").contains("403"));
+        assert!(super::extraction_error(b"Sign in to confirm").contains("restricted"));
+        assert!(super::extraction_error(b"EJS challenge failed").contains("challenge"));
+    }
+
+    #[test]
     fn metadata_is_normalized_and_optional() {
         let info = TrackInfo::from_ytdlp(Some("  Big \n Buck\tBunny  "), Some(596.5));
         assert_eq!(info.title.as_deref(), Some("Big Buck Bunny"));
@@ -377,13 +442,16 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires YouTube network access; uses the openly licensed Big Buck Bunny video"]
     async fn public_video_stream_initializes_with_songbird() -> Result<()> {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         check_tools().await?;
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(15))
             .build()?;
-        let Resolved { input, info, .. } =
-            resolve(client, "https://www.youtube.com/watch?v=aqz-KE-bpKQ".into()).await?;
+        let url = std::env::var("GRAJEK_TEST_VIDEO_URL")
+            .unwrap_or_else(|_| "https://www.youtube.com/watch?v=aqz-KE-bpKQ".into());
+        let Resolved { input, info, .. } = resolve(client, url).await?;
+        tracing::info!(seekable = info.seekable, "Production stream initialized");
         ensure!(info.title.is_some(), "yt-dlp reported no title");
         ensure!(
             input.is_playable(),

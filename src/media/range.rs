@@ -129,6 +129,20 @@ pub(super) struct RangeSource {
 }
 
 impl RangeSource {
+    pub(super) async fn probe(client: Client, url: String, headers: HeaderMap) -> Option<Self> {
+        match Self::open(client, url, headers).await {
+            Ok(source) => Some(source),
+            Err(error) => {
+                tracing::warn!(
+                    stage = "http_range_probe",
+                    error = %format!("{error:#}"),
+                    "HTTP range probe failed; trying Songbird streaming without seeking"
+                );
+                None
+            }
+        }
+    }
+
     pub(super) async fn open(client: Client, url: String, mut headers: HeaderMap) -> Result<Self> {
         headers.remove(RANGE);
         let (bytes, len) = fetch(&client, &url, &headers, 0, None).await?;
@@ -170,10 +184,14 @@ async fn fetch(
         .header(RANGE, format!("bytes={start}-{end}"))
         .timeout(REQUEST_TIMEOUT)
         .send()
-        .await?;
+        .await
+        .map_err(reqwest::Error::without_url)
+        .context("HTTP range request failed")?;
+    let status = response.status();
+    ensure!(status.is_success(), "HTTP range request rejected: {status}");
     ensure!(
-        response.status() == StatusCode::PARTIAL_CONTENT,
-        "Stream does not honor HTTP byte ranges"
+        status == StatusCode::PARTIAL_CONTENT,
+        "Stream does not honor HTTP byte ranges (HTTP {status})"
     );
     let range = response
         .headers()
@@ -197,7 +215,12 @@ async fn fetch(
     );
     let expected = usize::try_from(last - start + 1)?;
     let mut bytes = Vec::with_capacity(expected);
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(reqwest::Error::without_url)
+        .context("HTTP range response read failed")?
+    {
         ensure!(
             chunk.len() <= expected - bytes.len(),
             "Oversized HTTP range response"

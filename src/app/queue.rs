@@ -1,13 +1,14 @@
 use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, Sizable,
     button::{Button, ButtonVariants},
-    scroll::ScrollableElement,
 };
 use gpui_kit::{
     Context, InteractiveElement, IntoElement, ParentElement, Styled, TestSupportExt, div, px,
 };
 
-use super::{PlayerApp, label_with_tooltip};
+use super::lists::{Tab, TabPrev};
+
+use super::{PlayerApp, Section, label_with_tooltip};
 use crate::{
     player::Command,
     queue::{QUEUE_LIMIT, QueueItem},
@@ -25,19 +26,24 @@ impl PlayerApp {
         }
     }
 
-    fn queue_row(
+    pub(super) fn queue_row(
         &self,
         position: usize,
         last: bool,
         item: &QueueItem,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        #[cfg(test)]
+        let _row_timer = super::tests::animation_fixes::RowTimer::start();
         let theme = cx.theme();
         let id = item.id;
         div()
             .id(("queue-row", id))
+            .w_full()
+            .tab_group()
+            .track_focus(&self.queue_scroll.rows[position].1)
+            .tab_stop(false)
             .flex()
-            .flex_none()
             .items_center()
             .gap_2()
             .px_2()
@@ -71,6 +77,13 @@ impl PlayerApp {
             ))
             .child(
                 Button::new(("queue-up", id))
+                    .key_context("PlayerList")
+                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                        this.list_tab(Section::Queue, position, 0, false, window, cx);
+                    }))
+                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                        this.list_tab(Section::Queue, position, 0, true, window, cx);
+                    }))
                     .icon(IconName::ArrowUp)
                     .ghost()
                     .small()
@@ -83,6 +96,13 @@ impl PlayerApp {
             )
             .child(
                 Button::new(("queue-down", id))
+                    .key_context("PlayerList")
+                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                        this.list_tab(Section::Queue, position, 1, false, window, cx);
+                    }))
+                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                        this.list_tab(Section::Queue, position, 1, true, window, cx);
+                    }))
                     .icon(IconName::ArrowDown)
                     .ghost()
                     .small()
@@ -95,6 +115,13 @@ impl PlayerApp {
             )
             .child(
                 Button::new(("queue-remove", id))
+                    .key_context("PlayerList")
+                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                        this.list_tab(Section::Queue, position, 2, false, window, cx);
+                    }))
+                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                        this.list_tab(Section::Queue, position, 2, true, window, cx);
+                    }))
                     .icon(IconName::Close)
                     .ghost()
                     .small()
@@ -110,7 +137,6 @@ impl PlayerApp {
 
     pub(super) fn queue_list(&self, cx: &Context<Self>) -> impl IntoElement {
         let count = self.state.queue.len();
-        let last = count.saturating_sub(1);
         div()
             .flex_1()
             .min_h_0()
@@ -163,17 +189,7 @@ impl PlayerApp {
                 )
                 .into_any_element()
             } else {
-                div()
-                    .id("queue-list")
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .overflow_y_scrollbar()
-                    .children(self.state.queue.iter().enumerate().map(|(position, item)| {
-                        self.queue_row(position, position == last, item, cx)
-                    }))
-                    .into_any_element()
+                self.scroll_list(Section::Queue, cx).into_any_element()
             })
     }
 }

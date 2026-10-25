@@ -9,6 +9,22 @@ struct Server {
     url: String,
     task: JoinHandle<()>,
 }
+
+#[derive(Clone, Default)]
+struct Logs(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for Logs {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 impl Drop for Server {
     fn drop(&mut self) {
         self.task.abort();
@@ -35,6 +51,15 @@ async fn server(bytes: Vec<u8>, fault: &'static str) -> Result<Server> {
             let range = request
                 .lines()
                 .find_map(|line| line.strip_prefix("range: bytes="));
+            if range.is_none() {
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                let _ = socket.write_all(&bytes).await;
+                continue;
+            }
             let Some((start, end)) = range.and_then(|range| range.split_once('-')) else {
                 return;
             };
@@ -44,7 +69,10 @@ async fn server(bytes: Vec<u8>, fault: &'static str) -> Result<Server> {
             let Ok(end) = end.parse::<usize>() else {
                 return;
             };
-            if fault == "later" && start != 0 {
+            if fault == "network" {
+                continue;
+            }
+            if fault == "forbidden" || fault == "later" && start != 0 {
                 let _ = socket
                     .write_all(
                         b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -180,6 +208,97 @@ async fn ignored_misaligned_truncated_or_changed_ranges_are_rejected() -> Result
         .await
         .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_probes_keep_safe_diagnostics_and_allow_songbird_fallback() -> Result<()> {
+    use songbird::input::{Input, LiveInput, YoutubeDl, metadata::YoutubeDlOutput};
+    use tracing::instrument::WithSubscriber;
+    // Songbird's supported DCA container with a valid Opus silence packet.
+    let metadata = br#"{"dca":{"version":1,"tool":{"name":"grajek-test","version":"1"}},"opus":{"mode":"audio","sample_rate":48000,"frame_size":960,"vbr":false,"channels":2}}"#;
+    let mut bytes = b"DCA1".to_vec();
+    bytes.extend_from_slice(&u32::try_from(metadata.len())?.to_le_bytes());
+    bytes.extend_from_slice(metadata);
+    bytes.extend_from_slice(&[3, 0, 0xf8, 0xff, 0xfe]);
+    for (fault, diagnostic) in [
+        ("ignored", "does not honor HTTP byte ranges (HTTP 200 OK)"),
+        ("forbidden", "HTTP range request rejected: 403 Forbidden"),
+        ("network", "HTTP range request failed"),
+    ] {
+        let server = server(bytes.clone(), fault).await?;
+        let url = format!("{}?signature=private-test-token", server.url);
+        let client = Client::new();
+        let error = RangeSource::open(client.clone(), url.clone(), HeaderMap::new())
+            .await
+            .err()
+            .context("probe unexpectedly succeeded")?;
+        let message = format!("{error:#}");
+        assert!(message.contains(diagnostic), "{message}");
+        for secret in [&url, "signature", "private-test-token"] {
+            assert!(
+                !message.contains(secret),
+                "range error exposed a signed URL"
+            );
+        }
+        let logs = Logs::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        assert!(
+            RangeSource::probe(client.clone(), url.clone(), HeaderMap::new())
+                .with_subscriber(subscriber)
+                .await
+                .is_none()
+        );
+        let message = String::from_utf8(
+            logs.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+        )?;
+        assert!(message.contains("http_range_probe"));
+        assert!(message.contains(diagnostic), "{message}");
+        assert!(message.contains("trying Songbird streaming without seeking"));
+        assert!(!message.contains("private-test-token"));
+        assert!(!message.contains(&url));
+        if fault == "network" {
+            let error = client
+                .get(&url)
+                .header(RANGE, "bytes=0-1")
+                .send()
+                .await
+                .err()
+                .context("network fixture succeeded")?;
+            let error = super::super::stream_error(songbird::input::AudioStreamError::Fail(
+                Box::new(error),
+            ));
+            let message = error.to_string();
+            assert!(message.contains("sending request"));
+            assert!(!message.contains("private-test-token"));
+            assert!(!message.contains(&url));
+        }
+        let metadata: YoutubeDlOutput = serde_json::from_value(serde_json::json!({"url": url}))?;
+        let stream = YoutubeDl::new(client, server.url.clone())
+            .get_stream(&metadata)
+            .await?;
+        let mut input = Input::Live(LiveInput::Raw(stream), None)
+            .make_playable_async(
+                songbird::input::codecs::get_codec_registry(),
+                songbird::input::codecs::get_probe(),
+            )
+            .await?;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let parsed = input.parsed_mut().context("fallback not parsed")?;
+            let packet = parsed.format.next_packet()?;
+            assert!(parsed.decoder.decode(&packet)?.frames() > 0);
+            Ok(())
+        })
+        .await??;
+    }
     Ok(())
 }
 

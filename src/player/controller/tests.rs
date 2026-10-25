@@ -2668,3 +2668,38 @@ fn leave_voice_availability_follows_session_and_controller_state() {
 
 mod playlist;
 mod seek;
+
+mod native;
+
+#[tokio::test]
+async fn ui_transport_acknowledges_errors_and_ignored_commands_without_guessing_phase() -> Result<()>
+{
+    let (mut controller, fake, updates) = solo(Saved::default());
+    let mut current = active(&track_of(&fake).await?);
+    current.confirmed = true;
+    controller.track = Some(current);
+    controller.sync();
+    for (id, command, phase) in [
+        (1, Command::Pause, Phase::Paused),
+        (2, Command::Play("invalid".into()), Phase::Paused),
+        (3, Command::Resume, Phase::Playing),
+        (4, Command::Play("invalid".into()), Phase::Playing),
+        (5, Command::Resume, Phase::Playing),
+    ] {
+        controller
+            .command(Command::Transport {
+                id,
+                command: Box::new(command),
+            })
+            .await;
+        assert_eq!(updates.borrow().transport_ack, id);
+        assert_eq!(updates.borrow().phase, phase);
+        if id == 2 || id == 4 {
+            ensure!(updates.borrow().error.is_some());
+        }
+    }
+    controller.sync();
+    assert_eq!(updates.borrow().transport_ack, 5);
+    assert_eq!(updates.borrow().phase, Phase::Playing);
+    Ok(())
+}

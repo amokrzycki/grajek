@@ -68,9 +68,15 @@ fn scan_is_bounded_and_titles_use_existing_sanitization() -> Result<()> {
     Ok(())
 }
 
-fn shell(script: &str) -> Result<Child> {
-    Ok(Command::new("sh")
-        .args(["-c", script])
+// Run this Rust test executable as the child on both platforms; no shell utilities.
+fn fixture(mode: &str) -> Result<Child> {
+    Ok(tokio::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "playlist::tests::subprocess_fixture",
+            "--nocapture",
+        ])
+        .env("GRAJEK_SUBPROCESS_FIXTURE", mode)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -78,43 +84,83 @@ fn shell(script: &str) -> Result<Child> {
         .spawn()?)
 }
 
+#[test]
+fn subprocess_fixture() -> Result<()> {
+    use std::io::Write as _;
+    let Ok(mode) = std::env::var("GRAJEK_SUBPROCESS_FIXTURE") else {
+        return Ok(());
+    };
+    match mode.as_str() {
+        "exit" => std::process::exit(3),
+        "wait" => {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            writeln!(std::io::stdout(), "READY {}", listener.local_addr()?)?;
+            std::io::stdout().flush()?;
+            loop {
+                std::thread::park();
+            }
+        }
+        "stdout" => std::io::stdout().write_all(&vec![0; OUTPUT_LIMIT + 1])?,
+        "stderr" => std::io::stderr().write_all(&vec![0; DIAGNOSTIC_LIMIT + 1])?,
+        "ok" => std::io::stdout().write_all(b"ok")?,
+        _ => anyhow::bail!("unknown subprocess fixture"),
+    }
+    std::process::exit(0)
+}
+
 #[tokio::test]
 async fn subprocess_exit_timeout_and_both_output_bounds_are_enforced() -> Result<()> {
     assert_eq!(
-        collect(shell("exit 3")?, TIMEOUT).await,
+        collect(fixture("exit")?, TIMEOUT).await,
         Err(Error::Unavailable)
     );
     assert_eq!(
-        collect(shell("exec sleep 30")?, Duration::from_millis(50)).await,
+        collect(fixture("wait")?, Duration::from_millis(50)).await,
         Err(Error::Timeout)
     );
-    for script in [
-        "exec head -c 2097153 /dev/zero",
-        "exec head -c 65537 /dev/zero >&2",
-    ] {
+    for mode in ["stdout", "stderr"] {
         assert_eq!(
-            collect(shell(script)?, TIMEOUT).await,
+            collect(fixture(mode)?, TIMEOUT).await,
             Err(Error::OutputLimit)
         );
     }
-    assert_eq!(collect(shell("printf ok")?, TIMEOUT).await?, b"ok");
+    assert!(collect(fixture("ok")?, TIMEOUT).await?.ends_with(b"ok"));
     Ok(())
 }
 
 #[tokio::test]
 async fn cancellation_kills_the_owned_subprocess() -> Result<()> {
-    let child = shell("exec sleep 30")?;
-    let pid = child.id().context("child has no pid")?;
+    use tokio::io::{AsyncBufReadExt as _, BufReader};
+    let mut child = fixture("wait")?;
+    let mut stdout = BufReader::new(child.stdout.take().context("child has no stdout")?);
+    let address = timeout(Duration::from_secs(5), async {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            anyhow::ensure!(
+                stdout.read_line(&mut line).await? > 0,
+                "child exited before ready"
+            );
+            if let Some(address) = line.trim().strip_prefix("READY ") {
+                return address
+                    .parse::<std::net::SocketAddr>()
+                    .map_err(anyhow::Error::from);
+            }
+        }
+    })
+    .await??;
+    assert!(
+        std::net::TcpListener::bind(address).is_err(),
+        "fixture owns the socket"
+    );
+    child.stdout = Some(stdout.into_inner());
     let task = tokio::spawn(collect(child, TIMEOUT));
     tokio::task::yield_now().await;
     task.abort();
     let _ = task.await;
+    // Rebinding proves the process released its OS resources on Linux and Windows.
     timeout(Duration::from_secs(5), async {
-        while std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            !stat
-                .split_once(") ")
-                .is_some_and(|(_, tail)| tail.starts_with('Z'))
-        }) {
+        while std::net::TcpListener::bind(address).is_err() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })

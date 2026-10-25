@@ -1,7 +1,7 @@
 use super::*;
 
 impl FakeTrack {
-    fn seek_gate(&self) -> oneshot::Sender<TrackResult<Duration>> {
+    pub(super) fn seek_gate(&self) -> oneshot::Sender<TrackResult<Duration>> {
         let (tx, rx) = oneshot::channel();
         *self
             .seek_reply
@@ -9,7 +9,7 @@ impl FakeTrack {
             .unwrap_or_else(PoisonError::into_inner) = Some(rx);
         tx
     }
-    fn seeks(&self) -> Vec<Duration> {
+    pub(super) fn seeks(&self) -> Vec<Duration> {
         self.seeks
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

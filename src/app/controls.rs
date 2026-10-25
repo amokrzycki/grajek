@@ -16,19 +16,35 @@ use crate::player::{Command, ImportStatus, Phase, RepeatMode, VolumeRequest, per
 const VOLUME_STEP: f32 = 5.0;
 
 impl PlayerApp {
+    pub(super) fn play_enabled(&self) -> bool {
+        self.state.can_play() && matches!(self.pending, None | Some(Pending::Pause))
+    }
+
+    fn send_transport(&mut self, command: Command, pending: Pending) -> bool {
+        let id = self.transport_seq + 1;
+        if !self.send(Command::Transport {
+            id,
+            command: Box::new(command),
+        }) {
+            return false;
+        }
+        self.transport_seq = id;
+        self.pending = Some(pending);
+        true
+    }
+
     pub(super) fn play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let url = self.input_text(cx);
         self.play_url(url, window, cx);
     }
 
     pub(super) fn play_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending.is_some() || !self.state.can_play() {
+        if !self.play_enabled() {
             return;
         }
-        let before = self.controls_enabled();
-        if self.send(Command::Play(url)) {
-            self.pending = Some(Pending::Play);
-            self.rescue_focus(before, window, cx);
+        if self.send_transport(Command::Play(url), Pending::Play) {
+            // ponytail: always focuses input for next URL entry, unlike rescue_focus pattern in next/leave_voice/stop
+            window.focus(&self.input.read(cx).focus_handle(cx), cx);
             cx.notify();
         }
     }
@@ -38,8 +54,7 @@ impl PlayerApp {
             return;
         }
         let before = self.controls_enabled();
-        if self.send(Command::Next) {
-            self.pending = Some(Pending::Next);
+        if self.send_transport(Command::Next, Pending::Next) {
             self.rescue_focus(before, window, cx);
             cx.notify();
         }
@@ -49,8 +64,7 @@ impl PlayerApp {
         if matches!(self.pending, Some(Pending::Leave)) || !self.state.can_leave_voice() {
             return;
         }
-        if self.send(Command::LeaveVoice) {
-            self.pending = Some(Pending::Leave);
+        if self.send_transport(Command::LeaveVoice, Pending::Leave) {
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
             cx.notify();
         }
@@ -69,8 +83,7 @@ impl PlayerApp {
 
     fn stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.controls_enabled();
-        if self.controls_enabled()[2] && self.send(Command::Stop) {
-            self.pending = Some(Pending::Stop);
+        if self.controls_enabled()[2] && self.send_transport(Command::Stop, Pending::Stop) {
             self.rescue_focus(before, window, cx);
             cx.notify();
         }
@@ -89,8 +102,7 @@ impl PlayerApp {
         } else {
             return;
         };
-        if self.send(command) {
-            self.pending = Some(Pending::Pause);
+        if self.send_transport(command, Pending::Pause) {
             cx.notify();
         }
     }

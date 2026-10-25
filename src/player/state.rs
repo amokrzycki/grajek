@@ -140,6 +140,8 @@ impl ImportStatus {
 /// only renders these and sends [`Command`]s and [`VolumeRequest`]s.
 #[derive(Clone, Debug)]
 pub struct State {
+    /// Last UI transport request accepted by the controller; unrelated snapshots retain it.
+    pub transport_ack: u64,
     pub phase: Phase,
     pub error: Option<String>,
     pub available: bool,
@@ -154,6 +156,8 @@ pub struct State {
     /// Changes for every newly started track, even when repeating the same URL.
     pub track_id: u64,
     pub seek: SeekStatus,
+    /// Increments on each confirmed seek, including repeated seeks to the same timestamp.
+    pub seek_serial: u64,
     /// Bot volume in percent, as actually applied.
     pub volume: u8,
     /// The newest [`VolumeRequest::seq`] the controller has handled, applied or not.
@@ -168,6 +172,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            transport_ack: 0,
             phase: Phase::Initializing,
             error: None,
             available: false,
@@ -178,6 +183,7 @@ impl Default for State {
             position: Duration::ZERO,
             track_id: 0,
             seek: SeekStatus::Ready,
+            seek_serial: 0,
             volume: store::DEFAULT_VOLUME,
             volume_seq: 0,
             queue: Vec::new(),
@@ -266,6 +272,12 @@ impl State {
 }
 
 pub enum Command {
+    /// UI transport requests carry an identity so older snapshots cannot unlock newer input.
+    Transport {
+        id: u64,
+        command: Box<Self>,
+    },
+    Media(crate::native::Command),
     Seek {
         track_id: u64,
         position: Duration,

@@ -5,7 +5,6 @@ use std::{
     ffi::OsString,
     fs::{self, DirBuilder, File},
     io::{self, Write as _},
-    os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -182,6 +181,7 @@ impl Saved {
 
 /// `$XDG_DATA_HOME/grajek`, else `$HOME/.local/share/grajek`. Relative XDG values are
 /// invalid per the specification and ignored.
+#[cfg(any(target_os = "linux", test))]
 pub fn data_dir(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     let base = xdg
         .map(PathBuf::from)
@@ -201,8 +201,27 @@ pub struct Loaded {
     pub warning: Option<String>,
 }
 
+#[cfg(any(target_os = "windows", test))]
+pub fn windows_data_dir(local: Option<OsString>) -> Option<PathBuf> {
+    local
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join("Grajek"))
+}
+
+pub fn app_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_data_dir(std::env::var_os("LOCALAPPDATA"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        data_dir(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+    }
+}
+
 pub fn open() -> Loaded {
-    let dir = data_dir(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"));
+    let dir = app_data_dir();
     load(dir.map(|dir| dir.join("state.json")))
 }
 
@@ -277,7 +296,14 @@ pub fn write(path: &Path, saved: &Saved) -> io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("state path has no directory"))?;
-    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(dir)?;
     let temporary = path.with_extension("json.tmp");
     let mut file = File::create(&temporary)?;
     file.write_all(&serde_json::to_vec_pretty(saved)?)?;
@@ -411,26 +437,67 @@ mod tests {
 
     #[test]
     fn data_dir_follows_the_xdg_rules() {
-        let some = |value: &str| Some(value.into());
+        let root = std::env::temp_dir();
+        let home = root.join("home-u");
+        let xdg = root.join("xdg-data");
+        let home_os = Some(home.clone().into_os_string());
         assert_eq!(
-            data_dir(some("/x/data"), some("/home/u")),
-            Some("/x/data/grajek".into())
+            data_dir(Some(xdg.clone().into_os_string()), home_os.clone()),
+            Some(xdg.join("grajek"))
         );
-        assert_eq!(
-            data_dir(None, some("/home/u")),
-            Some("/home/u/.local/share/grajek".into())
-        );
-        // Empty and relative XDG values are ignored; so is an empty HOME.
-        assert_eq!(
-            data_dir(some(""), some("/home/u")),
-            Some("/home/u/.local/share/grajek".into())
-        );
-        assert_eq!(
-            data_dir(some("relative"), some("/home/u")),
-            Some("/home/u/.local/share/grajek".into())
-        );
-        assert_eq!(data_dir(None, some("")), None);
+        for xdg in [None, Some("".into()), Some("relative".into())] {
+            assert_eq!(
+                data_dir(xdg, home_os.clone()),
+                Some(home.join(".local/share/grajek"))
+            );
+        }
+        assert_eq!(data_dir(None, Some("".into())), None);
         assert_eq!(data_dir(None, None), None);
+        assert_eq!(
+            super::windows_data_dir(Some(root.clone().into_os_string())),
+            Some(root.join("Grajek"))
+        );
+        for value in [None, Some("".into()), Some("relative".into())] {
+            assert_eq!(super::windows_data_dir(value), None);
+        }
+    }
+
+    #[test]
+    fn failed_directory_creation_or_replacement_preserves_existing_data() -> Result<()> {
+        let scratch = Scratch::new()?;
+        let blocked = scratch.0.join("blocked");
+        fs::write(&blocked, b"keep me")?;
+        assert!(write(&blocked.join("state.json"), &Saved::default()).is_err());
+        assert_eq!(fs::read(&blocked)?, b"keep me");
+        let destination = scratch.file();
+        fs::create_dir_all(&destination)?;
+        fs::write(destination.join("keep"), b"original")?;
+        assert!(write(&destination, &Saved::default()).is_err());
+        assert_eq!(fs::read(destination.join("keep"))?, b"original");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_windows_destination_is_retained_and_can_be_replaced_after_close() -> Result<()> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let scratch = Scratch::new()?;
+        let path = scratch.file();
+        write(&path, &Saved::default())?;
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)?;
+        let saved = Saved {
+            volume: 27,
+            ..Saved::default()
+        };
+        assert!(write(&path, &saved).is_err());
+        drop(held);
+        assert_eq!(load(Some(path.clone())).saved, Saved::default());
+        write(&path, &saved)?;
+        assert_eq!(load(Some(path)).saved, saved);
+        Ok(())
     }
 
     #[test]
