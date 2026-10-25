@@ -12,7 +12,7 @@ to start a single audio stream.
 
 Version 0.4.0 targets Linux and Windows 10/11 x64 MSVC. Windows cross-build and
 Wine test results are available; native Windows UI, SMTC discovery and audio
-verification remain outstanding. See the [release evidence](docs/releases/v0.4.0.md).
+verification remain outstanding.
 
 ## Requirements
 
@@ -157,15 +157,15 @@ The Queue tab holds up to 100 pending entries in insertion order. With repeat
 off, a track's natural completion starts the first pending entry. An empty queue
 returns the player to Ready.
 
-| Control | Behavior |
-| --- | --- |
-| Play URL / Enter | Replaces the playing or paused track immediately and keeps the queue. Invalid input leaves playback intact. |
-| Add to queue / Ctrl+Enter | Appends a video without starting playback, joining voice or interrupting the current track. |
-| Play Queue / Next | Starts the first pending entry. During playback or preparation it reads Next and cancels the current track or request first. Requires a pending entry. |
-| Pause / Resume | Pauses or resumes the current track without advancing the queue. |
-| Stop | Cancels audio preparation, playback and pending recovery. Keeps the queue and never advances it. Playlist import continues. |
-| Leave voice | Stops audio and recovery, then disconnects. Keeps local data; a later Play URL or Play Queue reconnects. |
-| Clear queue | Removes pending entries and cancels playlist import; leaves the current track playing. |
+| Control                   | Behavior                                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Play URL / Enter          | Replaces the playing or paused track immediately and keeps the queue. Invalid input leaves playback intact.                                            |
+| Add to queue / Ctrl+Enter | Appends a video without starting playback, joining voice or interrupting the current track.                                                            |
+| Play Queue / Next         | Starts the first pending entry. During playback or preparation it reads Next and cancels the current track or request first. Requires a pending entry. |
+| Pause / Resume            | Pauses or resumes the current track without advancing the queue.                                                                                       |
+| Stop                      | Cancels audio preparation, playback and pending recovery. Keeps the queue and never advances it. Playlist import continues.                            |
+| Leave voice               | Stops audio and recovery, then disconnects. Keeps local data; a later Play URL or Play Queue reconnects.                                               |
+| Clear queue               | Removes pending entries and cancels playlist import; leaves the current track playing.                                                                 |
 
 Move entries up or down, or remove them in the Queue tab. Titles load separately;
 a title lookup failure does not prevent playback. The History tab holds the 50
@@ -215,10 +215,10 @@ for the bot in Discord.
 Use Tab to focus controls and Enter or Space to activate buttons. Ctrl+1 and
 Ctrl+2 select Queue and History. Slider shortcuts apply only while focused:
 
-| Slider | Arrow keys | Page Down / Page Up | Home / End |
-| --- | --- | --- | --- |
-| Playback progress | Left/Right: back/forward 5 seconds | Back/forward 10 seconds | Start / one second before duration, or zero for shorter tracks |
-| Volume | Left/Down: -5; Right/Up: +5 percentage points | -10 / +10 percentage points | 0% / 100% |
+| Slider            | Arrow keys                                    | Page Down / Page Up         | Home / End                                                     |
+| ----------------- | --------------------------------------------- | --------------------------- | -------------------------------------------------------------- |
+| Playback progress | Left/Right: back/forward 5 seconds            | Back/forward 10 seconds     | Start / one second before duration, or zero for shorter tracks |
+| Volume            | Left/Down: -5; Right/Up: +5 percentage points | -10 / +10 percentage points | 0% / 100%                                                      |
 
 ## Native system media controls
 
@@ -269,14 +269,14 @@ unwritable storage also produces a warning; playback can continue without saving
 
 ## Troubleshooting and limits
 
-| Problem | What to check |
-| --- | --- |
-| Missing configuration or rejected token | Replace placeholders with a bot token and numeric IDs, invite the bot to the server and restart. |
-| Cannot join voice | Check server/channel IDs, permissions and overrides, channel capacity and outbound voice UDP access. |
-| Playing but no audible output | Check server mute, Grajek's volume and your Discord volume for the bot. Playing confirms track progress, not what a listener hears. |
-| YouTube extraction or challenge failure | Update `yt-dlp`, `deno` and `yt-dlp-ejs` together. Use the [standalone extraction check](docs/development.md#check-youtube-extraction) to isolate the failure. |
-| No window | On Windows check graphics drivers/Direct3D support and use a native release build. On Linux use a graphical session and a working Vulkan driver. For X11/XWayland, try `env -u WAYLAND_DISPLAY cargo run`. An unreachable Wayland socket does not automatically fall back to X11. Leave `ZED_HEADLESS` unset. |
-| Playback stops after a disconnect | Connectivity recovery does not restart interrupted audio. Once the gateway is ready, use Play URL or Play Queue. Fatal configuration/gateway startup failures require a restart. |
+| Problem                                 | What to check                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Missing configuration or rejected token | Replace placeholders with a bot token and numeric IDs, invite the bot to the server and restart.                                                                                                                                                                                                              |
+| Cannot join voice                       | Check server/channel IDs, permissions and overrides, channel capacity and outbound voice UDP access.                                                                                                                                                                                                          |
+| Playing but no audible output           | Check server mute, Grajek's volume and your Discord volume for the bot. Playing confirms track progress, not what a listener hears.                                                                                                                                                                           |
+| YouTube extraction or challenge failure | Update `yt-dlp`, `deno` and `yt-dlp-ejs` together.                                                                                                                                                                                                                                                            |
+| No window                               | On Windows check graphics drivers/Direct3D support and use a native release build. On Linux use a graphical session and a working Vulkan driver. For X11/XWayland, try `env -u WAYLAND_DISPLAY cargo run`. An unreachable Wayland socket does not automatically fall back to X11. Leave `ZED_HEADLESS` unset. |
+| Playback stops after a disconnect       | Connectivity recovery does not restart interrupted audio. Once the gateway is ready, use Play URL or Play Queue. Fatal configuration/gateway startup failures require a restart.                                                                                                                              |
 
 Grajek controls one bot in one server and one ordinary voice channel, with one
 track at a time. It has no search, shuffle, playlist library, Discord commands or

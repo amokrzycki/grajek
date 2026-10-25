@@ -140,6 +140,8 @@ impl ImportStatus {
 /// only renders these and sends [`Command`]s and [`VolumeRequest`]s.
 #[derive(Clone, Debug)]
 pub struct State {
+    /// Last UI transport request accepted by the controller; unrelated snapshots retain it.
+    pub transport_ack: u64,
     pub phase: Phase,
     pub error: Option<String>,
     pub available: bool,
@@ -170,6 +172,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            transport_ack: 0,
             phase: Phase::Initializing,
             error: None,
             available: false,
@@ -269,6 +272,11 @@ impl State {
 }
 
 pub enum Command {
+    /// UI transport requests carry an identity so older snapshots cannot unlock newer input.
+    Transport {
+        id: u64,
+        command: Box<Self>,
+    },
     Media(crate::native::Command),
     Seek {
         track_id: u64,

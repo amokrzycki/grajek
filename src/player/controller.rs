@@ -260,6 +260,7 @@ pub(super) struct Controller<B: Backend> {
     queue: Queue,
     volume: u8,
     volume_seq: u64,
+    transport_ack: u64,
     notice: Option<String>,
     job: Option<Job>,
     track: Option<Active<B::Handle>>,
@@ -293,6 +294,7 @@ impl<B: Backend> Controller<B> {
             queue: saved.restored_queue(),
             saved,
             volume_seq: 0,
+            transport_ack: 0,
             notice,
             job: None,
             track: None,
@@ -316,6 +318,7 @@ impl<B: Backend> Controller<B> {
 
     /// Adds the shared data (volume, queue, history) to a state about the track/phase.
     fn view(&self, mut state: State) -> State {
+        state.transport_ack = self.transport_ack;
         state.track_id = self.track.as_ref().map_or(0, |track| track.id);
         state.seek = self
             .track
@@ -667,6 +670,12 @@ impl<B: Backend> Controller<B> {
     )]
     async fn command(&mut self, command: Command) {
         match command {
+            Command::Transport { id, command } => {
+                self.transport_ack = id;
+                Box::pin(self.command(*command)).await;
+                // Validation errors and ignored commands must acknowledge the request too.
+                self.sync();
+            }
             Command::Media(request) => {
                 let command = crate::native::translate(request, &self.states.borrow());
                 if let Some(command) = command {

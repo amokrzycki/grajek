@@ -1,5 +1,6 @@
 mod controls;
 mod history;
+mod lists;
 mod progress;
 mod queue;
 
@@ -55,6 +56,9 @@ pub struct PlayerApp {
     state: State,
     /// Prevent duplicate input while keeping the authoritative playback snapshot visible.
     pending: Option<Pending>,
+    transport_seq: u64,
+    queue_scroll: lists::ListNavigation,
+    history_scroll: lists::ListNavigation,
     import_pending: bool,
     /// The slider is being dragged; controller snapshots must not fight the pointer.
     dragging: bool,
@@ -96,6 +100,7 @@ impl PlayerApp {
         volume_requests: watch::Sender<VolumeRequest>,
         mut states: watch::Receiver<State>,
     ) -> Self {
+        lists::init(cx);
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Paste YouTube URL…"));
         window.focus(&input.read(cx).focus_handle(cx), cx);
         let volume = cx.new(|_| {
@@ -151,7 +156,8 @@ impl PlayerApp {
                 }
             }
         });
-        let app = Self {
+        let transport_seq = state.transport_ack;
+        let mut app = Self {
             input,
             volume,
             volume_focus: cx.focus_handle(),
@@ -166,6 +172,9 @@ impl PlayerApp {
             volume_requests,
             state,
             pending: None,
+            transport_seq,
+            queue_scroll: lists::ListNavigation::new(),
+            history_scroll: lists::ListNavigation::new(),
             import_pending: false,
             dragging: false,
             volume_seq: 0,
@@ -177,6 +186,7 @@ impl PlayerApp {
             #[cfg(target_os = "windows")]
             media: None,
         };
+        app.sync_lists(cx);
         app.sync_progress(window, cx);
         app
     }
@@ -198,7 +208,10 @@ impl PlayerApp {
         }
         self.state = state;
         self.import_pending = false;
-        self.pending = None;
+        if self.state.transport_ack >= self.transport_seq {
+            self.pending = None;
+        }
+        self.sync_lists(cx);
         // Gateway loss also disables preferences outside the transport group.
         if lost_gateway || lost_voice_control || import_finished || lost_progress {
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
@@ -331,7 +344,7 @@ impl PlayerApp {
                             .small()
                             .compact()
                             .h(px(28.))
-                            .disabled(self.pending.is_some() || !self.state.can_play())
+                            .disabled(!self.play_enabled())
                             .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))),
                     )
                     .child(

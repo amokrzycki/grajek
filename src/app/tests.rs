@@ -8,6 +8,8 @@ use gpui_kit::{
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
+pub(in crate::app) mod animation_fixes;
+mod native_ui;
 mod seek;
 
 fn state(phase: Phase) -> State {
@@ -32,12 +34,37 @@ fn playing(phase: Phase, title: Option<&str>, seconds: u64) -> State {
     }
 }
 
-type Harness = (
-    AnyWindowHandle,
-    Entity<PlayerApp>,
-    mpsc::Receiver<Command>,
-    watch::Sender<State>,
-);
+type Harness = (AnyWindowHandle, Entity<PlayerApp>, TestCommands, Snapshots);
+
+// Model the controller's transport envelope while keeping assertions about its actual action.
+struct TestCommands {
+    receiver: mpsc::Receiver<Command>,
+    acknowledged: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl TestCommands {
+    fn try_recv(&mut self) -> Result<Command, mpsc::error::TryRecvError> {
+        match self.receiver.try_recv()? {
+            Command::Transport { id, command } => {
+                self.acknowledged.set(id);
+                Ok(*command)
+            }
+            command => Ok(command),
+        }
+    }
+}
+
+struct Snapshots {
+    sender: watch::Sender<State>,
+    acknowledged: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl Snapshots {
+    fn send_replace(&self, mut state: State) {
+        state.transport_ack = self.acknowledged.get();
+        self.sender.send_replace(state);
+    }
+}
 
 fn open_full(cx: &mut TestAppContext, initial: State) -> (Harness, watch::Receiver<VolumeRequest>) {
     open_at(cx, initial, 520., 560.)
@@ -75,6 +102,15 @@ fn open_at(
     });
     cx.update_window(window, |_, window, cx| window.render_frame(cx))
         .expect("test window should render");
+    let acknowledged = std::rc::Rc::new(std::cell::Cell::new(0));
+    let received = TestCommands {
+        receiver: received,
+        acknowledged: acknowledged.clone(),
+    };
+    let states = Snapshots {
+        sender: states,
+        acknowledged,
+    };
     ((window, view, received, states), volume_rx)
 }
 
@@ -641,13 +677,7 @@ fn a_recovered_history_file_is_reported(cx: &mut TestAppContext) {
 )]
 fn long_lists_scroll_inside_the_window(cx: &mut TestAppContext) {
     let (window, view, _received, _states) = open(cx, with_lists(Phase::Ready, 100, 50));
-    let last = ("queue-row", 109_u64);
-    let header = bounds(cx, window, "queue-count");
-    let before = bounds(cx, window, last);
-    assert!(
-        before.origin.y > header.origin.y + px(400.),
-        "row lies below the viewport"
-    );
+    assert!(!present(cx, window, ("queue-row", 109_u64)));
     cx.update_window(window, |_, window, cx| {
         window.scroll(
             ("queue-row", 10_u64),
@@ -656,14 +686,10 @@ fn long_lists_scroll_inside_the_window(cx: &mut TestAppContext) {
         );
     })
     .expect("test window should scroll");
-    let after = bounds(cx, window, last);
-    assert!(
-        after.origin.y < before.origin.y - px(300.),
-        "the list moved"
-    );
-    assert!(after.origin.y < px(560.), "the last row is now on screen");
+    let after = bounds(cx, window, ("queue-row", 109_u64));
+    assert!(after.origin.y < px(560.), "last queue row is visible");
     show(cx, &view, Section::History);
-    let before = bounds(cx, window, ("history-row", 49_usize));
+    assert!(!present(cx, window, ("history-row", 49_usize)));
     cx.update_window(window, |_, window, cx| {
         window.scroll(
             ("history-row", 0_usize),
@@ -672,7 +698,7 @@ fn long_lists_scroll_inside_the_window(cx: &mut TestAppContext) {
         );
     })
     .expect("test window should scroll");
-    assert!(bounds(cx, window, ("history-row", 49_usize)).origin.y < before.origin.y);
+    assert!(bounds(cx, window, ("history-row", 49_usize)).origin.y < px(560.));
     // The controls above the lists never move.
     assert!(button(cx, window, "pause-resume").1);
 }
@@ -1282,7 +1308,8 @@ fn queue_metadata_states_and_unicode_keep_row_actions_visible(cx: &mut TestAppCo
                 let voice = bounds(cx, window, "voice-status");
                 let leave = bounds(cx, window, "leave-voice");
                 assert!(
-                    voice.right() <= leave.left() && leave.right() <= row.right(),
+                    voice.right() <= leave.left()
+                        && leave.right() <= bounds(cx, window, "url").right(),
                     "width={width} voice={voice:?} leave={leave:?}"
                 );
                 assert_eq!(button(cx, window, "leave-voice").0, "Leave voice");

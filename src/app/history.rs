@@ -1,14 +1,15 @@
 use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, Sizable,
     button::{Button, ButtonVariants},
-    scroll::ScrollableElement,
 };
 use gpui_kit::{
     Context, InteractiveElement, IntoElement, ParentElement, Styled, TestSupportExt, div,
     prelude::FluentBuilder, px,
 };
 
-use super::{PlayerApp, clock, label};
+use super::lists::{Tab, TabPrev};
+
+use super::{PlayerApp, Section, clock, label};
 use crate::{player::Command, store::HistoryEntry};
 
 impl PlayerApp {
@@ -20,12 +21,14 @@ impl PlayerApp {
         cx.notify();
     }
 
-    fn history_row(
+    pub(super) fn history_row(
         &self,
         index: usize,
         entry: &HistoryEntry,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        #[cfg(test)]
+        let _row_timer = super::tests::animation_fixes::RowTimer::start();
         let theme = cx.theme();
         let title = entry
             .title
@@ -35,6 +38,10 @@ impl PlayerApp {
         let (play_url, queue_url, forget_url) = (url.clone(), url.clone(), url);
         div()
             .id(("history-row", index))
+            .w_full()
+            .tab_group()
+            .track_focus(&self.history_scroll.rows[index].1)
+            .tab_stop(false)
             .flex()
             .flex_none()
             .items_center()
@@ -58,18 +65,32 @@ impl PlayerApp {
             }))
             .child(
                 Button::new(("history-play", index))
+                    .key_context("PlayerList")
+                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                        this.list_tab(Section::History, index, 0, false, window, cx);
+                    }))
+                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                        this.list_tab(Section::History, index, 0, true, window, cx);
+                    }))
                     .icon(IconName::Play)
                     .ghost()
                     .small()
                     .accessibility_label("Play now")
                     .tooltip("Play now")
-                    .disabled(self.pending.is_some() || !self.state.can_play())
+                    .disabled(!self.play_enabled())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.play_url(play_url.clone(), window, cx);
                     })),
             )
             .child(
                 Button::new(("history-queue", index))
+                    .key_context("PlayerList")
+                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                        this.list_tab(Section::History, index, 1, false, window, cx);
+                    }))
+                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                        this.list_tab(Section::History, index, 1, true, window, cx);
+                    }))
                     .icon(IconName::Plus)
                     .ghost()
                     .small()
@@ -82,6 +103,13 @@ impl PlayerApp {
             )
             .child(
                 Button::new(("history-remove", index))
+                    .key_context("PlayerList")
+                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                        this.list_tab(Section::History, index, 2, false, window, cx);
+                    }))
+                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                        this.list_tab(Section::History, index, 2, true, window, cx);
+                    }))
                     .icon(IconName::Close)
                     .ghost()
                     .small()
@@ -176,21 +204,7 @@ impl PlayerApp {
                 )
                 .into_any_element()
             } else {
-                div()
-                    .id("history-list")
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .overflow_y_scrollbar()
-                    .children(
-                        self.state
-                            .history
-                            .iter()
-                            .enumerate()
-                            .map(|(index, entry)| self.history_row(index, entry, cx)),
-                    )
-                    .into_any_element()
+                self.scroll_list(Section::History, cx).into_any_element()
             })
     }
 }
