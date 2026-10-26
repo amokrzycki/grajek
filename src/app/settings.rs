@@ -110,7 +110,7 @@ impl PlayerApp {
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
         let setup = &self.state.setup;
         let busy = self.state.setup_busy;
-        if setup.bot.is_some() {
+        if let Some(bot) = setup.bot {
             panel = panel.child(
                 Button::new("refresh-servers")
                     .label("Refresh servers")
@@ -168,7 +168,6 @@ impl PlayerApp {
                         channel.name,
                         if selected { " · selected" } else { "" }
                     );
-                    let bot = setup.bot;
                     panel = panel.child(
                         Button::new(("channel", channel.id.get()))
                             .label(name)
@@ -180,15 +179,13 @@ impl PlayerApp {
                             )
                             .disabled(busy || channel.reason.is_some())
                             .on_click(cx.listener(move |this, _, _, _| {
-                                if let Some(bot) = bot {
-                                    this.send(Command::Setup(Request::Select(Destination {
-                                        bot,
-                                        guild,
-                                        channel: channel_id,
-                                        guild_name: String::new(),
-                                        channel_name: String::new(),
-                                    })));
-                                }
+                                this.send(Command::Setup(Request::Select(Destination {
+                                    bot,
+                                    guild,
+                                    channel: channel_id,
+                                    guild_name: String::new(),
+                                    channel_name: String::new(),
+                                })));
                             })),
                     );
                     if let Some(reason) = &channel.reason {

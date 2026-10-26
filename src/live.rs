@@ -86,7 +86,6 @@ impl Live {
     }
 
     async fn refresh(&self, discord: &Discord) -> Result<()> {
-        // Serenity handles REST rate limits; gateway events maintain the list between refreshes.
         let epoch = self.health.borrow().discovery_epoch;
         let mut servers = Vec::new();
         let mut after = None;
@@ -109,7 +108,7 @@ impl Live {
         Ok(())
     }
 
-    pub async fn configure(&self, request: crate::setup::Request) -> Result<()> {
+    async fn configure(&self, request: crate::setup::Request) -> Result<()> {
         use crate::setup::{Credential, Request, Status, credential};
         match request {
             Request::Retry | Request::Restore { .. } => {

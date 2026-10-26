@@ -461,8 +461,7 @@ impl Discord {
         let gateway_health = health_tx.clone();
         let gateway_epoch = health_tx.borrow().session_epoch;
         let gateway = tokio::spawn(async move {
-            if let Err(error) = client.start().await {
-                let _ = error;
+            if client.start().await.is_err() {
                 tracing::error!("Discord gateway failed");
                 gateway_health.send_modify(|health| {
                     if health.session_epoch != gateway_epoch {

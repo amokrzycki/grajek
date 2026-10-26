@@ -117,7 +117,6 @@ impl Menu {
         let children = if parent == 0 {
             items
                 .iter()
-                .filter(|item| item.id != 0)
                 .map(|item| {
                     OwnedValue::try_from(zbus::zvariant::Value::from((
                         item.id,

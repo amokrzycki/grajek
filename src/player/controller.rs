@@ -328,7 +328,7 @@ impl<B: Backend> Controller<B> {
     fn gateway(&self) -> bool {
         self.health.borrow().gateway
             && self.backend.ready()
-            && !(self.setup_job.is_some() && (self.setup_change != SetupChange::Discovery))
+            && !(self.setup_job.is_some() && self.setup_change != SetupChange::Discovery)
     }
 
     /// Adds the shared data (volume, queue, history) to a state about the track/phase.
@@ -800,7 +800,7 @@ impl<B: Backend> Controller<B> {
                 }
             }
             Command::Stop => {
-                if self.setup_job.is_some() && (self.setup_change != SetupChange::Discovery) {
+                if self.setup_job.is_some() && self.setup_change != SetupChange::Discovery {
                     return self.sync();
                 }
                 if !matches!(
