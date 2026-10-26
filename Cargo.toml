@@ -4,13 +4,14 @@ resolver = "2"
 
 [package]
 name = "grajek"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT"
 
 [dependencies]
 anyhow = "1"
+futures-lite = "2"
 dotenvy = "0.15"
 gpui-kit = "=0.7.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
@@ -25,9 +26,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.2", features = ["async-secret-service", "tokio", "crypto-rust"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+tray-icon = { version = "=0.24.2", default-features = false }
+keyring = { version = "=3.6.2", features = ["windows-native"] }
 grajek-smtc = { path = "crates/grajek-smtc" }
 
 [dev-dependencies]

@@ -250,8 +250,18 @@ async fn track_outcome<H>(track: &mut Option<Active<H>>) -> bool {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SetupChange {
+    Discovery,
+    Reconfigure,
+    Remove,
+}
+
 /// All playback, queue and volume state lives here. The GUI never mutates a copy.
 pub(super) struct Controller<B: Backend> {
+    setup_job: Option<JoinHandle<Result<()>>>,
+    setup_change: SetupChange,
+    pending_setup: Option<crate::setup::Request>,
     backend: Arc<B>,
     health: watch::Receiver<Health>,
     states: watch::Sender<State>,
@@ -286,6 +296,9 @@ impl<B: Backend> Controller<B> {
         persist: watch::Sender<Saved>,
     ) -> Self {
         Self {
+            setup_job: None,
+            setup_change: SetupChange::Discovery,
+            pending_setup: None,
             health: backend.health(),
             backend,
             states,
@@ -314,10 +327,13 @@ impl<B: Backend> Controller<B> {
 
     fn gateway(&self) -> bool {
         self.health.borrow().gateway
+            && self.backend.ready()
+            && !(self.setup_job.is_some() && (self.setup_change != SetupChange::Discovery))
     }
 
     /// Adds the shared data (volume, queue, history) to a state about the track/phase.
     fn view(&self, mut state: State) -> State {
+        state.close_to_tray = self.saved.close_to_tray;
         state.transport_ack = self.transport_ack;
         state.track_id = self.track.as_ref().map_or(0, |track| track.id);
         state.seek = self
@@ -325,7 +341,11 @@ impl<B: Backend> Controller<B> {
             .as_ref()
             .map_or(SeekStatus::Ready, |track| track.seek.clone());
         state.seek_serial = self.track.as_ref().map_or(0, |track| track.seek_serial);
-        state.available = self.gateway();
+        state.available = self.gateway()
+            && !(self.setup_job.is_some() && (self.setup_change != SetupChange::Discovery));
+        state.setup = self.health.borrow().setup.clone();
+        state.setup_busy = self.setup_job.is_some();
+        state.confirm_setup = self.pending_setup.is_some();
         state.controller_ready = true;
         state.voice_connected = self.health.borrow().voice;
         state.preferences = Preferences {
@@ -664,12 +684,93 @@ impl<B: Backend> Controller<B> {
         }
     }
 
+    pub(super) async fn configure(&mut self, request: crate::setup::Request) {
+        if self.setup_job.is_some() {
+            return self.sync();
+        }
+        self.setup_change = if matches!(request, crate::setup::Request::Remove) {
+            SetupChange::Remove
+        } else if request.interrupts() {
+            SetupChange::Reconfigure
+        } else {
+            SetupChange::Discovery
+        };
+        if self.setup_change != SetupChange::Discovery {
+            self.left_voice = true;
+            self.scheduled = None;
+            self.cancel_job().await;
+            self.stop_track();
+            self.failure_notice = None;
+            self.publish(Phase::Ready, None);
+        }
+        let backend = self.backend.clone();
+        self.setup_job = Some(tokio::spawn(async move { backend.setup(request).await }));
+        self.sync();
+    }
+
+    async fn finish_setup(&mut self, result: &Result<Result<()>, JoinError>) {
+        self.setup_job = None;
+        // A health update during discovery may have deferred voice cleanup.
+        if !self.backend.ready() && self.health.borrow().voice {
+            self.leave_voice(true).await;
+            return;
+        }
+        let succeeded = matches!(result, Ok(Ok(())));
+        if succeeded && self.setup_change != SetupChange::Discovery {
+            let setup = self.health.borrow().setup.clone();
+            if self.setup_change == SetupChange::Remove {
+                self.saved.destination = None;
+                self.persist();
+            } else if let Some(destination) = setup.destination {
+                self.saved.destination = Some(destination);
+                self.persist();
+            } else if let Some(destination) = self
+                .saved
+                .destination
+                .clone()
+                .filter(|destination| Some(destination.bot) == setup.bot)
+            {
+                self.configure(crate::setup::Request::Select(destination))
+                    .await;
+                return;
+            }
+        }
+        if !succeeded {
+            self.report("Discord setup did not finish. Check Settings and retry.".into());
+        }
+        self.sync();
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "One exhaustive dispatcher preserves transport cancellation and ordering"
     )]
     async fn command(&mut self, command: Command) {
         match command {
+            Command::CloseToTray(enabled) => {
+                self.saved.close_to_tray = enabled;
+                self.persist();
+                self.sync();
+            }
+            Command::Setup(request) => {
+                if self.setup_job.is_some() {
+                    return self.sync();
+                }
+                if request.interrupts() && (self.track.is_some() || self.job.is_some()) {
+                    self.pending_setup = Some(request);
+                    self.sync();
+                } else {
+                    self.configure(request).await;
+                }
+            }
+            Command::ConfirmSetup(accept) => {
+                if let Some(request) = self.pending_setup.take()
+                    && accept
+                {
+                    self.configure(request).await;
+                }
+                self.sync();
+            }
             Command::Transport { id, command } => {
                 self.transport_ack = id;
                 // ponytail: no recursion guard; translate() never returns Transport/Media, so unbounded recursion cannot occur
@@ -692,8 +793,17 @@ impl<B: Backend> Controller<B> {
                 self.cancel_import().await;
                 self.sync();
             }
-            Command::LeaveVoice => self.leave_voice(true).await,
+            Command::LeaveVoice => {
+                if self.setup_job.is_none() {
+                    self.leave_voice(true).await;
+                } else {
+                    self.sync();
+                }
+            }
             Command::Stop => {
+                if self.setup_job.is_some() && (self.setup_change != SetupChange::Discovery) {
+                    return self.sync();
+                }
                 if !matches!(
                     self.job.as_ref().map(|job| &job.kind),
                     Some(JobKind::Disconnect { manual: true })
@@ -1060,6 +1170,10 @@ impl<B: Backend> Controller<B> {
     }
 
     async fn health_changed(&mut self, current: Health) {
+        if !self.backend.ready() && current.voice && self.setup_job.is_none() {
+            self.leave_voice(true).await;
+            return;
+        }
         // Explicit leave owns teardown; late voice callbacks cannot cancel it or rejoin.
         if self.left_voice {
             if current.gateway_error.is_some() && self.states.borrow().phase != Phase::Disconnecting
@@ -1149,6 +1263,10 @@ impl<B: Backend> Controller<B> {
             .and_then(|result| result);
         match (job.kind, result) {
             (JobKind::Prepare { url, queued }, Ok(JobOutput::Prepared(resolved))) => {
+                if !self.gateway() {
+                    self.publish(Phase::Error, Some("Discord destination is no longer available. Select it again before playing.".into()));
+                    return;
+                }
                 self.queued_track = queued;
                 let info = resolved.info.clone();
                 match timeout(
@@ -1274,6 +1392,9 @@ impl<B: Backend> Controller<B> {
                     let current = health.borrow_and_update().clone();
                     self.health_changed(current).await;
                 },
+                result = async {
+                    match &mut self.setup_job { Some(job) => job.await, None => pending().await }
+                } => self.finish_setup(&result).await,
                 result = import_result(&mut self.import_job) => self.finish_import(result),
                 result = title_result(&mut self.title_job) => self.finish_title(result),
                 result = seek_result(&mut self.seek_job) => self.finish_seek(result),
@@ -1315,6 +1436,10 @@ impl<B: Backend> Controller<B> {
         }
         self.cancel_job().await;
         self.stop_track();
+        if let Some(job) = self.setup_job.take() {
+            job.abort();
+            let _ = job.await;
+        }
         self.backend.shutdown().await;
     }
 }

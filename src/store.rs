@@ -73,12 +73,23 @@ pub(crate) fn safe_title(title: &str) -> Option<String> {
     (!title.is_empty()).then_some(title)
 }
 
+fn read_destination<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::setup::Destination>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
 const fn default_volume() -> u8 {
     DEFAULT_VOLUME
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Saved {
+    #[serde(default)]
+    pub close_to_tray: bool,
+    #[serde(default, deserialize_with = "read_destination")]
+    pub destination: Option<crate::setup::Destination>,
     /// Percent, 0 to 100. Files without it (older versions) keep full volume.
     #[serde(default = "default_volume")]
     pub volume: u8,
@@ -99,6 +110,8 @@ pub struct Saved {
 impl Default for Saved {
     fn default() -> Self {
         Self {
+            close_to_tray: false,
+            destination: None,
             volume: DEFAULT_VOLUME,
             continue_on_error: false,
             remember_queue: false,
@@ -147,6 +160,8 @@ impl Saved {
     fn sanitized(mut self) -> Self {
         self.volume = self.volume.min(100);
         let mut clean = Self {
+            close_to_tray: self.close_to_tray,
+            destination: self.destination,
             volume: self.volume,
             continue_on_error: self.continue_on_error,
             remember_queue: self.remember_queue,
@@ -385,6 +400,22 @@ mod tests {
         }
         names.sort();
         Ok(names)
+    }
+
+    #[test]
+    fn malformed_destination_keeps_existing_preferences_and_close_defaults_off()
+    -> anyhow::Result<()> {
+        let saved: Saved = serde_json::from_str(
+            r#"{"volume":42,"remember_queue":true,"destination":{"token":"should-not-be-state"},"queue":[{"url":"https://youtu.be/BaW_jenozKc"}]}"#,
+        )?;
+        assert_eq!(saved.volume, 42);
+        assert!(saved.destination.is_none());
+        assert!(!saved.close_to_tray);
+        assert_eq!(saved.queue.len(), 1);
+        let json = serde_json::to_string(&saved)?;
+        assert!(!json.contains("token"));
+        assert!(!json.contains("should-not-be-state"));
+        Ok(())
     }
 
     #[test]

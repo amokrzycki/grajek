@@ -139,7 +139,15 @@ impl ImportStatus {
 /// A snapshot of everything the window shows. The controller owns the truth; the GUI
 /// only renders these and sends [`Command`]s and [`VolumeRequest`]s.
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Playback capabilities, setup activity and tray preference are independent snapshot facts"
+)]
 pub struct State {
+    pub close_to_tray: bool,
+    pub setup: crate::setup::Setup,
+    pub setup_busy: bool,
+    pub confirm_setup: bool,
     /// Last UI transport request accepted by the controller; unrelated snapshots retain it.
     pub transport_ack: u64,
     pub phase: Phase,
@@ -172,6 +180,10 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            close_to_tray: false,
+            setup: crate::setup::Setup::default(),
+            setup_busy: false,
+            confirm_setup: false,
             transport_ack: 0,
             phase: Phase::Initializing,
             error: None,
@@ -272,6 +284,9 @@ impl State {
 }
 
 pub enum Command {
+    CloseToTray(bool),
+    Setup(crate::setup::Request),
+    ConfirmSetup(bool),
     /// UI transport requests carry an identity so older snapshots cannot unlock newer input.
     Transport {
         id: u64,

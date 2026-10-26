@@ -1,18 +1,12 @@
 mod controller;
 mod state;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use songbird::tracks::{TrackResult, TrackState};
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::{
-    config::Config,
-    discord::{Discord, Health},
-    live::Live,
-    media::{self, Resolved},
-    store,
-};
+use crate::{config::Config, discord::Health, live::Live, media::Resolved, store};
 use controller::Controller;
 pub use state::{
     Command, ImportStatus, Phase, Preferences, RepeatMode, SeekStatus, State, VolumeRequest,
@@ -39,6 +33,12 @@ pub trait Handle: Clone + Send + Sync + 'static {
 /// The Discord and yt-dlp side of the controller, replaceable in tests.
 pub trait Backend: Send + Sync + 'static {
     type Handle: Handle;
+    fn setup(&self, _request: crate::setup::Request) -> impl Future<Output = Result<()>> + Send {
+        async { anyhow::bail!("Setup unavailable") }
+    }
+    fn ready(&self) -> bool {
+        true
+    }
     fn health(&self) -> watch::Receiver<Health>;
     fn clear_error(&self);
     /// Joins voice, then extracts the audio. `connected` fires once voice is ready.
@@ -66,57 +66,36 @@ pub trait Backend: Send + Sync + 'static {
 }
 
 pub async fn run(
-    config: Result<Config>,
+    config: Config,
     commands: mpsc::Receiver<Command>,
     volume: watch::Receiver<VolumeRequest>,
     states: watch::Sender<State>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) {
     let loaded = store::open();
     if let Some(warning) = &loaded.warning {
         tracing::warn!(%warning, "Saved state");
     }
-    let startup = async {
-        let config = config?;
-        media::check_tools().await?;
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(15))
-            .build()
-            .context("Could not create audio HTTP client.")?;
-        Ok::<_, anyhow::Error>(Live::new(Arc::new(Discord::start(config).await?), http))
+    let Ok(http) = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(15))
+        .build()
+    else {
+        return;
     };
-    let startup = tokio::select! {
-        biased;
-        _ = shutdown.changed() => return,
-        result = startup => result,
-    };
-    let backend = match startup {
-        Ok(backend) => Arc::new(backend),
-        Err(error) => {
-            tracing::error!(error = %format!("{error:#}"), "Player initialization failed");
-            states.send_replace(State {
-                phase: Phase::Error,
-                error: Some(error.to_string()),
-                volume: loaded.saved.volume,
-                preferences: Preferences {
-                    continue_on_error: loaded.saved.continue_on_error,
-                    remember_queue: loaded.saved.remember_queue,
-                    repeat: loaded.saved.repeat,
-                },
-                queue: loaded.saved.restored_queue().snapshot(),
-                history: loaded.saved.history,
-                notice: loaded.warning,
-                ..State::default()
-            });
-            let mut commands = commands;
-            tokio::select! { _ = shutdown.changed() => {}, _ = commands.recv() => {} }
-            return;
-        }
-    };
+    let external = config.token.is_some();
+    let backend = Arc::new(Live::new(http, external));
     let (persist, snapshots) = watch::channel(loaded.saved.clone());
     let saver = loaded.path.map(|path| store::spawn_saver(path, snapshots));
-    let controller = Controller::new(backend, loaded.saved, loaded.warning, states, persist);
+    let destination = loaded.saved.destination.clone();
+    let notice = config.warning.clone().or(loaded.warning);
+    let mut controller = Controller::new(backend, loaded.saved, notice, states, persist);
+    controller
+        .configure(crate::setup::Request::Restore {
+            config,
+            saved: destination,
+        })
+        .await;
     controller.run(commands, volume, shutdown).await;
     // The controller (and its snapshot sender) is gone; wait for the final write.
     if let Some(saver) = saver {

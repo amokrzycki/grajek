@@ -12,13 +12,6 @@ pub mod windows;
 pub enum Command {
     Play,
     Pause,
-    #[cfg_attr(
-        all(target_os = "windows", not(test)),
-        expect(
-            dead_code,
-            reason = "SMTC emits separate Play and Pause events; MPRIS also emits PlayPause"
-        )
-    )]
     PlayPause,
     Next,
     Stop,

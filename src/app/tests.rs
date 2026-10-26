@@ -96,7 +96,14 @@ fn open_at(
                 ..Default::default()
             },
             cx,
-            |window, cx| cx.new(|cx| PlayerApp::new(window, cx, commands, volume, updates)),
+            |window, cx| {
+                cx.new(|cx| {
+                    let mut app = PlayerApp::new(window, cx, commands, volume, updates);
+                    app.settings_open = false;
+                    window.focus(&app.input.read(cx).focus_handle(cx), cx);
+                    app
+                })
+            },
         )
         .expect("test window should open")
     });
@@ -353,6 +360,8 @@ fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut Te
         .expect("test window should open")
     });
     cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("settings", cx);
         window.render_frame(cx);
         window.click("url", cx);
         window.input("https://youtu.be/aqz-KE-bpKQ", cx);
@@ -1478,4 +1487,37 @@ fn import_feedback_and_actions_fit_both_native_sizes(cx: &mut TestAppContext) {
         !button(cx, window, "import-playlist").1,
         "cancel stays available at capacity"
     );
+}
+
+#[gpui_kit::test]
+#[expect(
+    clippy::expect_used,
+    reason = "GPUI test setup failure must fail the test"
+)]
+fn first_run_token_controls_fit_minimum_size_and_clear_secret_after_submit(
+    cx: &mut TestAppContext,
+) {
+    let ((window, view, mut received, _), _) = open_at(cx, State::default(), 420., 480.);
+    click(cx, window, "settings");
+    for id in ["bot-token", "save-token", "session-token", "setup-help"] {
+        let control = bounds(cx, window, id);
+        assert!(
+            control.right() <= px(420.) && control.bottom() <= px(480.),
+            "{id} must be reachable on first run"
+        );
+    }
+    cx.update_window(window, |_, window, cx| {
+        view.update(cx, |app, cx| {
+            app.token.update(cx, |input, cx| {
+                input.set_value("test-bot-secret", window, cx);
+            });
+        });
+        window.render_frame(cx);
+    })
+    .expect("test window should render token entry");
+    click(cx, window, "session-token");
+    assert!(
+        matches!(received.try_recv(), Ok(Command::Setup(crate::setup::Request::Authenticate { token, remember: false })) if token == "test-bot-secret")
+    );
+    cx.update(|cx| assert_eq!(view.read(cx).token.read(cx).value().as_ref(), ""));
 }

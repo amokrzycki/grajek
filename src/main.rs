@@ -9,8 +9,10 @@ mod native;
 mod player;
 mod playlist;
 mod queue;
+mod setup;
 mod store;
 mod style;
+mod tray;
 
 use anyhow::{Context as _, Result};
 use gpui_kit::{
@@ -61,8 +63,16 @@ fn main() -> Result<()> {
         commands: commands.clone(),
         states: updates.clone(),
     };
+    let (window_commands, window_requests) = mpsc::channel(16);
+    let tray_endpoint = tray::Endpoint {
+        player: endpoint.clone(),
+        window: window_commands,
+        available: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
     #[cfg(target_os = "linux")]
-    let media_session = runtime.spawn(native::linux::run(endpoint, shutdown_rx.clone()));
+    let tray_session = runtime.spawn(tray::linux::run(tray_endpoint.clone(), shutdown_rx.clone()));
+    #[cfg(target_os = "linux")]
+    let media_session = runtime.spawn(native::linux::run(endpoint.clone(), shutdown_rx.clone()));
     let controller = runtime.spawn(player::run(
         config,
         receiver,
@@ -70,46 +80,25 @@ fn main() -> Result<()> {
         states,
         shutdown_rx,
     ));
-    application().with_assets(AppAssets).run(move |cx| {
-        init(cx);
-        style::init(cx);
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(520.), px(560.)),
-                cx,
-            ))),
-            window_min_size: Some(size(px(420.), px(480.))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Grajek".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        if let Err(error) = open_window(options, cx, |window, cx| {
-            #[cfg(target_os = "windows")]
-            let media = native::windows::attach(window, cx, &endpoint);
-            cx.new(|cx| {
-                let app = app::PlayerApp::new(window, cx, commands, volume, updates);
-                #[cfg(target_os = "windows")]
-                let app = app.with_media(media);
-                app
-            })
-        }) {
-            tracing::error!(%error, "Could not open native window");
-            cx.quit();
-        }
-    });
+    run_app(
+        commands,
+        volume,
+        updates,
+        endpoint,
+        tray_endpoint,
+        window_requests,
+    );
     shutdown.send_replace(true);
     runtime.block_on(async {
         #[cfg(target_os = "linux")]
         {
+            let mut tray_session = tray_session;
+            if tokio::time::timeout(Duration::from_secs(2), &mut tray_session)
+                .await
+                .is_err()
+            {
+                tray_session.abort();
+            }
             let mut media_session = media_session;
             if tokio::time::timeout(Duration::from_secs(2), &mut media_session)
                 .await
@@ -130,4 +119,92 @@ fn main() -> Result<()> {
     });
     runtime.shutdown_timeout(Duration::from_secs(2));
     Ok(())
+}
+
+fn window_options(cx: &gpui_kit::App) -> WindowOptions {
+    WindowOptions {
+        app_id: Some("org.grajek.desktop".into()),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(520.), px(560.)),
+            cx,
+        ))),
+        window_min_size: Some(size(px(420.), px(480.))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Grajek".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn run_app(
+    commands: mpsc::Sender<player::Command>,
+    volume: watch::Sender<player::VolumeRequest>,
+    updates: watch::Receiver<player::State>,
+    endpoint: native::Endpoint,
+    tray_endpoint: tray::Endpoint,
+    mut window_requests: mpsc::Receiver<tray::WindowAction>,
+) {
+    #[cfg(not(target_os = "windows"))]
+    drop(endpoint);
+    application().with_assets(AppAssets).run(move |cx| {
+        init(cx);
+        style::init(cx);
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+        let options = window_options(cx);
+        #[cfg(target_os = "windows")]
+        let tray_task = tray::windows::attach(cx, tray_endpoint.clone());
+        let close_endpoint = tray_endpoint.clone();
+        let opened = open_window(options, cx, |window, cx| {
+            window.on_window_should_close(cx, move |window, _| {
+                if close_endpoint.available() && close_endpoint.player.states.borrow().close_to_tray
+                {
+                    window.minimize_window();
+                    false
+                } else {
+                    true
+                }
+            });
+            #[cfg(target_os = "windows")]
+            let media = native::windows::attach(window, cx, &endpoint);
+            cx.new(|cx| {
+                let app = app::PlayerApp::new(window, cx, commands, volume, updates);
+                #[cfg(target_os = "windows")]
+                let app = app.with_media(media);
+                app
+            })
+        });
+        match opened {
+            Ok((window, _)) => {
+                cx.spawn(async move |cx| {
+                    #[cfg(target_os = "windows")]
+                    let _tray_task = tray_task;
+                    while let Some(action) = window_requests.recv().await {
+                        if matches!(action, tray::WindowAction::Quit) {
+                            cx.update(|cx| cx.quit());
+                            break;
+                        }
+                        let _ = window.update(cx, |_, window, _| match action {
+                            tray::WindowAction::Show => window.activate_window(),
+                            tray::WindowAction::Minimize if tray_endpoint.available() => {
+                                window.minimize_window();
+                            }
+                            tray::WindowAction::Minimize | tray::WindowAction::Quit => {}
+                        });
+                    }
+                })
+                .detach();
+            }
+            Err(error) => {
+                tracing::error!(%error, "Could not open native window");
+                cx.quit();
+            }
+        }
+    });
 }

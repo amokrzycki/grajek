@@ -3,6 +3,7 @@ mod history;
 mod lists;
 mod progress;
 mod queue;
+mod settings;
 
 use gpui_kit::assets::IconName as AudioIcon;
 use gpui_kit::component::{
@@ -39,7 +40,15 @@ enum Pending {
     Leave,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent UI focus, pending-operation and panel flags are not a single state machine"
+)]
 pub struct PlayerApp {
+    token: Entity<InputState>,
+    settings_open: bool,
+    setup_starting: bool,
+    setup_help: bool,
     input: Entity<InputState>,
     volume: Entity<SliderState>,
     volume_focus: FocusHandle,
@@ -101,8 +110,13 @@ impl PlayerApp {
         mut states: watch::Receiver<State>,
     ) -> Self {
         lists::init(cx);
+        let token = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("Bot token")
+        });
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Paste YouTube URL…"));
-        window.focus(&input.read(cx).focus_handle(cx), cx);
+        window.focus(&token.read(cx).focus_handle(cx), cx);
         let volume = cx.new(|_| {
             SliderState::new()
                 .min(0.0)
@@ -158,6 +172,10 @@ impl PlayerApp {
         });
         let transport_seq = state.transport_ack;
         let mut app = Self {
+            token,
+            settings_open: true,
+            setup_starting: true,
+            setup_help: false,
             input,
             volume,
             volume_focus: cx.focus_handle(),
@@ -192,6 +210,13 @@ impl PlayerApp {
     }
 
     fn accept_state(&mut self, state: State, window: &mut Window, cx: &mut Context<Self>) {
+        if self.setup_starting && state.controller_ready && !state.setup_busy {
+            if state.setup.destination.is_some() {
+                self.settings_open = false;
+                window.focus(&self.input.read(cx).focus_handle(cx), cx);
+            }
+            self.setup_starting = false;
+        }
         let before = self.controls_enabled();
         let lost_gateway = self.state.available && !state.available;
         let lost_voice_control = self.state.can_leave_voice()
@@ -311,8 +336,37 @@ impl PlayerApp {
                         color
                     })
                     .child(div().size(px(6.)).flex_none().rounded_full().bg(color))
-                    .child(label("voice-status", connection(&self.state).into()))
+                    .child(label(
+                        "voice-status",
+                        self.state.setup.destination.as_ref().map_or_else(
+                            || connection(&self.state).into(),
+                            |destination| {
+                                format!(
+                                    "Discord · {} / {}",
+                                    destination.guild_name, destination.channel_name
+                                )
+                            },
+                        ),
+                    ))
                     .child(self.leave_button(cx)),
+            )
+            .child(
+                Button::new("settings")
+                    .label(if self.settings_open {
+                        "Back"
+                    } else {
+                        "Settings"
+                    })
+                    .small()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.settings_open = !this.settings_open;
+                        if this.settings_open {
+                            window.focus(&this.token.read(cx).focus_handle(cx), cx);
+                        } else {
+                            window.focus(&this.input.read(cx).focus_handle(cx), cx);
+                        }
+                        cx.notify();
+                    })),
             )
     }
 
@@ -579,6 +633,20 @@ impl PlayerApp {
 impl Render for PlayerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        if self.settings_open {
+            return div()
+                .size_full()
+                .bg(theme.background)
+                .text_color(theme.foreground)
+                .font_family(theme.font_family.clone())
+                .p_4()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(self.header(cx))
+                .child(self.settings(cx))
+                .into_any_element();
+        }
         div()
             .size_full()
             .bg(theme.background)
@@ -613,6 +681,7 @@ impl Render for PlayerApp {
             .children(self.error(cx))
             .child(self.volume_row(window, cx))
             .child(self.sections(cx))
+            .into_any_element()
     }
 }
 
