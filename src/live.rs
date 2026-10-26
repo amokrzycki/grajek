@@ -133,21 +133,17 @@ impl Live {
                     health.setup.status = Status::Checking;
                 });
                 let discord = Discord::start(token.trim(), self.health.clone()).await?;
-                if remember && !self.external {
-                    match credential(Credential::Save(token)).await {
-                        Ok(_) => self
-                            .health
-                            .send_modify(|health| health.setup.remembered = true),
-                        Err(message) => {
-                            discord.shutdown().await;
-                            self.health.send_modify(|health| {
-                                health.gateway = false;
-                                health.setup.bot = None;
-                                health.setup.storage_notice = Some(message.into());
-                            });
-                            anyhow::bail!(message);
-                        }
-                    }
+                if remember
+                    && !self.external
+                    && let Err(message) = credential(Credential::Save(token)).await
+                {
+                    discord.shutdown().await;
+                    self.health.send_modify(|health| {
+                        health.gateway = false;
+                        health.setup.bot = None;
+                        health.setup.storage_notice = Some(message.into());
+                    });
+                    anyhow::bail!(message);
                 }
                 *session = Some(discord);
             }

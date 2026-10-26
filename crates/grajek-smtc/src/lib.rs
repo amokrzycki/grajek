@@ -19,6 +19,11 @@ use windows::{
 
 mod interop;
 
+/// Changes visibility of the existing window, called only on its owning thread.
+pub fn set_window_visible(window: &impl HasWindowHandle, visible: bool) -> Result<()> {
+    interop::set_window_visible(window, visible)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Play,

@@ -190,7 +190,11 @@ pub async fn run(endpoint: Endpoint, mut shutdown: watch::Receiver<bool>) {
     if let Err(error) = serve(endpoint.clone(), &mut shutdown).await {
         tracing::warn!(%error, "System tray unavailable; close still quits");
     }
-    endpoint.available.store(false, Ordering::Release);
+    let was_available = endpoint.available.swap(false, Ordering::AcqRel);
+    // Only an established tray could have hidden the window; don't remap during startup.
+    if was_available && !*shutdown.borrow() {
+        let _ = endpoint.window.send(super::WindowAction::Show).await;
+    }
 }
 
 async fn serve(endpoint: Endpoint, shutdown: &mut watch::Receiver<bool>) -> zbus::Result<()> {

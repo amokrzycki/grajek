@@ -123,20 +123,21 @@ history and preferences remain. A switch or restored selection never starts audi
 
 ### Tray and closing
 
-The native tray provides Show, Minimize, Play/Pause/Resume, Next/Play Queue, Stop,
+The native tray provides Show, Hide, Play/Pause/Resume, Next/Play Queue, Stop,
 Leave Voice and Quit. Controls follow the controller's actual capabilities.
 **Close to tray** is opt-in and defaults off, including for migrated installations.
-When enabled with an available tray, Close minimizes the same window and keeps
+When enabled with an available tray, Close hides the existing window and keeps
 playback and OS media controls running. Otherwise Close quits. **Quit Grajek**
 always terminates the bot and flushes state.
 
-GPUI 0.3.9 does not implement application hiding on Linux/Windows. This version
-uses its minimize and activation APIs: the taskbar entry remains. It does not
-claim taskbar-free hiding. KDE may reject activation and leave the window
-minimized; restore it through the taskbar in that case. Reliable tray restore
-is still an acceptance gap. KDE Plasma needs a StatusNotifier host; without one,
-normal window operation remains available. A disappeared tray host disables
-close-to-tray until the next application launch.
+Hide removes the window from the desktop and taskbar without closing it. Show
+restores the same window, including from minimized state. The pinned GPUI Linux
+backend has a scoped visibility patch; Windows uses the existing HWND. Wayland
+restore may let the compositor choose a new placement. Focus requests remain
+subject to desktop policy. KDE Plasma needs a StatusNotifier host; if the host
+disappears while Grajek is hidden, Grajek restores its window and Close falls
+back to Quit. Native Windows and live Discord acceptance remain pending; see
+[the v0.5.0 release record](docs/releases/v0.5.0.md).
 
 ### Advanced environment compatibility
 
@@ -308,6 +309,12 @@ before sharing them, and never share `.env`. The
 [historical validation](docs/validation.md) records test scope and known gaps.
 
 ## Development
+
+`vendor/gpui-pre-linux/` is a required, patched source dependency for native
+Hide/Restore. Include the whole directory in version control. Its large initial
+diff mostly copies upstream code; [the maintenance note](vendor/gpui-pre-linux/README.grajek.md)
+explains the focused patch, verification and eventual removal. Agent guidance is
+in [AGENTS.md](AGENTS.md).
 
 Run the same four checks as [CI](.github/workflows/ci.yml):
 

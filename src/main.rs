@@ -13,11 +13,12 @@ mod setup;
 mod store;
 mod style;
 mod tray;
+mod window;
 
 use anyhow::{Context as _, Result};
 use gpui_kit::{
-    AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, application, assets, init,
-    open_window, px, size,
+    AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, assets, init, open_window,
+    px, size,
 };
 use std::{borrow::Cow, time::Duration};
 use tokio::sync::{mpsc, watch};
@@ -148,7 +149,8 @@ fn run_app(
 ) {
     #[cfg(not(target_os = "windows"))]
     drop(endpoint);
-    application().with_assets(AppAssets).run(move |cx| {
+    let (application, visibility) = window::application();
+    application.with_assets(AppAssets).run(move |cx| {
         init(cx);
         style::init(cx);
         cx.on_window_closed(|cx, _| {
@@ -160,13 +162,23 @@ fn run_app(
         let options = window_options(cx);
         #[cfg(target_os = "windows")]
         let tray_task = tray::windows::attach(cx, tray_endpoint.clone());
+        let quit_endpoint = tray_endpoint.clone();
+        cx.on_app_quit(move |_| {
+            quit_endpoint
+                .available
+                .store(false, std::sync::atomic::Ordering::Release);
+            async {}
+        })
+        .detach();
         let close_endpoint = tray_endpoint.clone();
         let opened = open_window(options, cx, |window, cx| {
-            window.on_window_should_close(cx, move |window, _| {
-                if close_endpoint.available() && close_endpoint.player.states.borrow().close_to_tray
-                {
-                    window.minimize_window();
-                    false
+            window.on_window_should_close(cx, move |_, _| {
+                if close_endpoint.hide_on_close() {
+                    // Dispatch outside the close callback, avoiding reentrant native events.
+                    close_endpoint
+                        .window
+                        .try_send(tray::WindowAction::Hide)
+                        .is_err()
                 } else {
                     true
                 }
@@ -186,17 +198,27 @@ fn run_app(
                     #[cfg(target_os = "windows")]
                     let _tray_task = tray_task;
                     while let Some(action) = window_requests.recv().await {
-                        if matches!(action, tray::WindowAction::Quit) {
-                            cx.update(|cx| cx.quit());
-                            break;
-                        }
-                        let _ = window.update(cx, |_, window, _| match action {
-                            tray::WindowAction::Show => window.activate_window(),
-                            tray::WindowAction::Minimize if tray_endpoint.available() => {
-                                window.minimize_window();
+                        match action {
+                            tray::WindowAction::Quit => {
+                                tray_endpoint
+                                    .available
+                                    .store(false, std::sync::atomic::Ordering::Release);
+                                window_requests.close();
+                                cx.update(|cx| cx.quit());
+                                break;
                             }
-                            tray::WindowAction::Minimize | tray::WindowAction::Quit => {}
-                        });
+                            tray::WindowAction::Show => {
+                                if let Err(error) = visibility(window, true, cx) {
+                                    tracing::error!(%error, "Could not restore Grajek window");
+                                }
+                            }
+                            tray::WindowAction::Hide if tray_endpoint.available() => {
+                                if let Err(error) = visibility(window, false, cx) {
+                                    tracing::error!(%error, "Could not hide Grajek window");
+                                }
+                            }
+                            tray::WindowAction::Hide => {}
+                        }
                     }
                 })
                 .detach();

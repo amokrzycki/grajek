@@ -1,0 +1,295 @@
+--- a/src/gpui_linux.rs
++++ b/src/gpui_linux.rs
+@@ -2,3 +2,5 @@
+ mod linux;
+ 
+ pub use linux::{current_platform, linux_platform};
++
++pub use linux::LinuxPlatform;
+--- a/src/linux/display_connection.rs
++++ b/src/linux/display_connection.rs
+@@ -96,6 +96,14 @@
+     )
+ )]
+ impl DisplayConnection {
++    pub(crate) fn set_window_visible(
++        &self,
++        handle: AnyWindowHandle,
++        visible: bool,
++    ) -> anyhow::Result<()> {
++        dispatch!(self, connection => connection.set_window_visible(handle, visible), headless => anyhow::bail!("Native visibility requires a display server"))
++    }
++
+     pub(crate) fn is_headless(&self) -> bool {
+         matches!(self, DisplayConnection::Headless(_))
+     }
+--- a/src/linux/platform.rs
++++ b/src/linux/platform.rs
+@@ -274,7 +274,7 @@
+ /// One event loop serves the whole process. The foreground executor and power listener are
+ /// registered on it once, and the current [`DisplayConnection`] adds and removes its own sources
+ /// as the app switches between the display modes it allows.
+-pub(crate) struct LinuxPlatform {
++pub struct LinuxPlatform {
+     common: Rc<RefCell<LinuxCommon>>,
+     /// The event loop, until `run` takes it.
+     event_loop: RefCell<Option<EventLoop<'static, ()>>>,
+@@ -306,8 +306,14 @@
+ }
+ 
+ impl LinuxPlatform {
++    /// Changes native visibility without releasing the GPUI window or its resources.
++    /// Call on the foreground thread, outside a GPUI window update.
++    pub fn set_window_visible(&self, handle: AnyWindowHandle, visible: bool) -> anyhow::Result<()> {
++        self.connection.borrow().set_window_visible(handle, visible)
++    }
++
+     /// Creates the platform, headless until `run` connects it in its initial mode.
+-    pub(crate) fn new(allowed_modes: WindowingModes) -> Self {
++    pub fn new(allowed_modes: WindowingModes) -> Self {
+         let startup = StartupEnvironment {
+             #[cfg(feature = "wayland")]
+             activation_token: crate::linux::take_startup_activation_token_from_environment(),
+--- a/src/linux/wayland/client.rs
++++ b/src/linux/wayland/client.rs
+@@ -1280,6 +1280,23 @@
+         sources_rx
+     }
+ 
++    pub(crate) fn set_window_visible(
++        &self,
++        handle: AnyWindowHandle,
++        visible: bool,
++    ) -> anyhow::Result<()> {
++        let window = self
++            .0
++            .borrow()
++            .windows
++            .values()
++            .find(|window| window.handle() == handle)
++            .cloned()
++            .ok_or_else(|| anyhow::anyhow!("Window is no longer registered"))?;
++        window.set_visible(visible);
++        Ok(())
++    }
++
+     pub(crate) fn open_window(
+         &self,
+         handle: AnyWindowHandle,
+--- a/src/linux/wayland/window.rs
++++ b/src/linux/wayland/window.rs
+@@ -101,6 +101,9 @@
+ 
+ pub struct WaylandWindowState {
+     surface_state: WaylandSurfaceState,
++    tray_hidden: bool,
++    title: String,
++    min_size: Option<Size<Pixels>>,
+     parent: Option<WaylandWindowStatePtr>,
+     /// Child surfaces mapped to whether they block this window's input (dialogs
+     /// block, popups don't). Children are closed before this window closes.
+@@ -587,10 +590,13 @@
+             WgpuRenderer::new(gpu_context, &raw_window, config, compositor_gpu)?
+         };
+ 
++        let title = options
++            .titlebar
++            .and_then(|titlebar| titlebar.title)
++            .map(|title| title.to_string())
++            .unwrap_or_default();
+         if let WaylandSurfaceState::Xdg(ref xdg_state) = surface_state {
+-            if let Some(title) = options.titlebar.and_then(|titlebar| titlebar.title) {
+-                xdg_state.toplevel.set_title(title.to_string());
+-            }
++            xdg_state.toplevel.set_title(title.clone());
+ 
+             if let Some(app_id) = options.app_id.as_ref() {
+                 xdg_state.toplevel.set_app_id(app_id.clone());
+@@ -606,6 +612,9 @@
+ 
+         Ok(Self {
+             surface_state,
++            tray_hidden: false,
++            title,
++            min_size: options.window_min_size,
+             parent,
+             children: FxHashMap::default(),
+             surface,
+@@ -888,6 +897,49 @@
+ }
+ 
+ impl WaylandWindowStatePtr {
++    pub(crate) fn set_visible(&self, visible: bool) {
++        let mut state = self.state.borrow_mut();
++        if !visible && state.tray_hidden {
++            return;
++        }
++        // xdg-shell has no unminimize request or portable minimized-state query.
++        // Remap an inactive surface so restore does not depend on focus permission.
++        if visible && !state.tray_hidden && state.active {
++            return;
++        }
++        state.tray_hidden = !visible;
++        state.surface.attach(None, 0, 0);
++        state.surface.commit();
++        state.pending_frame_callback = None;
++        state.presentation = PresentationState::Unpresented;
++        state.redraw_requested = true;
++        self.frame_loop.set(FrameLoop::Unconfigured);
++        if visible {
++            if let Some(toplevel) = state.surface_state.toplevel() {
++                toplevel.set_title(state.title.clone());
++                if let Some(app_id) = &state.app_id {
++                    toplevel.set_app_id(app_id.clone());
++                }
++                if let Some(size) = state.min_size {
++                    toplevel
++                        .set_min_size(f32::from(size.width) as i32, f32::from(size.height) as i32);
++                }
++                if let Some(renderer) = &state.renderer {
++                    let limit = renderer.max_texture_size() as i32;
++                    toplevel.set_max_size(limit, limit);
++                }
++                if state.maximized {
++                    toplevel.set_maximized();
++                }
++                if state.fullscreen {
++                    toplevel.set_fullscreen(None);
++                }
++            }
++            // Initial empty commit solicits configure; never attach a buffer before it.
++            state.surface.commit();
++        }
++    }
++
+     pub fn handle(&self) -> AnyWindowHandle {
+         self.state.borrow().handle
+     }
+@@ -936,6 +988,9 @@
+     }
+ 
+     pub fn frame(&self, signal_at: Option<Instant>, signal_source: FrameRequestSource) {
++        if self.state.borrow().tray_hidden {
++            return;
++        }
+         self.frame_loop.set(FrameLoop::Ticking);
+         let mut state = self.state.borrow_mut();
+         state.resize_throttle = false;
+@@ -1038,6 +1093,9 @@
+     }
+ 
+     pub fn schedule_frame(&self) {
++        if self.state.borrow().tray_hidden {
++            return;
++        }
+         match self.frame_loop.get() {
+             FrameLoop::Parked => {
+                 self.frame_loop.set(FrameLoop::Scheduled);
+@@ -1087,6 +1145,10 @@
+ 
+     pub fn handle_xdg_surface_event(&self, event: xdg_surface::Event) {
+         if let xdg_surface::Event::Configure { serial } = event {
++            if self.state.borrow().tray_hidden {
++                self.state.borrow().surface_state.ack_configure(serial);
++                return;
++            }
+             {
+                 let mut state = self.state.borrow_mut();
+                 if let Some(window_controls) = state.in_progress_window_controls.take() {
+@@ -1888,6 +1950,7 @@
+     }
+ 
+     fn set_title(&mut self, title: &str) {
++        self.borrow_mut().title = title.to_owned();
+         if let Some(toplevel) = self.borrow().surface_state.toplevel() {
+             toplevel.set_title(title.to_string());
+         }
+@@ -2009,6 +2072,9 @@
+     }
+ 
+     fn draw(&self, scene: &Scene) {
++        if self.borrow().tray_hidden || self.0.frame_loop.get() == FrameLoop::Unconfigured {
++            return;
++        }
+         let mut state = self.borrow_mut();
+         let state = &mut *state;
+         let Some(renderer) = &mut state.renderer else {
+--- a/src/linux/x11/client.rs
++++ b/src/linux/x11/client.rs
+@@ -1682,6 +1682,22 @@
+         gpui::scap_screen_capture::scap_screen_sources(&foreground_executor)
+     }
+ 
++    pub(crate) fn set_window_visible(
++        &self,
++        handle: AnyWindowHandle,
++        visible: bool,
++    ) -> anyhow::Result<()> {
++        let window = self
++            .0
++            .borrow()
++            .windows
++            .values()
++            .find(|window| window.handle() == handle)
++            .map(|window| window.window.clone())
++            .ok_or_else(|| anyhow::anyhow!("Window is no longer registered"))?;
++        window.set_visible(visible)
++    }
++
+     pub(crate) fn open_window(
+         &self,
+         handle: AnyWindowHandle,
+--- a/src/linux/x11/window.rs
++++ b/src/linux/x11/window.rs
+@@ -1049,6 +1049,41 @@
+ }
+ 
+ impl X11WindowStatePtr {
++    pub(crate) fn set_visible(&self, visible: bool) -> anyhow::Result<()> {
++        if visible {
++            // Mapping explicitly deiconifies; activation alone can be denied by KWin.
++            self.xcb.map_window(self.x_window)?.check()?;
++            self.xcb
++                .configure_window(
++                    self.x_window,
++                    &xproto::ConfigureWindowAux::new().stack_mode(xproto::StackMode::ABOVE),
++                )?
++                .check()?;
++        } else {
++            self.xcb.unmap_window(self.x_window)?.check()?;
++            // ICCCM withdrawal removes the taskbar entry without destroying the X window.
++            let event = xproto::UnmapNotifyEvent {
++                response_type: xproto::UNMAP_NOTIFY_EVENT,
++                sequence: 0,
++                event: self.state.borrow().x_root_window,
++                window: self.x_window,
++                from_configure: false,
++            };
++            self.xcb
++                .send_event(
++                    false,
++                    self.state.borrow().x_root_window,
++                    xproto::EventMask::SUBSTRUCTURE_REDIRECT
++                        | xproto::EventMask::SUBSTRUCTURE_NOTIFY,
++                    event,
++                )?
++                .check()?;
++        }
++        self.xcb.flush()?;
++
++        Ok(())
++    }
++
+     pub fn should_close(&self) -> bool {
+         let mut cb = self.callbacks.borrow_mut();
+         if let Some(mut should_close) = cb.should_close.take() {
+--- a/src/linux.rs
++++ b/src/linux.rs
+@@ -18,6 +18,7 @@
+ pub(crate) use display_connection::{Backend, DisplayConnection, select_backend};
+ pub(crate) use headless::*;
+ pub(crate) use keyboard::*;
++pub use platform::LinuxPlatform;
+ pub(crate) use platform::*;
+ #[cfg(any(feature = "wayland", feature = "x11"))]
+ pub(crate) use text_system::*;

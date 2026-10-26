@@ -33,12 +33,8 @@ pub trait Handle: Clone + Send + Sync + 'static {
 /// The Discord and yt-dlp side of the controller, replaceable in tests.
 pub trait Backend: Send + Sync + 'static {
     type Handle: Handle;
-    fn setup(&self, _request: crate::setup::Request) -> impl Future<Output = Result<()>> + Send {
-        async { anyhow::bail!("Setup unavailable") }
-    }
-    fn ready(&self) -> bool {
-        true
-    }
+    fn setup(&self, request: crate::setup::Request) -> impl Future<Output = Result<()>> + Send;
+    fn ready(&self) -> bool;
     fn health(&self) -> watch::Receiver<Health>;
     fn clear_error(&self);
     /// Joins voice, then extracts the audio. `connected` fires once voice is ready.

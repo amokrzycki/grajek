@@ -38,7 +38,6 @@ pub enum Status {
 pub struct Setup {
     pub status: Status,
     pub external: bool,
-    pub remembered: bool,
     pub storage_notice: Option<String>,
     pub bot: Option<UserId>,
     pub servers: Vec<Server>,
@@ -118,9 +117,7 @@ mod tests {
         assert!(Request::Remove.interrupts());
     }
     #[test]
-    fn setup_snapshot_has_no_credentials() {
-        let view = format!("{:?}", Setup::default());
-        assert!(!view.contains("secret-token"));
+    fn setup_defaults_to_needing_token() {
         assert_eq!(Setup::default().status, Status::NeedsToken);
     }
 }

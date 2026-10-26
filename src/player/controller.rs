@@ -341,8 +341,7 @@ impl<B: Backend> Controller<B> {
             .as_ref()
             .map_or(SeekStatus::Ready, |track| track.seek.clone());
         state.seek_serial = self.track.as_ref().map_or(0, |track| track.seek_serial);
-        state.available = self.gateway()
-            && !(self.setup_job.is_some() && (self.setup_change != SetupChange::Discovery));
+        state.available = self.gateway();
         state.setup = self.health.borrow().setup.clone();
         state.setup_busy = self.setup_job.is_some();
         state.confirm_setup = self.pending_setup.is_some();
