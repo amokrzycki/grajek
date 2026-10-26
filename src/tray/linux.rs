@@ -1,4 +1,7 @@
-use super::Endpoint;
+use super::{
+    Endpoint,
+    icon::{self, Visual},
+};
 use futures_lite::StreamExt as _;
 use std::{collections::HashMap, sync::atomic::Ordering};
 use tokio::sync::watch;
@@ -9,10 +12,23 @@ use zbus::{
     zvariant::{ObjectPath, OwnedValue, Str},
 };
 
-struct Item(Endpoint);
+type Pixmap = (i32, i32, Vec<u8>);
+struct Item(Endpoint, Vec<Pixmap>);
 struct Menu(Endpoint, std::sync::Arc<std::sync::atomic::AtomicU32>);
 type Properties = HashMap<String, OwnedValue>;
 type Layout = (i32, Properties, Vec<OwnedValue>);
+
+fn pixmaps(visual: Visual) -> zbus::Result<Vec<Pixmap>> {
+    visual
+        .pngs()
+        .into_iter()
+        .zip([16, 22, 32, 48])
+        .map(|(png, size)| {
+            icon::decode(png).map(|bitmap| (size, size, icon::argb(bitmap.into_raw())))
+        })
+        .collect::<image::ImageResult<_>>()
+        .map_err(|error| zbus::Error::Failure(error.to_string()))
+}
 
 fn properties(item: &super::Item) -> Properties {
     HashMap::from([
@@ -66,9 +82,9 @@ impl Item {
     fn icon_name(&self) -> &'static str {
         ""
     }
-    #[zbus(property)]
-    fn icon_pixmap(&self) -> Vec<(i32, i32, Vec<u8>)> {
-        vec![(16, 16, super::icon_argb())]
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn icon_pixmap(&self) -> Vec<Pixmap> {
+        self.1.clone()
     }
     #[zbus(property)]
     fn item_is_menu(&self) -> bool {
@@ -80,6 +96,8 @@ impl Item {
     }
     #[zbus(signal)]
     async fn new_title(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn new_icon(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 #[expect(
@@ -187,7 +205,9 @@ impl Menu {
 }
 
 pub async fn run(endpoint: Endpoint, mut shutdown: watch::Receiver<bool>) {
-    if let Err(error) = serve(endpoint.clone(), &mut shutdown).await {
+    if let Err(error) =
+        async { serve(endpoint.clone(), &mut shutdown, Builder::session()?).await }.await
+    {
         tracing::warn!(%error, "System tray unavailable; close still quits");
     }
     let was_available = endpoint.available.swap(false, Ordering::AcqRel);
@@ -197,10 +217,22 @@ pub async fn run(endpoint: Endpoint, mut shutdown: watch::Receiver<bool>) {
     }
 }
 
-async fn serve(endpoint: Endpoint, shutdown: &mut watch::Receiver<bool>) -> zbus::Result<()> {
+async fn serve(
+    endpoint: Endpoint,
+    shutdown: &mut watch::Receiver<bool>,
+    builder: Builder<'_>,
+) -> zbus::Result<()> {
+    let mut states = endpoint.player.states.clone();
+    let (mut previous, mut previous_icon) = {
+        let state = states.borrow_and_update();
+        (super::menu(&state), Visual::from(&*state))
+    };
     let revision = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(1));
-    let connection = Builder::session()?
-        .serve_at("/StatusNotifierItem", Item(endpoint.clone()))?
+    let connection = builder
+        .serve_at(
+            "/StatusNotifierItem",
+            Item(endpoint.clone(), pixmaps(previous_icon)?),
+        )?
         .serve_at("/Menu", Menu(endpoint.clone(), revision.clone()))?
         .build()
         .await?;
@@ -231,8 +263,6 @@ async fn serve(endpoint: Endpoint, shutdown: &mut watch::Receiver<bool>) -> zbus
         .object_server()
         .interface::<_, Item>("/StatusNotifierItem")
         .await?;
-    let mut states = endpoint.player.states.clone();
-    let mut previous = endpoint.items();
     let mut owners = watcher.receive_owner_changed().await?;
     let mut hosts = watcher
         .receive_property_changed::<bool>("IsStatusNotifierHostRegistered")
@@ -248,7 +278,15 @@ async fn serve(endpoint: Endpoint, shutdown: &mut watch::Receiver<bool>) -> zbus
             },
             changed = states.changed() => {
                 if changed.is_err() { break; }
-                let current = endpoint.items();
+                let (current, current_icon) = {
+                    let state = states.borrow_and_update();
+                    (super::menu(&state), Visual::from(&*state))
+                };
+                if current_icon != previous_icon {
+                    item.get_mut().await.1 = pixmaps(current_icon)?;
+                    Item::new_icon(item.signal_emitter()).await?;
+                    previous_icon = current_icon;
+                }
                 if current != previous {
                     let current_revision = revision.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
                     Menu::layout_updated(menu.signal_emitter(), current_revision, 0).await?;
@@ -260,3 +298,6 @@ async fn serve(endpoint: Endpoint, shutdown: &mut watch::Receiver<bool>) -> zbus
     }
     connection.close().await
 }
+
+#[cfg(test)]
+mod tests;

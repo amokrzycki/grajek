@@ -1,5 +1,8 @@
 //! Shell notification icon and HMENU live on GPUI's existing Windows message thread.
-use super::Endpoint;
+use super::{
+    Endpoint,
+    icon::{self, Visual},
+};
 use gpui_kit::{App, Task};
 use std::sync::atomic::Ordering;
 use tray_icon::{
@@ -8,7 +11,7 @@ use tray_icon::{
 };
 
 struct Resources {
-    _icon: TrayIcon,
+    icon: TrayIcon,
     endpoint: Endpoint,
 }
 impl Drop for Resources {
@@ -28,8 +31,12 @@ pub fn attach(cx: &App, endpoint: Endpoint) -> Option<Task<()>> {
 }
 
 fn create(cx: &App, endpoint: Endpoint) -> anyhow::Result<Task<()>> {
+    let mut states = endpoint.player.states.clone();
+    let (initial, mut previous_icon) = {
+        let state = states.borrow_and_update();
+        (super::menu(&state), Visual::from(&*state))
+    };
     let menu = Menu::new();
-    let initial = endpoint.items();
     let items: Vec<_> = initial
         .iter()
         .map(|item| {
@@ -44,26 +51,21 @@ fn create(cx: &App, endpoint: Endpoint) -> anyhow::Result<Task<()>> {
     for item in &items {
         menu.append(item)?;
     }
-    let mut rgba = super::icon_argb();
-    for pixel in rgba.as_chunks_mut::<4>().0 {
-        pixel.rotate_left(1);
-    }
     let icon = TrayIconBuilder::new()
         .with_id("grajek")
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
-        .with_icon(Icon::from_rgba(rgba, 16, 16)?)
+        .with_icon(tray_icon(previous_icon)?)
         .with_tooltip("Grajek")
         .build()?;
     endpoint.available.store(true, Ordering::Release);
     let resources = Resources {
-        _icon: icon,
+        icon,
         endpoint: endpoint.clone(),
     };
-    let states = endpoint.player.states.clone();
     let executor = cx.background_executor().clone();
     Ok(cx.spawn(async move |_| {
-        let _resources = resources;
+        let resources = resources;
         let mut previous = initial;
         while states.has_changed().is_ok() && endpoint.available() {
             // The crate's global handlers are write-once and cannot be unregistered.
@@ -95,15 +97,50 @@ fn create(cx: &App, endpoint: Endpoint) -> anyhow::Result<Task<()>> {
                     endpoint.activate(1);
                 }
             }
-            let current = endpoint.items();
-            if current != previous {
-                for (item, view) in items.iter().zip(&current) {
-                    item.set_text(&view.label);
-                    item.set_enabled(view.enabled);
+            tokio::select! {
+                () = executor.timer(std::time::Duration::from_millis(50)) => {},
+                changed = states.changed() => {
+                    if changed.is_err() { break; }
+                    let (current, current_icon) = {
+                        let state = states.borrow_and_update();
+                        (super::menu(&state), Visual::from(&*state))
+                    };
+                    if current_icon != previous_icon {
+                        match tray_icon(current_icon).and_then(|icon| {
+                            resources.icon.set_icon(Some(icon)).map_err(Into::into)
+                        }) {
+                            Ok(()) => previous_icon = current_icon,
+                            Err(error) => tracing::warn!(%error, "Could not update Windows tray icon"),
+                        }
+                    }
+                    if current != previous {
+                        for (item, view) in items.iter().zip(&current) {
+                            item.set_text(&view.label);
+                            item.set_enabled(view.enabled);
+                        }
+                        previous = current;
+                    }
                 }
-                previous = current;
             }
-            executor.timer(std::time::Duration::from_millis(50)).await;
         }
     }))
+}
+
+fn tray_icon(visual: Visual) -> anyhow::Result<Icon> {
+    let bitmap = icon::decode(visual.pngs()[3])?;
+    let (width, height) = bitmap.dimensions();
+    Ok(Icon::from_rgba(bitmap.into_raw(), width, height)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_state_creates_a_windows_icon_from_embedded_rgba() -> anyhow::Result<()> {
+        for visual in [Visual::Idle, Visual::Playing, Visual::Paused, Visual::Error] {
+            tray_icon(visual)?;
+        }
+        Ok(())
+    }
 }

@@ -3576,6 +3576,7 @@ dependencies = [
  "gpui-kit",
  "gpui-pre-linux",
  "grajek-smtc",
+ "image",
  "keyring",
  "reqwest",
  "serde",

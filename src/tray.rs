@@ -6,6 +6,7 @@ use std::sync::{
 };
 use tokio::sync::mpsc;
 
+mod icon;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "windows")]
@@ -111,18 +112,6 @@ pub fn menu(state: &player::State) -> Vec<Item> {
     .into_iter()
     .map(|(id, label, enabled)| Item { id, label, enabled })
     .collect()
-}
-
-pub fn icon_argb() -> Vec<u8> {
-    let mut data = vec![0; 16 * 16 * 4];
-    for y in 2..14 {
-        for x in 2..14 {
-            if x == 2 || x == 13 || y == 2 || y == 13 || (x == 7 && (6..11).contains(&y)) {
-                data[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4].copy_from_slice(&[255, 221, 194, 139]);
-            }
-        }
-    }
-    data
 }
 
 #[cfg(test)]

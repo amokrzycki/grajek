@@ -15,6 +15,7 @@ anyhow = "1"
 futures-lite = "2"
 dotenvy = "0.15"
 gpui-kit = "=0.7.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serenity = { version = "0.12.5", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }
 serde = { version = "1", features = ["derive"] }
