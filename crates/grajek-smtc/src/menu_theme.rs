@@ -83,11 +83,18 @@ pub(super) fn allow_dark_menus() -> bool {
     true
 }
 
+pub(super) fn refresh_color_policy() {
+    if let Some(address) = export(104) {
+        // SAFETY: Win32 uxtheme ordinal 104 is RefreshImmersiveColorPolicyState(void).
+        let refresh: unsafe extern "system" fn() = unsafe { std::mem::transmute(address) };
+        unsafe { refresh() };
+    }
+}
+
 pub(super) fn apps_use_dark_mode() -> Option<bool> {
     let address = export(132)?;
     // SAFETY: Win32 uxtheme ordinal 132 is ShouldAppsUseDarkMode(void).
-    let query: unsafe extern "system" fn() -> bool =
-        unsafe { std::mem::transmute(address) };
+    let query: unsafe extern "system" fn() -> bool = unsafe { std::mem::transmute(address) };
     Some(unsafe { query() })
 }
 
