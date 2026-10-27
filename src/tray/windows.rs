@@ -36,6 +36,8 @@ fn create(cx: &App, endpoint: Endpoint) -> anyhow::Result<Task<()>> {
         let state = states.borrow_and_update();
         (super::menu(&state), Visual::from(&*state))
     };
+    // Win32 HMENU colors are independent of the GPUI application palette.
+    let mut system_theme = grajek_smtc::enable_system_popup_menu_theme();
     let menu = Menu::new();
     let items: Vec<_> = initial
         .iter()
@@ -67,7 +69,12 @@ fn create(cx: &App, endpoint: Endpoint) -> anyhow::Result<Task<()>> {
     Ok(cx.spawn(async move |_| {
         let resources = resources;
         let mut previous = initial;
+        let mut last_theme_check = std::time::Instant::now();
         while states.has_changed().is_ok() && endpoint.available() {
+            if last_theme_check.elapsed() >= std::time::Duration::from_secs(1) {
+                grajek_smtc::refresh_system_popup_menu_theme(&mut system_theme);
+                last_theme_check = std::time::Instant::now();
+            }
             // The crate's global handlers are write-once and cannot be unregistered.
             // Drain its receivers on GPUI's thread so no callback retains our endpoint.
             for event in MenuEvent::receiver().try_iter() {
