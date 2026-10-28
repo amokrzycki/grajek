@@ -105,7 +105,10 @@ mod tests {
     #[test]
     fn embedded_pngs_preserve_dimensions_palette_and_straight_alpha() -> anyhow::Result<()> {
         for (visual, colors) in [
-            (Visual::Idle, vec![[173, 174, 163]]),
+            (
+                Visual::Idle,
+                vec![[25, 27, 24], [239, 237, 229], [221, 194, 139]],
+            ),
             (Visual::Playing, vec![[221, 194, 139]]),
             (Visual::Paused, vec![[173, 174, 163], [221, 194, 139]]),
             (Visual::Error, vec![[173, 174, 163], [237, 169, 155]]),
@@ -140,7 +143,7 @@ mod tests {
     #[test]
     fn antialiased_edges_keep_the_supplied_rgba_values() -> anyhow::Result<()> {
         for (visual, x, y, expected) in [
-            (Visual::Idle, 2, 10, [173, 173, 164, 159]),
+            (Visual::Idle, 1, 0, [26, 26, 23, 98]),
             (Visual::Playing, 5, 2, [222, 194, 139, 160]),
             (Visual::Paused, 5, 2, [222, 194, 139, 160]),
             (Visual::Error, 11, 2, [236, 168, 155, 41]),

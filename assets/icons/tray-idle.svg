@@ -1,9 +1,1 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" role="img">
-<title>Grajek — Idle</title>
-<desc>Signal Ledger equalizer: idle</desc>
-<rect x="2" y="10.25" width="2.3" height="3.75" rx="0.65" fill="#ADAEA3"/>
-<rect x="5.25" y="10.25" width="2.3" height="3.75" rx="0.65" fill="#ADAEA3"/>
-<rect x="8.5" y="10.25" width="2.3" height="3.75" rx="0.65" fill="#ADAEA3"/>
-<rect x="11.75" y="10.25" width="2.3" height="3.75" rx="0.65" fill="#ADAEA3"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="Grajek app icon"><title>Grajek — Signal Ledger monogram</title><rect x="0" y="0" width="120" height="120" rx="25" fill="#191B18"/><path d="M85 34 H53 C35 34 26 45 26 62 C26 81 39 91 57 91 H87 V65" fill="none" stroke="#EFEDE5" stroke-width="13" stroke-linecap="square" stroke-linejoin="miter"/><path d="M58 65 H87" fill="none" stroke="#DDC28B" stroke-width="13" stroke-linecap="square"/></svg>

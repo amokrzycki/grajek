@@ -46,6 +46,10 @@ impl Root {
         "Grajek"
     }
     #[zbus(property)]
+    fn desktop_entry(&self) -> &'static str {
+        "org.grajek.desktop"
+    }
+    #[zbus(property)]
     fn supported_uri_schemes(&self) -> Vec<&str> {
         vec![]
     }

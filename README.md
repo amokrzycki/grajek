@@ -82,6 +82,25 @@ permissions are needed to run it. An unsigned cross-compiled release candidate i
 `target/dist` when available; native Windows acceptance remains pending. Debug
 builds use source-tree shaders and are not portable distributions.
 
+### Linux desktop installation and application icons
+
+Build and install the app for your user (no sudo):
+
+```sh
+cargo build --locked --release
+make install
+```
+
+This installs `~/.local/bin/grajek`, the application menu entry and the Grajek
+icons in `~/.local/share/icons/hicolor`. Ensure `~/.local/bin` is on your desktop
+session's `PATH`. For a system package, use `PREFIX=/usr` and optionally
+`DESTDIR=/path/to/staging`; `DATADIR` can override the shared data location.
+
+Windows builds embed the multiresolution ICO in `grajek.exe`; no separate icon
+file is needed at runtime. Linux matches the installed desktop entry to the
+window on both Wayland and X11. The idle tray icon uses the Grajek logo; playing,
+paused and error retain their state icons. See [icon assets](assets/brand/README.md).
+
 ## Set up Discord and start playback
 
 ### Create and invite the bot
