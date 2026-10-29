@@ -349,6 +349,21 @@ CI uses Rust 1.99.0 on Ubuntu 22.04. See the
 checks and implementation notes, [PRODUCT.md](PRODUCT.md) for the behavior
 contract, and [DESIGN.md](DESIGN.md) for the native interface design.
 
+## Releases
+
+Push a tag matching the version in `Cargo.toml` (for example, `v0.5.0`) to run
+[Release](.github/workflows/release.yml), or run it manually with an existing tag.
+The workflow checks formatting, lints and tests on Linux and Windows, builds the
+tagged commit, then creates a **draft** GitHub release with generated notes,
+a Linux x64 `.tar.gz`, a Windows x64 `.zip` and `SHA256SUMS`. Review the draft
+and publish it manually. An existing release is never overwritten.
+
+Extract the Linux archive and run `./grajek`, or install its desktop entry and
+icons with `make install BINARY=grajek` from the extracted directory. On Windows,
+extract the ZIP and run `grajek.exe`. Archives include the README, license and
+optional `.env.example`; playback tools and system libraries listed above remain
+external prerequisites. Windows binaries are unsigned.
+
 ## License
 
 [MIT](LICENSE).

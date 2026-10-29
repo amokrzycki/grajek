@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (e.g. v0.5.0)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.tag.outputs.sha }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve tag and verify version
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          sha=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+          version=$(git show "$sha:Cargo.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["package"]["version"])')
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match Cargo.toml version $version at $sha"
+            exit 1
+          fi
+          {
+            echo "tag=$TAG"
+            echo "sha=$sha"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x64
+            binary: grajek
+          - os: windows-2022
+            platform: windows-x64
+            binary: grajek.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PACKAGE: grajek-${{ needs.resolve.outputs.version }}-${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Configure MSVC and Windows SDK
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake pkg-config libopus-dev dbus-daemon \
+            libfontconfig1-dev libfreetype6-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev \
+            libssl-dev libzstd-dev libvulkan-dev
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check lints
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Run headless tests
+        run: cargo test --locked --workspace --all-features
+      - name: Build native release
+        run: cargo build --locked --release
+      - name: Stage portable package
+        env:
+          BINARY: ${{ matrix.binary }}
+        run: |
+          mkdir -p "package/$PACKAGE" dist
+          cp "target/release/$BINARY" README.md LICENSE .env.example "package/$PACKAGE/"
+      - name: Package Linux application and desktop assets
+        if: runner.os == 'Linux'
+        run: |
+          cp Makefile "package/$PACKAGE/"
+          mkdir -p "package/$PACKAGE/assets"
+          cp -R assets/linux assets/brand "package/$PACKAGE/assets/"
+          tar -czf "dist/$PACKAGE.tar.gz" -C package "$PACKAGE"
+      - name: Package Windows executable
+        if: runner.os == 'Windows'
+        run: python -m zipfile --create "dist/$PACKAGE.zip" "package/$PACKAGE"
+      - name: Save release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [resolve, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      SHA: ${{ needs.resolve.outputs.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Generate and verify checksums
+        working-directory: dist
+        run: |
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Create draft release
+        run: |
+          if [ "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" != "$SHA" ]; then
+            echo "::error::Tag $TAG no longer points at $SHA"
+            exit 1
+          fi
+          gh release create "$TAG" dist/* --verify-tag --draft \
+            --title "Grajek $TAG" --generate-notes
