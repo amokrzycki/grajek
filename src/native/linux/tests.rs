@@ -61,6 +61,10 @@ async fn isolated_bus_exposes_interfaces_commands_properties_and_releases_name()
     let client = Builder::address(address)?.build().await?;
     let root = zbus::Proxy::new(&client, NAME, PATH, "org.mpris.MediaPlayer2").await?;
     assert_eq!(root.get_property::<String>("Identity").await?, "Grajek");
+    assert_eq!(
+        root.get_property::<String>("DesktopEntry").await?,
+        "org.grajek.desktop"
+    );
     let player = zbus::Proxy::new(&client, NAME, PATH, "org.mpris.MediaPlayer2.Player").await?;
     // Discover before Discord startup: an ordinary caching client must stay controllable.
     assert!(player.get_property::<bool>("CanControl").await?);

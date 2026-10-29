@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Grajek
+Comment=Play YouTube audio in a Discord voice channel
+Exec=grajek
+Icon=org.grajek.desktop
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupWMClass=org.grajek.desktop

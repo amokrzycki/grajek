@@ -1,6 +1,6 @@
 # Grajek
 
-Grajek is a native Linux and Windows desktop app that plays YouTube audio in a configured
+Grajek is a native Linux and Windows desktop app that plays YouTube audio in a selected
 Discord voice channel through your own bot. Paste a video URL and select Play URL
 to start a single audio stream.
 
@@ -10,9 +10,9 @@ to start a single audio stream.
 - Stop playback or leave voice without closing the window.
 - Use Linux MPRIS or Windows system media controls for the bot's Discord playback.
 
-Version 0.4.0 targets Linux and Windows 10/11 x64 MSVC. Windows cross-build and
-Wine test results are available; native Windows UI, SMTC discovery and audio
-verification remain outstanding.
+Version 0.5.0 adds in-app bot setup, server/channel discovery and native tray controls.
+See [release evidence and limitations](docs/releases/v0.5.0.md). Native Windows
+execution and live Discord acceptance must not be inferred from cross-builds.
 
 ## Requirements
 
@@ -82,6 +82,25 @@ permissions are needed to run it. An unsigned cross-compiled release candidate i
 `target/dist` when available; native Windows acceptance remains pending. Debug
 builds use source-tree shaders and are not portable distributions.
 
+### Linux desktop installation and application icons
+
+Build and install the app for your user (no sudo):
+
+```sh
+cargo build --locked --release
+make install
+```
+
+This installs `~/.local/bin/grajek`, the application menu entry and the Grajek
+icons in `~/.local/share/icons/hicolor`. Ensure `~/.local/bin` is on your desktop
+session's `PATH`. For a system package, use `PREFIX=/usr` and optionally
+`DESTDIR=/path/to/staging`; `DATADIR` can override the shared data location.
+
+Windows builds embed the multiresolution ICO in `grajek.exe`; no separate icon
+file is needed at runtime. Linux matches the installed desktop entry to the
+window on both Wayland and X11. The idle tray icon uses the Grajek logo; playing,
+paused and error retain their state icons. See [icon assets](assets/brand/README.md).
+
 ## Set up Discord and start playback
 
 ### Create and invite the bot
@@ -91,58 +110,70 @@ builds use source-tree shaders and are not portable distributions.
 2. In OAuth2 > URL Generator, select the `bot` scope and the View Channels,
    Connect and Speak permissions. Open the generated invite URL and install the
    bot into your server. Administrator and application commands are unnecessary.
-3. In Discord, enable User Settings > Advanced > Developer Mode. Right-click the
-   server and choose Copy Server ID. Right-click an ordinary voice channel and
-   choose Copy Channel ID. Stage channels are unsupported.
-4. Check channel and category overrides: the bot needs View Channel, Connect and
-   Speak in that channel. Do not server-mute it. Your network must allow outbound
-   Discord HTTPS/WebSocket and voice UDP traffic.
+3. Check channel and category overrides: the bot needs View Channel, Connect and
+   Speak in an ordinary voice channel. Stage channels are unsupported. Do not
+   server-mute the bot. Discord HTTPS/WebSocket and voice UDP must be reachable.
 
-Grajek requests only the non-privileged `GUILDS` and `GUILD_VOICE_STATES` gateway
-intents. Leave Message Content, Server Members and Presence intents off.
+Grajek requests only the non-privileged `GUILDS` and `GUILD_VOICE_STATES` intents.
+Leave Message Content, Server Members and Presence intents off.
 
-### Configure and run
+### Configure in Grajek
 
-From the repository directory:
+1. Launch Grajek (or `cargo run` from a development checkout). No `.env` is needed.
+2. Paste the **bot token** into the masked field in Settings. Choose **Connect and
+   remember** for OS-protected storage, or **Use for this session** without saving it.
+   Never enter a personal Discord user token or password.
+3. Choose a server where the bot is installed, then an eligible voice channel.
+   Refresh if the bot was just invited or permissions changed. Disabled channels
+   explain missing permissions; no IDs need copying.
+4. Return to the player. The header shows the selected destination. Join that
+   voice channel in Discord to listen, paste a YouTube video URL, and press Play URL.
 
-```sh
-cp .env.example .env
-```
+Linux credentials use Secret Service (including KWallet's Secret Service support).
+Windows uses Credential Manager. If secure storage fails, Grajek explains the
+failure; explicitly choose session-only to continue. Tokens never enter state.json.
+An older saved token remains unchanged when you use a different session-only token.
+Remove saved token removes the local credential, not the token on Discord.
 
-Edit `.env` and replace all three placeholders:
+Settings can be reopened at any time. Retry connection reauthenticates without
+restarting. Switching while playing, paused or preparing requires confirmation,
+stops the current track and leaves the old voice connection. Pending queue,
+history and preferences remain. A switch or restored selection never starts audio.
 
-```dotenv
-DISCORD_BOT_TOKEN=your_bot_token
-DISCORD_GUILD_ID=your_guild_id
-DISCORD_VOICE_CHANNEL_ID=your_voice_channel_id
-```
+### Tray and closing
 
-The IDs must be nonzero numbers. Environment variables take precedence over
-`.env`. Keep the token private; `.env` is gitignored. Do not include it in bug
-reports. Restart Grajek after changing configuration.
+The native tray provides Show, Hide, Play/Pause/Resume, Next/Play Queue, Stop,
+Leave Voice and Quit. Controls follow the controller's actual capabilities.
+**Close to tray** is opt-in and defaults off, including for migrated installations.
+When enabled with an available tray, Close hides the existing window and keeps
+playback and OS media controls running. Otherwise Close quits. **Quit Grajek**
+always terminates the bot and flushes state.
 
-On Windows, put `.env` in `%LOCALAPPDATA%\Grajek\.env` (create the Grajek
-folder first). Grajek checks this file first, then `.env` beside `grajek.exe`.
-It uses the first existing file and reports syntax/permission errors rather
-than silently falling back. Explorer's working directory does not affect this
-lookup. Explicit environment variables still win. Store a real token only in
-your private configuration; never distribute it with the portable executable.
+Hide removes the window from the desktop and taskbar without closing it. Show
+restores the same window, including from minimized state. The pinned GPUI Linux
+backend has a scoped visibility patch; Windows uses the existing HWND. Wayland
+restore may let the compositor choose a new placement. Focus requests remain
+subject to desktop policy. KDE Plasma needs a StatusNotifier host; if the host
+disappears while Grajek is hidden, Grajek restores its window and Close falls
+back to Quit. Native Windows and live Discord acceptance remain pending; see
+[the v0.5.0 release record](docs/releases/v0.5.0.md).
 
-On Linux/development, the existing dotenv lookup from the current directory
-and its ancestors is preserved. Launch from the repository directory:
+### Advanced environment compatibility
 
-```sh
-cargo run
-```
+Existing `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID` and
+`DISCORD_VOICE_CHANNEL_ID` settings still work. Explicit environment variables
+win over `.env`; an external token wins over secure storage and is labelled
+externally managed. The UI cannot replace or remove it. No `.env` is deleted or
+migrated. A valid legacy guild/channel pair takes precedence over saved selection;
+malformed/missing IDs instead lead to destination selection after authentication.
+Saved selections are associated with the authenticated bot and revalidated.
 
-Without valid configuration, the window shows an error and disables playback.
-After startup:
-
-1. Join the configured voice channel in Discord to listen.
-2. Paste a public YouTube video URL into Grajek, for example
-   `https://www.youtube.com/watch?v=aqz-KE-bpKQ` (Big Buck Bunny).
-3. Select Play URL or press Enter in the URL field. Grajek connects the bot to
-   voice and shows the title and elapsed time when playback starts.
+Linux retains dotenv lookup from the working directory and ancestors. Windows
+checks `%LOCALAPPDATA%\Grajek\.env`, then `.env` beside `grajek.exe`; Explorer's
+working directory is irrelevant. Change externally managed credentials at their
+source and restart to reload the process environment. For advanced diagnostics,
+Discord Developer Mode exposes Copy Server ID / Copy Channel ID; these are not
+needed by the normal setup flow. `.env.example` documents this optional route.
 
 Single-video actions accept `youtube.com/watch?v=...`,
 `music.youtube.com/watch?v=...` and `youtu.be/...` links with an 11-character
@@ -298,6 +329,12 @@ before sharing them, and never share `.env`. The
 
 ## Development
 
+`vendor/gpui-pre-linux/` is a required, patched source dependency for native
+Hide/Restore. Include the whole directory in version control. Its large initial
+diff mostly copies upstream code; [the maintenance note](vendor/gpui-pre-linux/README.grajek.md)
+explains the focused patch, verification and eventual removal. Agent guidance is
+in [AGENTS.md](AGENTS.md).
+
 Run the same four checks as [CI](.github/workflows/ci.yml):
 
 ```sh
@@ -311,6 +348,21 @@ CI uses Rust 1.99.0 on Ubuntu 22.04. See the
 [development guide](docs/development.md) for test prerequisites, optional network
 checks and implementation notes, [PRODUCT.md](PRODUCT.md) for the behavior
 contract, and [DESIGN.md](DESIGN.md) for the native interface design.
+
+## Releases
+
+Push a tag matching the version in `Cargo.toml` (for example, `v0.5.0`) to run
+[Release](.github/workflows/release.yml), or run it manually with an existing tag.
+The workflow checks formatting, lints and tests on Linux and Windows, builds the
+tagged commit, then creates a **draft** GitHub release with generated notes,
+a Linux x64 `.tar.gz`, a Windows x64 `.zip` and `SHA256SUMS`. Review the draft
+and publish it manually. An existing release is never overwritten.
+
+Extract the Linux archive and run `./grajek`, or install its desktop entry and
+icons with `make install BINARY=grajek` from the extracted directory. On Windows,
+extract the ZIP and run `grajek.exe`. Archives include the README, license and
+optional `.env.example`; playback tools and system libraries listed above remain
+external prerequisites. Windows binaries are unsigned.
 
 ## License
 

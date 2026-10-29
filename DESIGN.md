@@ -366,3 +366,17 @@ font order; the kit supplies the platform monospaced measurement font. OS media
 controls complement the window, with no extra transport row or invented metadata.
 Mixed-DPI, Narrator and actual Windows window interaction require native runtime
 verification; headless tests and cross-compilation cannot establish them.
+
+### Discord setup and settings
+
+Settings extends the same compact native surface; Now Playing and Queue/History
+remain primary. First run focuses a masked bot-token input and offers separate,
+explicit secure-storage and session-only actions. Keep setup help progressively
+disclosed and distinguish authentication from connecting to voice.
+
+Show named servers followed by their voice channels. Disabled choices explain
+why they are unavailable and how to recover; a temporarily unavailable server
+points to Refresh servers. Preserve visible keyboard focus, full-name tooltips,
+and the 420×480 minimum layout with scrolling settings content. Confirm an active
+playback interruption before changing destination. Tray background behavior is
+opt-in and its labels must describe the actual platform behavior.

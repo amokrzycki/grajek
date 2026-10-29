@@ -6,7 +6,7 @@
 Native Linux and Windows 10/11 x64 desktop (Rust / GPUI Kit 0.7.3). Impeccable's mobile/web platform enum does not describe this app; do not apply browser CSS or mobile conventions.
 
 ## Users
-A user controlling a configured Discord music bot from a compact desktop window. No additional audience assumptions are confirmed.
+A user configuring and controlling their Discord music bot from a compact desktop window. No additional audience assumptions are confirmed.
 
 ## Product Purpose
 Paste a YouTube video URL, import a public playlist into the pending queue, play it in a Discord voice channel, and manage transport, volume, upcoming tracks and recent playback without a media-library interface.
@@ -31,7 +31,10 @@ Paste a YouTube video URL, import a public playlist into the pending queue, play
 - Saves remain atomic and serialized. Normal close flushes the latest snapshot; abrupt termination may recover an older snapshot. In-flight/dequeued entries are not guaranteed to recover.
 - Enter plays; Ctrl+Enter queues; Ctrl+1/2 selects Queue/History. Volume keyboard handling and focus recovery are preserved.
 - Window defaults to 520×560 and permits 420×480. Input and transport stay fixed; lists scroll.
-- Missing configuration still opens a usable window with an error and disabled playback actions. Restored queue/history edits are disabled if no controller started; local edits remain available after gateway loss with a running controller.
+- First run opens compact Discord Settings with a masked bot-token input, explicit secure storage or session-only use, retry and removal. Local queue/history operations run before authentication. Bot token credentials never enter snapshots or JSON.
+- Guild/channel choices come from the authenticated bot via non-privileged gateway events and rate-limited REST. Effective View Channel, Connect and Speak are checked before selection and joining; stage channels are disabled. Bot-associated selection restores only after validation, never joining or playing automatically.
+- Runtime reconfiguration is serialized by the controller. Playing/paused/preparing changes require confirmation; acceptance cancels extraction/seek, stops the interrupted track and disconnects before activating a destination. Queue, history and playback preferences survive, with no repeat rotation or autoplay.
+- The Linux StatusNotifierItem/D-Bus menu and Windows notification icon issue controller commands. Close-to-tray defaults off and requires an available host. GPUI 0.3.9 only supports minimize/restore here, so the same window and taskbar entry remain; full hiding is not claimed. Quit flushes state and tears down sessions.
 - Native sessions observe controller snapshots and submit bounded intents; they never own queue/playback state. Linux uses session D-Bus MPRIS; Windows uses HWND-based SMTC. Previous is unsupported, metadata is factual, and failed OS registration cannot disable playback.
 - External Play resumes Paused or starts a pending queue from Ready/Error. Loading/empty Play is a no-op; Stop retains pending items. Seeks validate the current track identity and capabilities at controller consumption. Confirmed seek serials support discontinuity signals without polling.
 - Linux keeps existing XDG storage/dotenv behavior. Windows uses LOCALAPPDATA/Grajek for compatible JSON state and first-choice .env, then .env beside the executable. Explicit environment variables win; no token enters state or distribution artifacts.

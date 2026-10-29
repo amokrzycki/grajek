@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" role="img">
+<title>Grajek — Error</title>
+<desc>Signal Ledger equalizer: error</desc>
+<rect x="2" y="8.2" width="2.3" height="5.8" rx="0.65" fill="#ADAEA3"/>
+<rect x="5.25" y="4.1" width="2.3" height="9.9" rx="0.65" fill="#ADAEA3"/>
+<rect x="8.5" y="9.5" width="2.3" height="4.5" rx="0.65" fill="#ADAEA3"/>
+<rect x="11.75" y="2" width="2.3" height="8.3" rx="0.65" fill="#EDA99B"/>
+<rect x="11.75" y="12" width="2.3" height="2" rx="0.65" fill="#EDA99B"/>
+</svg>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" role="img">
+<title>Grajek — Paused</title>
+<desc>Signal Ledger equalizer: paused</desc>
+<rect x="2" y="10.25" width="2.3" height="3.75" rx="0.65" fill="#ADAEA3"/>
+<rect x="5.25" y="2" width="2.3" height="12" rx="0.65" fill="#DDC28B"/>
+<rect x="8.5" y="2" width="2.3" height="12" rx="0.65" fill="#DDC28B"/>
+<rect x="11.75" y="10.25" width="2.3" height="3.75" rx="0.65" fill="#ADAEA3"/>
+</svg>

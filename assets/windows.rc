@@ -1,0 +1,2 @@
+// GPUI loads the process icon from resource ID 1.
+1 ICON "brand/grajek-windows.ico"

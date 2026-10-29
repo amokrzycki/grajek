@@ -146,6 +146,7 @@ fn seek_bounds_reject_unreliable_duration_and_clamp_before_end() {
 }
 
 struct Fake {
+    ready: AtomicBool,
     health: watch::Sender<Health>,
     requests: Mutex<Vec<String>>,
     hung: Mutex<HashSet<String>>,
@@ -170,6 +171,7 @@ struct Fake {
 impl Fake {
     fn new() -> Arc<Self> {
         Arc::new(Self {
+            ready: AtomicBool::new(true),
             health: watch::channel(Health {
                 gateway: true,
                 voice: true,
@@ -265,6 +267,23 @@ impl Drop for Request<'_> {
 
 impl Backend for Fake {
     type Handle = FakeHandle;
+    fn ready(&self) -> bool {
+        self.ready.load(SeqCst)
+    }
+    async fn setup(&self, request: crate::setup::Request) -> Result<()> {
+        match request {
+            crate::setup::Request::Select(destination) => {
+                self.disconnect().await?;
+                self.health
+                    .send_modify(|health| health.setup.destination = Some(destination));
+            }
+            crate::setup::Request::Remove => {
+                self.disconnect().await?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 
     fn health(&self) -> watch::Receiver<Health> {
         self.health.subscribe()
@@ -2701,5 +2720,176 @@ async fn ui_transport_acknowledges_errors_and_ignored_commands_without_guessing_
     controller.sync();
     assert_eq!(updates.borrow().transport_ack, 5);
     assert_eq!(updates.borrow().phase, Phase::Playing);
+    Ok(())
+}
+
+fn destination(channel: u64) -> crate::setup::Destination {
+    crate::setup::Destination {
+        bot: serenity::all::UserId::new(3),
+        guild: serenity::all::GuildId::new(1),
+        channel: serenity::all::ChannelId::new(channel),
+        guild_name: "Server".into(),
+        channel_name: "Music".into(),
+    }
+}
+
+#[tokio::test]
+async fn destination_switch_is_explicit_preserves_queue_and_never_repeats_interruption()
+-> Result<()> {
+    for paused in [false, true] {
+        let (mut controller, fake, updates) = solo(Saved {
+            repeat: RepeatMode::Queue,
+            ..Saved::default()
+        });
+        controller.enqueue(B);
+        let track = track_of(&fake).await?;
+        let mut playing = active(&track);
+        playing.confirmed = true;
+        playing.paused = paused;
+        controller.track = Some(playing);
+        controller.queued_track = true;
+        controller
+            .command(Command::Setup(crate::setup::Request::Select(destination(
+                4,
+            ))))
+            .await;
+        assert!(updates.borrow().confirm_setup);
+        assert!(!track.stopped.load(SeqCst));
+        controller.command(Command::ConfirmSetup(false)).await;
+        assert!(!updates.borrow().confirm_setup);
+        assert!(!track.stopped.load(SeqCst));
+        controller
+            .command(Command::Setup(crate::setup::Request::Select(destination(
+                4,
+            ))))
+            .await;
+        controller.command(Command::ConfirmSetup(true)).await;
+        assert!(track.stopped.load(SeqCst));
+        let job = controller.setup_job.take().context("switch job")?;
+        controller.finish_setup(&job.await).await;
+        assert_eq!(updates.borrow().queue.len(), 1);
+        assert_eq!(updates.borrow().queue[0].url, B);
+        assert_eq!(updates.borrow().preferences.repeat, RepeatMode::Queue);
+        assert!(controller.track.is_none());
+        assert!(controller.scheduled.is_none());
+        assert_eq!(fake.connects.load(SeqCst), 0);
+        assert_eq!(fake.disconnects.load(SeqCst), 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_destination_switch_retains_previous_selection_and_pending_queue() -> Result<()> {
+    let (mut controller, fake, updates) = solo(Saved::default());
+    fake.health
+        .send_modify(|health| health.setup.destination = Some(destination(2)));
+    fake.disconnect_failing.store(true, SeqCst);
+    controller.enqueue(B);
+    controller
+        .configure(crate::setup::Request::Select(destination(4)))
+        .await;
+    let job = controller.setup_job.take().context("switch job")?;
+    controller.finish_setup(&job.await).await;
+    assert_eq!(updates.borrow().setup.destination, Some(destination(2)));
+    assert_eq!(updates.borrow().queue.len(), 1);
+    assert!(controller.track.is_none());
+    assert_eq!(fake.connects.load(SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reconfiguration_rejects_parallel_switches_and_playback_until_disconnect_finishes()
+-> Result<()> {
+    let (mut controller, fake, updates) = solo(Saved::default());
+    fake.disconnect_hung.store(true, SeqCst);
+    controller
+        .configure(crate::setup::Request::Select(destination(4)))
+        .await;
+    controller.command(Command::Play(A.into())).await;
+    controller
+        .command(Command::Setup(crate::setup::Request::Select(destination(
+            5,
+        ))))
+        .await;
+    assert!(updates.borrow().setup_busy);
+    assert!(!updates.borrow().available);
+    assert!(controller.job.is_none());
+    assert!(controller.pending_setup.is_none());
+    if let Some(job) = controller.setup_job.take() {
+        job.abort();
+        let _ = job.await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unauthenticated_controller_keeps_local_queue_and_preferences_usable() {
+    let (mut controller, fake, updates) = solo(Saved::default());
+    fake.health.send_modify(|health| {
+        health.gateway = false;
+        health.voice = false;
+    });
+    controller.command(Command::Enqueue(B.into())).await;
+    controller.command(Command::RememberQueue(true)).await;
+    controller.command(Command::CloseToTray(true)).await;
+    assert!(updates.borrow().controller_ready);
+    assert!(!updates.borrow().available);
+    assert_eq!(updates.borrow().queue.len(), 1);
+    assert_eq!(controller.saved.queue.len(), 1);
+    assert!(controller.saved.close_to_tray);
+    controller.command(Command::ClearQueue).await;
+    assert_eq!(updates.borrow().queue.len(), 0);
+}
+
+#[tokio::test]
+async fn failed_or_credentialless_restore_preserves_saved_destination_but_explicit_removal_clears_it()
+-> Result<()> {
+    let (mut controller, _, _) = solo(Saved {
+        destination: Some(destination(2)),
+        ..Saved::default()
+    });
+    controller.setup_change = SetupChange::Reconfigure;
+    controller.finish_setup(&Ok(Ok(()))).await;
+    assert_eq!(controller.saved.destination, Some(destination(2)));
+    controller
+        .finish_setup(&Ok(Err(anyhow::anyhow!("Authentication failed"))))
+        .await;
+    assert_eq!(controller.saved.destination, Some(destination(2)));
+    controller.setup_change = SetupChange::Remove;
+    controller.finish_setup(&Ok(Ok(()))).await;
+    assert!(controller.saved.destination.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_discovery_disconnect_is_retried_after_setup_finishes() -> Result<()> {
+    let (mut controller, fake, updates) = solo(Saved::default());
+    controller.enqueue(B);
+    controller.setup_change = SetupChange::Discovery;
+    controller.setup_job = Some(tokio::spawn(async { Ok(()) }));
+    fake.ready.store(false, SeqCst);
+    fake.health.send_modify(|health| {
+        health.setup.destination = None;
+        health.voice = true;
+        health.voice_retry = false;
+        health.voice_error = Some("Could not leave voice".into());
+    });
+    let current = fake.health.borrow().clone();
+    controller.health_changed(current).await;
+    assert!(controller.job.is_none());
+    let setup = controller.setup_job.take().context("setup job")?;
+    setup.await??;
+    controller
+        .finish_setup(&Ok(Err(anyhow::anyhow!("Could not leave voice"))))
+        .await;
+    assert_eq!(updates.borrow().phase, Phase::Disconnecting);
+    let JobEvent::Done(result) = job_event(&mut controller.job).await else {
+        bail!("Disconnect must finish without media preparation");
+    };
+    controller.finish_job(result).await;
+    assert_eq!(fake.disconnects.load(SeqCst), 1);
+    assert!(!fake.health.borrow().voice);
+    assert_eq!(updates.borrow().queue[0].url, B);
+    assert_eq!(fake.started(), 0);
     Ok(())
 }

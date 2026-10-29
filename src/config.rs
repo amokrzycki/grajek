@@ -3,29 +3,42 @@ use serenity::all::{ChannelId, GuildId};
 use url::Url;
 
 pub struct Config {
-    pub token: String,
-    pub guild: GuildId,
-    pub channel: ChannelId,
+    pub warning: Option<String>,
+    pub token: Option<String>,
+    pub destination: Option<(GuildId, ChannelId)>,
 }
 
 impl Config {
-    pub fn load() -> Result<Self> {
-        match load_dotenv() {
-            Ok(_) => {}
-            Err(dotenvy::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => bail!("Cannot read .env. Check its syntax and permissions."),
-        }
-        let token = std::env::var("DISCORD_BOT_TOKEN")
-            .context("Set DISCORD_BOT_TOKEN in .env, then restart.")?;
-        ensure!(
-            !token.trim().is_empty() && token != "your_bot_token",
-            "Set a real DISCORD_BOT_TOKEN in .env, then restart."
-        );
-        Ok(Self {
+    pub fn load() -> Self {
+        let warning = match load_dotenv() {
+            Ok(_) => None,
+            Err(dotenvy::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => Some("Cannot read .env. Check its syntax and permissions. Existing environment settings still apply.".into()),
+        };
+        Self::from_values(
+            std::env::var("DISCORD_BOT_TOKEN").ok(),
+            std::env::var("DISCORD_GUILD_ID").ok(),
+            std::env::var("DISCORD_VOICE_CHANNEL_ID").ok(),
+            warning,
+        )
+    }
+
+    fn from_values(
+        token: Option<String>,
+        guild: Option<String>,
+        channel: Option<String>,
+        warning: Option<String>,
+    ) -> Self {
+        let token = token.filter(|value| !value.trim().is_empty() && value != "your_bot_token");
+        let destination = guild
+            .zip(channel)
+            .and_then(|(guild, channel)| parse_id(&guild).ok().zip(parse_id(&channel).ok()))
+            .map(|(guild, channel)| (GuildId::new(guild), ChannelId::new(channel)));
+        Self {
+            warning,
             token,
-            guild: GuildId::new(env_id("DISCORD_GUILD_ID")?),
-            channel: ChannelId::new(env_id("DISCORD_VOICE_CHANNEL_ID")?),
-        })
+            destination,
+        }
     }
 }
 
@@ -56,12 +69,6 @@ fn load_dotenv() -> dotenvy::Result<std::path::PathBuf> {
         }
     }
     Err(dotenvy::Error::Io(std::io::ErrorKind::NotFound.into()))
-}
-
-fn env_id(name: &str) -> Result<u64> {
-    let value =
-        std::env::var(name).with_context(|| format!("Set {name} in .env, then restart."))?;
-    parse_id(&value).with_context(|| format!("{name} must be a nonzero numeric Discord ID."))
 }
 
 fn parse_id(value: &str) -> Result<u64> {
@@ -168,6 +175,21 @@ pub fn video_url(value: &str) -> Result<String> {
 mod tests {
     use super::{parse_id, playlist_url, video_url};
     use anyhow::Result;
+
+    #[test]
+    fn dotenv_failure_preserves_external_credentials_and_invalid_ids_do_not_block_setup() {
+        let config = super::Config::from_values(
+            Some("external-secret".into()),
+            Some("bad-id".into()),
+            Some("2".into()),
+            Some("Cannot read .env".into()),
+        );
+        assert_eq!(config.token.as_deref(), Some("external-secret"));
+        assert!(config.destination.is_none());
+        assert!(config.warning.is_some());
+        let fresh = super::Config::from_values(None, None, None, None);
+        assert!(fresh.token.is_none() && fresh.destination.is_none());
+    }
 
     #[test]
     fn explorer_configuration_lookup_is_independent_of_working_directory() {

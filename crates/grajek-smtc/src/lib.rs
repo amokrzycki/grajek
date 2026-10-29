@@ -18,6 +18,36 @@ use windows::{
 };
 
 mod interop;
+mod menu_theme;
+
+/// Changes visibility of the existing window, called only on its owning thread.
+pub fn set_window_visible(window: &impl HasWindowHandle, visible: bool) -> Result<()> {
+    interop::set_window_visible(window, visible)
+}
+
+/// Opt the native Win32 popup menu into Windows application light/dark styling.
+///
+/// Call before creating the menu on the GPUI UI thread. No-op on unsupported
+/// Windows builds or if the optional uxtheme exports are unavailable.
+pub fn enable_system_popup_menu_theme() -> Option<bool> {
+    if menu_theme::allow_dark_menus() {
+        menu_theme::apps_use_dark_mode()
+    } else {
+        None
+    }
+}
+
+/// Refresh cached popup-menu colors when the system application theme changes.
+/// The GPUI UI thread owns both this call and the native tray menu.
+pub fn refresh_system_popup_menu_theme(previous: &mut Option<bool>) {
+    menu_theme::refresh_color_policy();
+    let Some(now) = menu_theme::apps_use_dark_mode() else {
+        return;
+    };
+    if *previous != Some(now) && menu_theme::allow_dark_menus() {
+        *previous = Some(now);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
