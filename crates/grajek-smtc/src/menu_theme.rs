@@ -57,7 +57,11 @@ fn export(ordinal: u16) -> Option<unsafe extern "system" fn() -> isize> {
     static LIBRARY: OnceLock<Option<isize>> = OnceLock::new();
     let address = (*LIBRARY.get_or_init(|| {
         // SAFETY: a fixed system DLL name; module lifetime is process-wide.
-        unsafe { LoadLibraryW(w!("uxtheme.dll")).ok().map(|module| module.0 as isize) }
+        unsafe {
+            LoadLibraryW(w!("uxtheme.dll"))
+                .ok()
+                .map(|module| module.0 as isize)
+        }
     }))?;
     let module = HMODULE(address as *mut _);
     // SAFETY: the low-word pseudo-pointer is the documented Win32 ordinal form,
