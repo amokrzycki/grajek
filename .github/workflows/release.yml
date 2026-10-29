@@ -60,9 +60,7 @@ jobs:
             platform: windows-x64
             binary: grajek.exe
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
+    # Keep the native shell so Git Bash's link.exe cannot shadow MSVC's linker.
     env:
       PACKAGE: grajek-${{ needs.resolve.outputs.version }}-${{ matrix.platform }}
     steps:
@@ -97,6 +95,7 @@ jobs:
       - name: Build native release
         run: cargo build --locked --release
       - name: Stage portable package
+        shell: bash
         env:
           BINARY: ${{ matrix.binary }}
         run: |
@@ -111,6 +110,7 @@ jobs:
           tar -czf "dist/$PACKAGE.tar.gz" -C package "$PACKAGE"
       - name: Package Windows executable
         if: runner.os == 'Windows'
+        shell: bash
         run: python -m zipfile --create "dist/$PACKAGE.zip" "package/$PACKAGE"
       - name: Save release archive
         uses: actions/upload-artifact@v4
