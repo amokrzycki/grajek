@@ -136,6 +136,20 @@ Verification covers the full Cargo suite, strict Clippy, formatting, native buil
 
 The previous theme used a 14px rem, making `p_4` 14px, `text_sm` 12.25px, `text_xs` 10.5px and kit medium buttons 28px despite the documented targets. The theme now uses a 16px rem and the player explicitly selects 14px body text, so utility sizes match their intended pixels.
 
+## Product experience and native interaction contract
+
+The 2026-10-30 experience pass supersedes the earlier player-only composition and unchanged-setup scope above. Signal Ledger colors, fonts, type roles and native integration remain unchanged.
+
+Configured settings lead with a compact factual bot status and **Playback destination**: one labeled native server Select, then one voice-channel Select. Refresh belongs beside each field. An explicit selected-destination Status remains controller-owned while browsing another server. Permission and unsupported-stage reasons stay inside the affected option; disabled names use one ellipsized line so their reason cannot collide with the next row, while the accessible name contains the full name and reason. Enabled names can wrap to two lines. Menus have a 224px maximum list height and use the kit's window-aware flip/clamp. Credential editing and Preferences are disclosures. Settings has an explicit scroll handle, scrollbar gutter, and focus-revealing wrappers for offscreen controls. Changing a live destination still invokes the controller's Stop-and-switch confirmation, with explicit focus on the confirmation and Escape/Keep playing cancellation.
+
+First run keeps token entry visible, masked, and labeled, with OS-vault versus session-only semantics and an optional creation/invite guide. No tutorial storage or new wizard is added. Authentication reveals destination selection without joining voice. The validated returning destination keeps the existing startup bypass. Empty playback invites a link; a pending queue retains a usable Play Queue action. Idle has no disabled Pause/Stop or repeated Ready phase line. Idle volume sits beside the link label. The active track, timeline and transport retain their existing ownership and geometry. Stop remains available while an accepted Play/Next request awaits its controller snapshot.
+
+Help is now application-owned using Base TooltipOverlay/TooltipRequest and its anchor-aware Positioner. A 300px maximum-width surface wraps within viewport-minus-32px dimensions. Open/close transitions cancel both visible and delayed help, and help is suppressed while menus or settings are active. Pointer ownership prevents an old trigger's leave event from hiding a newer tooltip; keyboard F1 help is not dismissed by pointer modality changes. Escape, ordinary key navigation, pointer actions and window activation changes dismiss help. Required Queue options and More explanations are inline. No dependency or priority/z-order workaround was added.
+
+Semantic rhythm: 4px title/status and label/control pairs, 8px related controls, 12px idle support, 16px conceptual separation and root inset. At 480px height the link group uses 4px gaps; only stacked playback-error/import feedback also compresses root section gaps to 4px, retaining two History rows and full-size controls. Queue insertion uses the existing confirmed count/list update: an extra status row was rejected because it moved scrolled content on routine snapshots. No optimistic playback/selection or extra animation was introduced.
+
+Evidence and the independent Impeccable/UI UX Pro Max assessments are in `.impeccable/review/experience/REPORT.md`; the implementation specification is `docs/superpowers/plans/2026-10-30-product-experience.md`. The image gallery shows compositor captures, not an HTML implementation. Native XWayland evidence does not establish native Wayland, Windows runtime, live Discord audio, assistive technology or fractional scaling acceptance.
+
 ## Colors
 
 The palette combines warm charcoal, warm white and brass. Frontmatter colors are the established opaque sRGB values from `src/style.rs`; preserve semantic roles rather than choosing new colors per component.

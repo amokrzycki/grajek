@@ -8,6 +8,8 @@ use gpui_kit::{
 
 use super::lists::{Tab, TabPrev};
 
+use super::help::HelpExt;
+
 use super::{PlayerApp, Section, label_with_tooltip};
 use crate::{player::Command, queue::QueueItem};
 
@@ -71,6 +73,7 @@ impl PlayerApp {
                         format!("Waiting for YouTube metadata. {}", item.url)
                     }
                 }),
+                &self.help,
             ))
             .child(self.queue_actions(position, last, id, cx))
             .test_support()
@@ -106,7 +109,7 @@ impl PlayerApp {
                         theme.muted_foreground
                     })
                     .accessibility_label("Move up")
-                    .tooltip("Move up")
+                    .help("Move up", &self.help)
                     .disabled(!self.state.controller_ready || position == 0)
                     .on_click(cx.listener(move |this, _, _, _| {
                         this.send(Command::Shift { id, up: true });
@@ -130,7 +133,7 @@ impl PlayerApp {
                         theme.muted_foreground
                     })
                     .accessibility_label("Move down")
-                    .tooltip("Move down")
+                    .help("Move down", &self.help)
                     .disabled(!self.state.controller_ready || last)
                     .on_click(cx.listener(move |this, _, _, _| {
                         this.send(Command::Shift { id, up: false });
@@ -154,7 +157,7 @@ impl PlayerApp {
                         theme.muted_foreground.opacity(0.35)
                     })
                     .accessibility_label("Remove from queue")
-                    .tooltip("Remove from queue")
+                    .help("Remove from queue", &self.help)
                     .disabled(!self.state.controller_ready)
                     .on_click(cx.listener(move |this, _, _, _| {
                         this.send(Command::Dequeue(id));

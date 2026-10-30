@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 pub(in crate::app) mod animation_fixes;
+mod experience;
 mod native_ui;
 mod seek;
 
@@ -295,8 +296,10 @@ fn failed_pause_never_leaves_a_false_paused_state(cx: &mut TestAppContext) {
         assert!(app.state.visible_track().is_none());
         assert!(app.pending.is_none());
     });
-    assert!(button(cx, window, "pause-resume").1, "no track to pause");
-    click(cx, window, "pause-resume");
+    assert!(
+        !present(cx, window, "pause-resume"),
+        "no inactive transport without a track"
+    );
     assert!(received.try_recv().is_err());
 }
 
@@ -402,8 +405,8 @@ fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut Te
         window.input("https://youtu.be/aqz-KE-bpKQ", cx);
         window.press("enter", cx);
         window.click("play", cx);
-        window.click("pause-resume", cx);
-        window.click("stop", cx);
+        assert!(window.try_find("pause-resume").is_none());
+        assert!(window.try_find("stop").is_none());
     })
     .expect("test window should accept input and disabled actions");
     assert!(received.try_recv().is_err());
@@ -540,8 +543,7 @@ fn add_to_queue_button_and_ctrl_enter_do_not_play(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn next_follows_the_queue_and_ignores_rapid_clicks(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, with_lists(Phase::Ready, 0, 0));
-    assert!(button(cx, window, "next").1, "nothing queued");
-    click(cx, window, "next");
+    assert!(!present(cx, window, "next"), "nothing queued");
     assert!(received.try_recv().is_err());
     states.send_replace(with_lists(Phase::Ready, 2, 0));
     cx.run_until_parked();
@@ -747,7 +749,8 @@ fn long_lists_scroll_inside_the_window(cx: &mut TestAppContext) {
     .expect("test window should scroll");
     assert!(bounds(cx, window, ("history-row", 49_usize)).origin.y < px(560.));
     // The controls above the lists never move.
-    assert!(button(cx, window, "pause-resume").1);
+    assert!(!present(cx, window, "pause-resume"));
+    assert!(present(cx, window, "next"));
 }
 
 #[gpui_kit::test]
@@ -771,7 +774,7 @@ fn long_titles_and_errors_keep_the_layout(cx: &mut TestAppContext) {
         "error is clamped to a few lines"
     );
     assert!(error.size.width <= window_width);
-    for id in ["pause-resume", "next", "stop", "play", "enqueue"] {
+    for id in ["next", "play", "enqueue"] {
         let button = bounds(cx, window, id);
         assert!(
             button.bottom() < px(560.) && button.right() <= window_width,
@@ -795,10 +798,12 @@ fn long_titles_and_errors_keep_the_layout(cx: &mut TestAppContext) {
 fn focus_leaves_a_control_that_turns_off(cx: &mut TestAppContext) {
     let (window, view, _received, states) = open(cx, playing(Phase::Playing, Some("Song"), 3));
     let on_stop = |cx: &mut TestAppContext| {
-        cx.update_window(window, |_, window, _| window.find("stop").focused())
-            .ok()
-            .flatten()
-            .unwrap_or(false)
+        cx.update_window(window, |_, window, _| {
+            window.try_find("stop").and_then(|button| button.focused())
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(false)
     };
     for _ in 0..12 {
         if on_stop(cx) {
@@ -825,10 +830,12 @@ fn focus_leaves_a_control_that_turns_off(cx: &mut TestAppContext) {
 fn stopping_from_the_keyboard_returns_focus_to_the_input(cx: &mut TestAppContext) {
     let (window, view, mut received, _states) = open(cx, playing(Phase::Playing, Some("Song"), 3));
     let on_stop = |cx: &mut TestAppContext| {
-        cx.update_window(window, |_, window, _| window.find("stop").focused())
-            .ok()
-            .flatten()
-            .unwrap_or(false)
+        cx.update_window(window, |_, window, _| {
+            window.try_find("stop").and_then(|button| button.focused())
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(false)
     };
     for _ in 0..12 {
         if on_stop(cx) {
@@ -865,7 +872,7 @@ fn the_url_input_has_focus_and_keeps_it(cx: &mut TestAppContext) {
     assert!(focused(cx), "the input starts focused");
     click(cx, window, "enqueue");
     assert!(received.try_recv().is_ok());
-    click(cx, window, "next");
+    click(cx, window, "enqueue");
     assert!(focused(cx), "buttons do not steal typing focus");
 }
 
@@ -992,7 +999,7 @@ fn the_slider_is_inert_without_discord(cx: &mut TestAppContext) {
         cx,
         State {
             available: false,
-            ..state(Phase::Error)
+            ..playing(Phase::Paused, Some("Disconnected track"), 2)
         },
     );
     let slider = slider_id(cx, &view);
@@ -1040,6 +1047,10 @@ fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
                 "leave-voice",
                 "voice-status",
             ] {
+                if !present(cx, window, id) {
+                    assert!(matches!(id, "pause-resume" | "stop" | "leave-voice"));
+                    continue;
+                }
                 let control = bounds(cx, window, id);
                 assert!(
                     control.right() <= px(width) && control.bottom() < px(height),
@@ -1156,7 +1167,8 @@ fn queue_preferences_follow_snapshots_and_work_from_keyboard(cx: &mut TestAppCon
         ..state(Phase::Error)
     });
     cx.run_until_parked();
-    for id in ["repeat", "remember-queue", "next"] {
+    assert!(!present(cx, window, "next"));
+    for id in ["repeat", "remember-queue"] {
         assert!(button(cx, window, id).1);
         click(cx, window, id);
     }
@@ -1322,8 +1334,7 @@ fn leave_voice_is_native_keyboard_accessible_and_waits_for_controller(cx: &mut T
             ..initial.clone()
         });
         cx.run_until_parked();
-        assert!(button(cx, window, "leave-voice").1);
-        click(cx, window, "leave-voice");
+        assert!(!present(cx, window, "leave-voice"));
         assert!(received.try_recv().is_err());
     }
 }
@@ -1644,6 +1655,7 @@ fn full_queue_and_long_discord_context_fit_with_real_transport(cx: &mut TestAppC
             Some(&"Żółć an unbroken title ".repeat(30)),
             84,
         );
+        snapshot.voice_connected = true;
         snapshot.queue = with_lists(Phase::Paused, 100, 3).queue;
         snapshot.history = with_lists(Phase::Paused, 0, 3).history;
         snapshot.import = crate::player::ImportStatus::Importing;
@@ -1700,14 +1712,14 @@ fn full_queue_and_long_discord_context_fit_with_real_transport(cx: &mut TestAppC
 #[gpui_kit::test]
 fn no_track_headline_follows_the_actual_phase(cx: &mut TestAppContext) {
     for (phase, available, expected) in [
-        (Phase::Ready, true, "Ready for a link"),
+        (Phase::Ready, true, "Start with a link"),
         (Phase::Initializing, false, "Starting Grajek…"),
         (Phase::Connecting, true, "Joining voice…"),
         (Phase::Resolving, true, "Preparing your track…"),
         (Phase::Stopping, true, "Stopping playback…"),
         (Phase::Disconnecting, false, "Leaving voice…"),
         (Phase::Error, true, "Playback stopped"),
-        (Phase::Error, false, "Connect to Discord"),
+        (Phase::Error, false, "Connect your Discord bot"),
     ] {
         let (window, _, _, _) = open(
             cx,

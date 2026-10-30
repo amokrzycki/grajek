@@ -9,6 +9,8 @@ use gpui_kit::{
 
 use super::lists::{Tab, TabPrev};
 
+use super::help::HelpExt;
+
 use super::{PlayerApp, Section, clock, label};
 use crate::{player::Command, store::HistoryEntry};
 
@@ -51,7 +53,7 @@ impl PlayerApp {
             .rounded(theme.radius)
             .text_sm()
             .hover(|row| row.bg(theme.list_hover))
-            .child(label(("history-title", index), title))
+            .child(label(("history-title", index), title, &self.help))
             .children(entry.duration().map(|duration| {
                 div()
                     .flex_none()
@@ -81,7 +83,7 @@ impl PlayerApp {
                             .ghost()
                             .small()
                             .accessibility_label("Play now")
-                            .tooltip("Play now")
+                            .help("Play now", &self.help)
                             .disabled(!self.play_enabled())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.play_url(play_url.clone(), window, cx);
@@ -100,7 +102,7 @@ impl PlayerApp {
                             .ghost()
                             .small()
                             .accessibility_label("Add to queue")
-                            .tooltip("Add to queue")
+                            .help("Add to queue", &self.help)
                             .disabled(!self.state.can_enqueue())
                             .on_click(cx.listener(move |this, _, _, _| {
                                 this.enqueue_url(queue_url.clone());
@@ -119,7 +121,7 @@ impl PlayerApp {
                             .ghost()
                             .small()
                             .accessibility_label("Remove from history")
-                            .tooltip("Remove from history")
+                            .help("Remove from history", &self.help)
                             .disabled(!self.state.controller_ready)
                             .on_click(cx.listener(move |this, _, _, _| {
                                 this.send(Command::ForgetHistory(forget_url.clone()));
