@@ -407,7 +407,11 @@ fn pause_then_play_accepts_one_intent_and_keeps_it_protected(cx: &mut TestAppCon
     }
 }
 
-fn focused(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) -> bool {
+pub(super) fn focused(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    id: impl Into<ElementId>,
+) -> bool {
     let id = id.into();
     let mut result = false;
     act(cx, window, |window, _| {
@@ -471,7 +475,18 @@ fn every_row_action_remains_keyboard_accessible(cx: &mut TestAppContext) {
             );
             let rect = bounds(cx, window, id.clone());
             assert!(
-                rect.top() >= px(280.) && rect.bottom() <= px(544.),
+                rect.top()
+                    >= bounds(
+                        cx,
+                        window,
+                        if section == Section::Queue {
+                            "queue-list"
+                        } else {
+                            "history-list"
+                        }
+                    )
+                    .top()
+                    && rect.bottom() <= px(544.),
                 "keyboard focus must be on screen: {index} {id:?} {rect:?}"
             );
             if index + 1 < order.len() {

@@ -9,10 +9,7 @@ use gpui_kit::{
 use super::lists::{Tab, TabPrev};
 
 use super::{PlayerApp, Section, label_with_tooltip};
-use crate::{
-    player::Command,
-    queue::{QUEUE_LIMIT, QueueItem},
-};
+use crate::{player::Command, queue::QueueItem};
 
 impl PlayerApp {
     pub(super) fn enqueue(&self, cx: &Context<Self>) {
@@ -143,51 +140,9 @@ impl PlayerApp {
             .flex()
             .flex_col()
             .gap_1()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(
-                        div()
-                            .id("queue-count")
-                            .child(format!(
-                                "{count} pending{}",
-                                if count >= QUEUE_LIMIT { " (full)" } else { "" }
-                            ))
-                            .test_support(),
-                    )
-                    .child(
-                        Button::new("continue-on-error")
-                            .label(if self.state.preferences.continue_on_error { "Continue on error: On" } else { "Continue on error: Off" })
-                            .ghost()
-                            .xsmall()
-                            .disabled(!self.state.available)
-                            .tooltip("Skip queued media failures only; stop after 3 consecutive failures. Saved across restarts.")
-                            .on_click(cx.listener(|this, _, _, _| {
-                                this.send(Command::ContinueOnError(!this.state.preferences.continue_on_error));
-                            })),
-                    )
-                    .child(
-                        Button::new("queue-clear")
-                            .label("Clear queue")
-                            .ghost()
-                            .xsmall()
-                            .disabled(!self.state.controller_ready || (count == 0 && self.state.import != crate::player::ImportStatus::Importing))
-                            .on_click(cx.listener(|this, _, _, _| {
-                                this.send(Command::ClearQueue);
-                            })),
-                    ),
-            )
             .child(if count == 0 {
-                Self::empty(
-                    "queue-empty",
-                    "The queue is empty. Paste a link and press Add to queue.",
-                    cx,
-                )
-                .into_any_element()
+                Self::empty("queue-empty", "Add a track to line up what plays next.", cx)
+                    .into_any_element()
             } else {
                 self.scroll_list(Section::Queue, cx).into_any_element()
             })

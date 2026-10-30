@@ -10,6 +10,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
+    popover::Popover,
     slider::{SliderEvent, SliderState},
     tab::{Tab, TabBar},
     tooltip::Tooltip,
@@ -47,6 +48,8 @@ enum Pending {
 pub struct PlayerApp {
     token: Entity<InputState>,
     settings_open: bool,
+    url_actions_open: bool,
+    queue_options_open: bool,
     setup_starting: bool,
     setup_help: bool,
     input: Entity<InputState>,
@@ -110,12 +113,13 @@ impl PlayerApp {
         mut states: watch::Receiver<State>,
     ) -> Self {
         lists::init(cx);
+        controls::init(cx);
         let token = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
                 .placeholder("Bot token")
         });
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Paste YouTube URL…"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Paste YouTube link"));
         window.focus(&token.read(cx).focus_handle(cx), cx);
         let volume = cx.new(|_| {
             SliderState::new()
@@ -174,6 +178,8 @@ impl PlayerApp {
         let mut app = Self {
             token,
             settings_open: true,
+            url_actions_open: false,
+            queue_options_open: false,
             setup_starting: true,
             setup_help: false,
             input,
@@ -231,6 +237,10 @@ impl PlayerApp {
         if self.state.track_id != state.track_id || !state.can_seek() {
             self.progress_preview = None;
         }
+        if lost_gateway {
+            self.queue_options_open = false;
+            self.url_actions_open = false;
+        }
         self.state = state;
         self.import_pending = false;
         if self.state.transport_ack >= self.transport_seq {
@@ -260,6 +270,7 @@ impl PlayerApp {
 
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
         self.section = section;
+        self.queue_options_open = false;
         self.confirm_clear = false;
         cx.notify();
     }
@@ -292,6 +303,7 @@ fn label_with_tooltip(id: impl Into<ElementId>, text: String, tip: String) -> im
         .flex_1()
         .min_w_0()
         .truncate()
+        .aria_label(text.clone())
         .child(text)
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .test_support()
@@ -300,6 +312,7 @@ fn label_with_tooltip(id: impl Into<ElementId>, text: String, tip: String) -> im
 impl PlayerApp {
     fn header(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let status = connection(&self.state);
         let color = if self.state.available {
             theme.green
         } else if self.state.phase == Phase::Initializing {
@@ -311,8 +324,7 @@ impl PlayerApp {
             .flex()
             .flex_none()
             .items_center()
-            .justify_between()
-            .gap_2()
+            .gap_3()
             .child(
                 div()
                     .flex_none()
@@ -323,95 +335,114 @@ impl PlayerApp {
             .child(
                 div()
                     .flex()
+                    .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .items_center()
-                    .gap_2()
-                    .track_focus(&self.voice_focus)
-                    .tab_stop(false)
                     .text_xs()
-                    .text_color(if self.state.available {
-                        theme.muted_foreground
-                    } else {
-                        color
-                    })
-                    .child(div().size(px(6.)).flex_none().rounded_full().bg(color))
-                    .child(label(
-                        "voice-status",
-                        self.state.setup.destination.as_ref().map_or_else(
-                            || connection(&self.state).into(),
-                            |destination| {
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().size(px(5.)).flex_none().rounded_full().bg(color))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_color(if self.state.available {
+                                        theme.muted_foreground
+                                    } else {
+                                        color
+                                    })
+                                    .child(label("voice-status", status.into())),
+                            ),
+                    )
+                    .children(self.state.setup.destination.as_ref().map(|destination| {
+                        div()
+                            .flex()
+                            .min_w_0()
+                            .text_color(theme.muted_foreground)
+                            .child(label(
+                                "voice-destination",
                                 format!(
-                                    "Discord · {} / {}",
+                                    "{} / {}",
                                     destination.guild_name, destination.channel_name
-                                )
-                            },
-                        ),
-                    ))
-                    .child(self.leave_button(cx)),
-            )
-            .child(
-                Button::new("settings")
-                    .label(if self.settings_open {
-                        "Back"
-                    } else {
-                        "Settings"
-                    })
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.settings_open = !this.settings_open;
-                        if this.settings_open {
-                            window.focus(&this.token.read(cx).focus_handle(cx), cx);
-                        } else {
-                            window.focus(&this.input.read(cx).focus_handle(cx), cx);
-                        }
-                        cx.notify();
+                                ),
+                            ))
                     })),
-            )
-    }
-
-    fn url_row(&self, cx: &Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_none()
-            .flex_col()
-            .gap_1()
-            .child(
-                Input::new(&self.input)
-                    .id("url")
-                    .aria_label("YouTube video or playlist URL")
-                    .w_full()
-                    .h(px(32.))
-                    .mb_2()
-                    .bg(cx.theme().muted),
             )
             .child(
                 div()
                     .flex()
-                    .justify_between()
+                    .flex_none()
+                    .items_center()
                     .gap_1()
-                    .child(self.repeat_button(cx))
+                    .track_focus(&self.voice_focus)
+                    .tab_stop(false)
+                    .child(self.leave_button(cx))
                     .child(
-                        Button::new("play")
-                            .primary()
-                            .label("Play URL")
+                        Button::new("settings")
+                            .label(if self.settings_open {
+                                "Back"
+                            } else {
+                                "Settings"
+                            })
+                            .ghost()
                             .small()
-                            .compact()
-                            .h(px(28.))
-                            .disabled(!self.play_enabled())
-                            .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))),
-                    )
-                    .child(
-                        Button::new("enqueue")
-                            .label("Add to queue")
-                            .small()
-                            .compact()
-                            .h(px(28.))
-                            .disabled(!self.state.can_enqueue())
-                            .on_click(cx.listener(|this, _, _, cx| this.enqueue(cx))),
-                    )
-                    .child(self.import_button(cx)),
+                            .flex_none()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.settings_open = !this.settings_open;
+                                this.queue_options_open = false;
+                                this.url_actions_open = false;
+                                if this.settings_open {
+                                    window.focus(&this.token.read(cx).focus_handle(cx), cx);
+                                } else {
+                                    window.focus(&this.input.read(cx).focus_handle(cx), cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
             )
+    }
+
+    fn url_row(&self, cx: &Context<Self>) -> impl IntoElement {
+        let importing = self.state.import == crate::player::ImportStatus::Importing;
+        div().flex().flex_none().flex_col().gap_1()
+            .child(Input::new(&self.input)
+                .id("url").aria_label("Paste YouTube link")
+                .w_full().h(px(32.)).bg(cx.theme().muted))
+            .child(div().flex().items_center().gap_2()
+                .child(Button::new("play")
+                    .when(!matches!(self.state.phase, Phase::Playing | Phase::Paused), ButtonVariants::primary)
+                    .label("Play now").small().h(px(28.))
+                    .tooltip("Play a single video · Enter. A watch link with a playlist still plays only its video.")
+                    .disabled(!self.play_enabled())
+                    .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))))
+                .child(Button::new("enqueue").label("Add to queue").small().h(px(28.))
+                    .disabled(!self.state.can_enqueue())
+                    .tooltip(if self.state.queue.len() >= crate::queue::QUEUE_LIMIT { "Queue full · remove a track to add another" } else { "Add a single video · Ctrl+Enter" })
+                    .on_click(cx.listener(|this, _, _, cx| this.enqueue(cx))))
+                .child(div().flex_1())
+                .child(Popover::new("url-actions-popover")
+                    .open(self.url_actions_open)
+                    .on_open_change(cx.listener(|this, open, _, cx| { this.url_actions_open = *open; cx.notify(); }))
+                    .anchor(gpui_kit::Anchor::TopRight)
+                    .trigger(Button::new("url-more").label("More").icon(AudioIcon::ChevronDown)
+                        .ghost().small().accessibility_label("More link actions")
+                        .tooltip("Import a public YouTube playlist"))
+                    .child(div().flex().flex_col().w(px(240.)).gap_2()
+                        .when(!importing, |menu| menu.child(self.import_button(cx)))
+                        .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                            .child("Uses the link above. Adds up to 100 tracks without interrupting playback.")))))
+            .children((self.state.import != crate::player::ImportStatus::Ready).then(|| {
+                div().flex().items_center().gap_2()
+                    .child(div().id("import-status").role(gpui_kit::Role::Status)
+                        .aria_label(self.state.import.message()).flex().flex_1().min_w_0().text_xs()
+                        .text_color(if matches!(self.state.import, crate::player::ImportStatus::Failed(_)) { cx.theme().danger } else { cx.theme().muted_foreground })
+                        .child(label("import-message", self.state.import.message())).test_support())
+                    .when(importing, |row| row.child(self.import_button(cx)))
+            }))
     }
 
     /// Title and status are single lines that truncate with an ellipsis, so a long
@@ -435,7 +466,21 @@ impl PlayerApp {
                     .unwrap_or_else(|| "Untitled track".into()),
                 theme.foreground,
             ),
-            None => ("Nothing playing".into(), theme.muted_foreground),
+            None => (
+                match self.state.phase {
+                    Phase::Ready | Phase::Error if !self.state.available => "Connect to Discord",
+                    Phase::Ready => "Ready for a link",
+                    Phase::Initializing => "Starting Grajek…",
+                    Phase::Connecting => "Joining voice…",
+                    Phase::Resolving => "Preparing your track…",
+                    Phase::Stopping => "Stopping playback…",
+                    Phase::Disconnecting => "Leaving voice…",
+                    Phase::Error => "Playback stopped",
+                    Phase::Playing | Phase::Paused => "Untitled track",
+                }
+                .into(),
+                theme.muted_foreground,
+            ),
         };
         let progress = track.map(|info| format_progress(self.state.position, info.duration));
         let symbol = match self.state.phase {
@@ -448,127 +493,79 @@ impl PlayerApp {
             | Phase::Stopping
             | Phase::Disconnecting => AudioIcon::Ellipsis,
         };
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_3()
-            .py_2()
-            .border_b_1()
-            .border_color(crate::style::separator())
-            .child(
-                div()
-                    .size(px(40.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(theme.radius)
-                    .border_1()
-                    .border_color(phase_color)
-                    .bg(theme.muted)
-                    .text_color(phase_color)
-                    .child(Icon::new(symbol).size_5()),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .text_size(px(22.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(title_color)
-                            .child(label("title", title)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .text_xs()
-                            .child(
-                                div()
-                                    .id("seek-status")
-                                    .flex_none()
-                                    .role(gpui_kit::Role::Status)
-                                    .text_color(phase_color)
-                                    .when(self.progress_preview.is_some(), |status| {
-                                        status.font_family(theme.mono_font_family.clone())
-                                    })
-                                    .child(self.progress_status())
-                                    .test_support(),
-                            )
-                            .children(progress.map(|progress| {
-                                div()
-                                    .id("progress")
-                                    .min_w_0()
-                                    .truncate()
-                                    .font_family(theme.mono_font_family.clone())
-                                    .text_color(theme.muted_foreground)
-                                    .child(progress)
-                                    .test_support()
-                            })),
-                    ),
-            )
+        div().flex().flex_none().items_center().pt_1().child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .flex()
+                        .text_size(px(24.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(title_color)
+                        .child(label("title", title)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_xs()
+                        .child(Icon::new(symbol).size(px(12.)).text_color(phase_color))
+                        .child(
+                            div()
+                                .id("seek-status")
+                                .flex_none()
+                                .role(gpui_kit::Role::Status)
+                                .text_color(phase_color)
+                                .when(self.progress_preview.is_some(), |status| {
+                                    status.font_family(theme.mono_font_family.clone())
+                                })
+                                .child(self.progress_status())
+                                .test_support(),
+                        )
+                        .children(progress.map(|progress| {
+                            div()
+                                .id("progress")
+                                .min_w_0()
+                                .truncate()
+                                .font_family(theme.mono_font_family.clone())
+                                .text_color(theme.muted_foreground)
+                                .child(progress)
+                                .test_support()
+                        })),
+                ),
+        )
     }
 
-    /// Errors wrap and clamp to three lines instead of stretching the window.
+    /// Keep failures readable without displacing the scrolling list.
     fn error(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let theme = cx.theme();
-        let import_visible = self.state.import != crate::player::ImportStatus::Ready;
         let seek_error = match &self.state.seek {
             crate::player::SeekStatus::Failed(message) => Some(message.clone()),
             _ => None,
         };
-        let error = self.state.error.clone().or(seek_error);
-        if error.is_none() && !import_visible {
-            return None;
-        }
-        let import = import_visible.then(|| self.state.import.message());
+        let error = self.state.error.clone().or(seek_error)?;
+        let tip: SharedString = error.clone().into();
         Some(
             div()
-                .flex()
-                .flex_col()
+                .id("error")
+                .role(gpui_kit::Role::Alert)
                 .flex_none()
-                .children(import.map(|message| {
-                    div()
-                        .id("import-status")
-                        .role(gpui_kit::Role::Status)
-                        .aria_label(message.clone())
-                        .flex()
-                        .text_xs()
-                        .text_color(
-                            if matches!(self.state.import, crate::player::ImportStatus::Failed(_)) {
-                                theme.danger
-                            } else {
-                                theme.muted_foreground
-                            },
-                        )
-                        .child(label("import-message", message))
-                        .test_support()
-                }))
-                .children(error.map(|error| {
-                    let tip: SharedString = error.clone().into();
-                    div()
-                        .id("error")
-                        .flex_none()
-                        .w_full()
-                        .px_2()
-                        .py_1()
-                        .rounded(theme.radius)
-                        .bg(theme.button_danger)
-                        .text_xs()
-                        .text_color(theme.danger)
-                        .line_clamp(if import_visible { 2 } else { 3 })
-                        .child(error)
-                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                        .test_support()
-                })),
+                .w_full()
+                .px_2()
+                .py_1()
+                .rounded(theme.radius)
+                .bg(theme.button_danger)
+                .text_xs()
+                .text_color(theme.danger)
+                .line_clamp(2)
+                .child(error)
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .test_support(),
         )
     }
 
@@ -596,7 +593,7 @@ impl PlayerApp {
             .min_h_0()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_1()
             .child(
                 div()
                     .flex()
@@ -618,10 +615,18 @@ impl PlayerApp {
                                     cx,
                                 );
                             }))
-                            .child(Tab::new().label(format!("Queue ({})", self.state.queue.len())))
+                            .child(Tab::new().label(format!(
+                                "Up next · {}{}",
+                                self.state.queue.len(),
+                                if self.state.queue.len() >= crate::queue::QUEUE_LIMIT {
+                                    " · Full"
+                                } else {
+                                    ""
+                                }
+                            )))
                             .child(Tab::new().label("History")),
                     )
-                    .child(self.remember_button(cx)),
+                    .child(self.queue_options(cx)),
             )
             .child(match self.section {
                 Section::Queue => self.queue_list(cx).into_any_element(),
@@ -668,18 +673,33 @@ impl Render for PlayerApp {
                 }
             }))
             .child(self.header(cx))
-            .child(self.url_row(cx))
             .child(
                 div()
                     .flex_none()
                     .flex()
                     .flex_col()
+                    .gap_1()
+                    .pb_2()
+                    .border_b_1()
+                    .border_color(crate::style::separator())
                     .child(self.now_playing(cx))
-                    .child(self.progress_row(window, cx)),
+                    .child(self.progress_row(window, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(div().flex_1().min_w_0().child(self.controls(cx)))
+                            .child(
+                                div()
+                                    .w(px(112.))
+                                    .flex_none()
+                                    .child(self.volume_row(window, cx)),
+                            ),
+                    ),
             )
-            .child(self.controls(cx))
             .children(self.error(cx))
-            .child(self.volume_row(window, cx))
+            .child(self.url_row(cx))
             .child(self.sections(cx))
             .into_any_element()
     }

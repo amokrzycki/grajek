@@ -24,7 +24,7 @@ typography:
     fontSize: "18px"
     fontWeight: 600
   track-title:
-    fontSize: "22px"
+    fontSize: "24px"
     fontWeight: 600
   body:
     fontSize: "14px"
@@ -71,7 +71,6 @@ components:
     typography: "{typography.body}"
     rounded: "{rounded.control}"
     height: "32px"
-    width: "64px"
   button-danger:
     backgroundColor: "{colors.danger-fill}"
     textColor: "{colors.danger}"
@@ -87,11 +86,9 @@ components:
     backgroundColor: "{colors.canvas}"
     textColor: "{colors.muted}"
     height: "30px"
-  transport-stamp:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.brass}"
-    rounded: "{rounded.control}"
-    size: "40px"
+  playback-state-symbol:
+    typography: "{typography.label}"
+    size: "12px"
   list-row:
     typography: "{typography.body}"
     textColor: "{colors.text}"
@@ -112,271 +109,197 @@ components:
 
 **Creative North Star: "Signal Ledger"**
 
-Grajek is precise, warm, quiet and independent. Premium comes from readable hierarchy, consistent geometry and native interaction quality. One useful transport stamp makes real playback state recognizable without artwork, meters or animation. The track is the visual anchor; the surrounding controls stay compact and familiar.
+Grajek is precise, warm, quiet and independent. Premium comes from readable hierarchy, consistent geometry and native interaction quality. The dominant track title, inline playback state and measured time express the existing identity without artwork, meters or animation. The main player redesign changes composition while retaining the established palette and platform brand.
 
-This is the lasting visual contract for a native Linux and Windows desktop application built with Rust and GPUI Kit 0.7.3. Product behavior belongs to `PRODUCT.md` and controller snapshots; the first player composition belongs to `.impeccable/surfaces/player.md`. The implementation is the evidence for these tokens. Frontmatter values are normative; `src/style.rs` is the runtime authority. Extend the existing native controls rather than introduce a web renderer or another component system.
+This is the visual contract for a native Linux and Windows desktop application built with Rust and GPUI Kit 0.7.3. Frontmatter tokens are normative; `src/style.rs` supplies the runtime palette and theme. Per-control geometry and type also live in the player source. Controller snapshots own behavior; `.impeccable/surfaces/player.md` records the player composition. Extend existing native controls rather than adding a web renderer or another component system.
 
 **Key Characteristics:**
 
-- One state-bearing signature, used sparingly.
 - Warm charcoal surfaces with restrained brass emphasis.
 - Prominent track type and monospaced measurements.
+- Informational playback symbols paired with explicit state text.
 - Flat, ruled composition with visible native affordances.
-- Compact controls that remain usable at the minimum window size.
+- Compact controls, disclosed secondary actions and flexible lists.
 
-### Direction selection
+### Evidence and documentation boundary
 
-Three signature concepts were evaluated against the supplied brief; the direction was chosen independently as requested.
+This pass reconciles the player documentation with `src/app.rs`, `src/app/{controls,queue,history,progress}.rs`, `src/style.rs` and the relevant test diff. It preserves the existing identity and setup design. The old before/after captures do not establish the redesigned composition.
 
-| Direction | Signature | Product fit | Limitation |
-| --- | --- | --- | --- |
-| Signal Ledger (chosen) | Transport stamp beside the title; measured time; compact ruled lists | Useful when idle, playing or failed; fits supported native primitives | Requires careful truncation and muted color balance |
-| Audio console | Tactile transport strip and hardware-like panel | Familiar transport vocabulary | Adds weight and risks a retro hardware costume |
-| Editorial playlist | Oversized track typography with a continuous queue narrative | Strong title hierarchy | Makes a small controller feel like a library and competes with link entry |
+The current evidence source is the labelled offline native fixture `native_player_redesign_evidence` in `src/app/tests/native_ui.rs`, writing `.impeccable/review/redesign/{idle,playing,paused,connecting,resolving,importing,error,disconnected,full,history,options,more,setup}-{420,520}.png`. These suffixes correspond to 420×480 and 520×560 windows. The matrix contains 26 captures of the final composition. The capture driver sends snapshots through the production subscription and checks the rendered controls before saving compositor pixels.
 
-Signal Ledger wins on product fit, originality, compact usability and implementation feasibility. Its signature needs no new data, assets, dependencies or timers. The stamp is a native composition using existing Lucide transport assets.
+Linux captures use the actual GPUI X11 window through KDE XWayland, selected by its own PID through the existing KWin test-driver pattern and focus-checked with `xdotool`, then captured from the compositor with KDE Spectacle, because GPUI `render_to_image` is unsupported on Linux. Offline snapshots establish only the states and local layout they show. They do not establish live Discord audio, the native Wayland backend, Windows runtime behavior, assistive-technology behavior or fractional scaling.
+
+Verification covers the full Cargo suite, strict Clippy, formatting, native build and the separate opt-in capture test. Regression tests cover keyboard-only disclosures, explicit playlist import, focus recovery, phase-specific headlines and real paused transport combined with a full queue, long Discord context, import feedback and errors at both supported sizes. An HTML/CSS detector does not apply to this native Rust/GPUI surface.
+
+`.impeccable/design.json` remains stale and intentionally unchanged under the requested write boundary. Its translated HTML/CSS previews are not native implementation APIs. `PRODUCT.md` also retains older player wording and GPUI minimize-only claims; those claims are not adopted here. The local surface brief remains ignored by the existing repository rule, which is unchanged.
+
+Volume measurements retain native `text_sm()` (14px), matching the implementation.
 
 ## Colors
 
-The palette combines warm charcoal, warm white and brass. Frontmatter colors are exact opaque sRGB values extracted from `src/style.rs`; preserve semantic roles rather than choosing new colors per component.
+The palette combines warm charcoal, warm white and brass. Frontmatter colors are the established opaque sRGB values from `src/style.rs`; preserve semantic roles rather than choosing new colors per component.
 
 ### Primary
 
-- **Brass** (`brass`): Play URL, usable Resume, playing/paused stamp and phase, selected tab text/underline, focus, caret and volume thumb. Warning notices reuse this color with explicit words.
+- **Brass**: the current primary action, playing/paused state, selected tab text/underline, focus, caret and slider thumbs. Active repeat receives subtle text emphasis on its ghost disclosure trigger, with its mode available in the tooltip and accessible label.
 - **Brass hover / pressed**: native primary pointer states.
 - **Brass ink**: dark text on filled brass controls.
 
 ### Semantic
 
-- **Healthy**: the small Discord connection dot; healthy text stays muted so it does not compete with the track.
-- **Danger**: failed connection, error phase/stamp, error text and destructive confirmation text.
+- **Healthy**: the small Discord connection dot; healthy connection text stays muted.
+- **Danger**: failed connection, error state and error text.
 - **Danger fill / hover / pressed**: error-callout backing and native destructive-button states. Stop stays ghost because stopping playback is reversible.
 
 ### Neutral
 
 - **Canvas**: root window, lists, tabs and scrollbar backing.
-- **Surface**: input, stamp, neutral controls and native popovers.
+- **Surface**: input, neutral controls and native popovers.
 - **Hover / pressed**: neutral interaction, row hover and native selection fill.
 - **Text / muted**: primary content versus connection, counts, measured time, empty guidance and placeholders.
 - **Control border**: neutral-button/input boundaries, slider bar and scrollbar thumb.
 - **Separator**: quiet structural rules, never the only actionable-control boundary.
 
-**The One Signal Rule.** Brass communicates an action, selection, focus or real playback/warning state; do not spread it across decoration or repeat the stamp in headers and rows.
+**The One Primary Rule.** The main player has at most one filled brass action: usable Pause/Resume while Playing/Paused; Play now in other phases. Add to queue, Next, Stop and disclosure triggers retain their native neutral or ghost treatment. State, focus and selection may use brass without becoming competing filled actions.
 
 ### State and contrast contract
 
-Selected tabs use brass text and underline. Text selection uses `pressed`; list active border uses brass. Loading displays its real phase and ellipsis, without fabricated percentage. Error presence overrides stamp/phase color. Disabled availability remains controller-owned and uses kit subdued, noninteractive states.
+Selected tabs use brass text and underline. Text selection uses `pressed`; list active border uses brass. Playback error presence overrides playback-state color. Otherwise Playing/Paused use brass and other phases muted text. Disabled availability remains controller-owned and uses kit subdued, noninteractive states.
 
-Check actual background pairings: target at least 4.5:1 for normal text, 3:1 for large text and actionable boundaries. Do not treat disabled text or structural separators as active controls. Color accompanies words or a transport symbol. Keep a visible focus boundary or kit inner focus line; do not suppress focus for neatness.
+Check actual background pairings: target at least 4.5:1 for normal text and 3:1 for large text and actionable boundaries. Color accompanies explicit words or a playback symbol. Preserve a visible focus boundary or kit inner focus line on interactive controls; informational state symbols have no focus treatment.
 
 ### Theme strategy
 
-Dark remains the existing default. `style::init` calls `Theme::change(ThemeMode::Dark, None, cx)` then `Theme::update(cx, ...)`; update palette, font size, radii and shadow policy through this synchronized API. Mutating `Theme::global_mut` alone can leave component tokens or the Base scrollbar theme out of sync.
-
-Future light mode must retain these roles with warm paper, dark ink and a darker brass accent meeting contrast. Do not invert hex values or switch modes without a matching palette. Light mode and a theme toggle are not implemented or tested.
+Dark remains the existing default. `style::init` calls `Theme::change(ThemeMode::Dark, None, cx)` then `Theme::update(cx, ...)`; update palette, font size, radii and shadow policy through this synchronized API. Mutating `Theme::global_mut` alone can leave component tokens or the Base scrollbar theme out of sync. Light mode and a theme toggle are not implemented or verified.
 
 ## Typography
 
-**Sans family:** on Linux choose once at startup from installed `Noto Sans`, then `Inter`, then `DejaVu Sans`. On Windows prefer installed `Segoe UI`, then `Segoe UI Variable Text`, then `Arial`. Otherwise retain the kit-resolved system family. These are native candidates, not a CSS comma-separated stack. Do not download fonts. Frontmatter omits a fixed `fontFamily` because the actual family depends on the machine.
+**Sans family:** Linux chooses once at startup from installed `Noto Sans`, then `Inter`, then `DejaVu Sans`. Windows prefers installed `Segoe UI`, then `Segoe UI Variable Text`, then `Arial`. Otherwise retain the kit-resolved system family. These are native candidates, not a CSS stack. Do not download fonts. Frontmatter omits a fixed family because resolution depends on the machine.
 
-**Measurement family:** `theme.mono_font_family`, resolved by the kit to an installed family. The normal Linux default is DejaVu Sans Mono and Windows uses Consolas; the kit probes installed alternatives when needed. Preserve runtime resolution rather than passing an assumed family name.
-
-The single sans hierarchy is direct and compact. Mono is reserved for measured time, volume percentage and queue positions, not control labels.
+**Measurement family:** preserve `theme.mono_font_family` and its installed-family resolution. Mono is reserved for measured time, volume percentage and queue positions, not ordinary control labels.
 
 ### Hierarchy
 
-| Runtime role | Frontmatter token | Weight / source |
-| --- | --- | --- |
-| Grajek app name | `app-title` (18px) | Explicit semibold (600) |
-| Track or “Nothing playing” | `track-title` (22px) | Explicit semibold (600); idle title muted |
-| List titles and empty guidance | `body` (14px) | Native `text_sm()` |
-| URL and default transport controls | `body` (14px) | Theme/native normal-size typography |
-| Connection, phase, counts, errors, notices | `label` (12px) | Native `text_xs()` |
-| Elapsed/duration, history duration, queue position | `measurement` (12px) | Native `text_xs()` plus installed mono |
-| Volume percentage | `volume-measurement` (14px) | Native `text_sm()` plus installed mono |
+- **App title:** `app-title`, semibold, for Grajek in the compact header.
+- **Track title:** `track-title`, semibold, for the dominant single-line title or factual no-track headline. A no-track headline uses muted text.
+- **Body:** `body`, for row titles, empty guidance and default controls.
+- **Label:** `label`, for connection, phase, counts, errors and notices.
+- **Measurement:** `measurement`, with mono, for elapsed/duration, history duration and queue positions.
+- **Volume measurement:** `volume-measurement`, with mono, in a reserved right-aligned slot.
 
-Small underline tabs and extra-small utility buttons keep the kit's size typography. Phase and progress are 12px, not 14px. Do not invent line-height, tracking or display-family overrides where the source uses native defaults. Standard buttons retain kit relative 1.25 line height.
+The frontmatter specifies a 24px track title and 14px volume measurement. Phase text and its inline symbol are also 12px. Small tabs and utility buttons retain native sizing. Do not invent line-height or tracking overrides where the implementation uses kit defaults.
 
-**The Measured Data Rule.** Use mono only where changing digits should align. Keep titles one line with an ellipsis and full-text tooltip; do not shrink body titles below 14px to solve density.
+**The Measured Data Rule.** Align changing digits with mono. Keep titles on one line with an ellipsis and full-text tooltip; do not shrink body titles below their established size to solve density.
 
 ## Layout
 
-Observed spacing: 4px for tight content, 8px for groups/row inset, 12px between stamp/title and phase/time, 16px around the window. Native normal buttons use 10px horizontal padding. Root is a vertical flex composition with an 8px gap, 16px inset and hidden outer overflow.
+The root is a vertical flex composition with a 16px inset, 8px main gap and hidden outer overflow. Tight groups use 4px, ordinary groups 8px and the transport/volume separation 12px. Default window: 520×560; minimum: 420×480. These are native constraints, not web breakpoints. Larger windows reveal more list rows rather than enlarging controls.
 
-Default window: 520×560; minimum: 420×480. These are native constraints, not web breakpoints. Larger windows expose more list rows rather than enlarging controls. Fixed controls and flexible lists share aligned edges.
+The player orders: compact header; dominant title/state/time and conditional seek slider; transport with bounded volume on the same row; optional playback/seek error; full-width YouTube input and link actions; independent import status when present; underline Up next/History navigation with Queue options; flexible scrolling list. The playback group ends with a quiet bottom rule. Input and transport remain fixed while lists scroll.
 
-The first player surface orders name/connection header, full-width URL input, separate actions with a compact repeat selector, Now Playing, transport, optional error, volume, underline tabs and flexible list. Input/actions have a 12px separation (4px gap plus 8px bottom margin); do not squeeze a URL between two buttons. Preserve Enter to play and Ctrl+Enter to enqueue.
+Established player geometry:
 
-| Established geometry | Dimension |
-| --- | --- |
-| URL input | 32px high, full available width |
-| Play URL / Add to queue | 28px high |
-| Native transport controls | 32px high |
-| Pause / Resume | Flexible width |
-| Next (Play Queue while idle) / Stop | 116px / 64px wide |
-| Stamp / internal icon | 40px square / 20px |
-| List row / row icon button | 36px high / 24px square |
-| Queue position column | 24px wide |
-| History duration / volume percentage slot | 48px wide |
-| Native small underline tab | 30px high |
+- Input height 32px; Play now and Add to queue height 28px.
+- Transport height 32px; Pause/Resume flexes, Next/Play Queue reserves 112px and Stop 48px.
+- Volume occupies a bounded 112px region beside transport.
+- State symbol is 12px and unboxed; no square stamp or reserved decorative tile.
+- Rows are 36px high; row icon buttons retain native small sizing. Queue positions reserve 24px; history duration reserves 48px.
+- Underline tabs retain native small height. Popover content is 240px wide.
 
-Lists use `flex_1`, `min_h_0` and native vertical scrollbars; rows use `flex_none` so long queues cannot compress them. Titles grow/truncate; positions, duration and actions keep width. Input and transport never scroll away. Preserve at least two full rows in the worst-case minimum layout.
+Lists use flexible height, zero minimum height and native vertical scrollbars. Titles grow and truncate; positions, durations and actions retain their slots. Preserve two full rows in the stressed minimum-size layout, including error and import feedback. Avoid a redundant pending-count line or an additional queue toolbar.
+
+Windows retains the native titlebar and GPUI DPI-aware window/input APIs, the same palette and compact dimensions, and installed platform typography. Native Windows interaction and mixed-DPI behavior require runtime verification.
 
 ## Elevation & Depth
 
-No decorative surface shadows: `theme.shadow = false`. Depth comes from tones, fine separators, control borders and native interaction states. No nested card shells, glass, gradients or glow. Native focus rendering remains allowed even when the kit internally represents a focus line as a shadow; this is accessibility feedback, not surface elevation.
+No decorative surface shadows: `theme.shadow = false`. Depth comes from tones, fine separators, control borders and native interaction states. Popovers use the existing surface tone. Native focus rendering remains allowed when the kit internally represents a focus line as a shadow; this is accessibility feedback rather than surface elevation.
 
-**The Flat Surface Rule.** Separate content with alignment, tone and a quiet rule; do not add raised cards to manufacture hierarchy.
+**The Flat Surface Rule.** Separate content through alignment, tone and a quiet rule. Do not add raised cards, glass, gradients or glow to manufacture hierarchy.
 
 ## Shapes
 
-Control radius: 4px; native large-radius token: 6px. Stamp, list rows and error callout use control radius. Slider thumb and 6px connection dot stay round. No arbitrary per-component rounding.
+Use the frontmatter control radius and existing large-radius token. List rows and error callouts use the control radius; slider thumbs and the small connection dot stay round. Native neutral buttons and inputs retain their boundaries. Filled primary and ghost buttons retain native borderless geometry.
 
-Neutral buttons, input and stamp retain 1px boundaries; separators are 1px and quieter. Filled primary and ghost buttons retain native borderless geometry. Volume wrapper reserves a transparent 1px border at rest, switching to brass on focus without a layout shift.
+The playback-state symbol has no background, border, button geometry, hover behavior or focus target. Volume and seek wrappers reserve a transparent border at rest and switch to brass on focus without shifting layout.
 
 ## Components
 
-### Buttons
+### Buttons and priority
 
-Precise native actions with deliberate priority. Keep `Button`, theme variants, sizing, keyboard behavior, disabled logic and accessible labels.
+Keep native `Button`, theme variants, keyboard handling, disabled logic and accessible labels. Pause/Resume is the filled primary while usable in Playing/Paused; Play now supplies that emphasis in other phases. Play now remains available according to the existing controller gate even while playback controls carry the visual priority. Add to queue and Next remain neutral; Stop stays ghost.
 
-- Play URL is primary; Add to queue is neutral with its native border. Both are 28px high with factual labels.
-- Pause is flexible neutral; usable Resume is primary. Next is neutral; Stop ghost. Keep 32px native transport height and fixed Next/Stop widths.
-- Native variants own hover/pressed colors and focus treatment. Do not replace the kit focus line with a web rule.
-- Row actions are always-visible 24px native ghost icon buttons with tooltip and explicit accessible label. First/last queue moves retain disabled logic.
-- Clear queue/history are extra-small ghost buttons. History retains two-step confirmation, danger “Yes, clear” and separate Cancel.
+Row actions remain always visible native ghost icon buttons with explicit accessible labels and tooltips. First/last queue moves retain disabled logic. Clear history keeps its existing two-step confirmation, danger Yes, clear and separate Cancel.
 
-### Header voice control and pending metadata
+### Header and Discord context
 
-Leave voice is a small native neutral button beside the truncated connection
-status, with an explicit accessible label and explanatory tooltip. It stops audio
-and leaves voice while preserving pending entries; Stop only stops audio. Native
-Tab/Space handling remains, and disabling the focused control returns focus to
-the URL input. The header adds no vertical row and fits both supported sizes.
-Disconnecting shows “Leaving voice…” until the backend finishes; failures keep
-an error and permit retry. Pending rows show “Loading title…” or “Title
-unavailable”, with a full-title or explanatory URL tooltip. The existing single
-line truncation, row height, actions and palette remain unchanged.
+Keep Grajek, factual connection status and destination context distinct. The connection dot and text report actual availability/voice state; a selected server/channel does not imply connection. Safely truncate server/channel names separately from connection status and retain full-text tooltips. Settings and Leave voice remain visible small ghost buttons at both supported sizes. Settings becomes Back in the unchanged settings view.
 
-### Queue experience controls (v0.3.0)
+Leave voice stops audio and leaves voice while preserving pending entries. Stop only stops audio. Controller snapshots own leaving/success/failure states. Losing the focused control restores focus to the URL input. Do not encode tray behavior in this header contract.
 
-Repeat uses one 104px native small button in the existing URL action row. Its explicit
-label cycles Off, Repeat Track and Repeat Queue; active repeat uses the brass
-primary variant. Its tooltip explains cycling and the natural-completion rule.
-Remember queue: Off/On is an extra-small native ghost button beside the section
-tabs, visible in both sections. Both render saved controller preferences and keep
-native Tab/Enter/Space handling. No new vertical row reduces compact list space.
-The existing Next transport is 116px wide to fit Play Queue while idle; its label
-and availability come from the controller snapshot. Pause remains flexible, Stop
-64px. All controls retain full labels at 420×480, including long-error states and
-two visible list rows. The theme, type, spacing, stamp and row actions are unchanged.
+### Playback identity, time and seek
 
-### Playlist import (v0.3.1)
+The dominant title precedes an inline state row: a 12px informational symbol, explicit phase and monospaced elapsed/duration. Playing uses Play; Paused uses Pause; Ready/Error use Square; transitional phases use Ellipsis. The symbol is not interactive and is never rendered as an outlined transport stamp. Existing Preview and Seeking… status temporarily occupy the phase text slot during seek interaction.
 
-The full-width URL input serves both video and playlist links and is labelled
-“YouTube video or playlist URL”. Enter and Ctrl+Enter retain their original meanings.
-The existing 28px action row contains Repeat, Play URL, Add to queue and the explicit
-Import Playlist action. Native small sizing, compact Play/Add padding and a 4px gap
-keep the full labels visible at the minimum width. Repeat reserves 104px and import
-102px; Cancel Import uses the same slot. No additional toolbar row is added.
+Without a visible track, the headline follows actual phase: Ready for a link, Starting Grajek…, Joining voice…, Preparing your track…, Stopping playback…, Leaving voice… or Playback stopped. Unavailable Ready/Error instead shows Connect to Discord; unavailability must not erase a real leaving/starting transition. A visible track lacking a title uses Untitled track.
 
-Import feedback uses a native Status role, full accessible label and full-message
-tooltip in the existing feedback region. It is independent of the transport stamp,
-phase and playback error. With import feedback visible, the playback error clamps
-to two lines (full tooltip retained) so two list rows still fit at 420×480. Import
-states use words rather than fabricated percentages. The action returns keyboard
-focus to the URL input; external completion also rescues focus from the cancel
-control. Native disabled/hover/focus states, Signal Ledger colors and typography
-remain authoritative. No animation is introduced.
-
-### Inputs / Fields
-
-Full-width native `Input`, surface backing, contrasting border, brass focus/caret and native selection. Preserve placeholder “Paste YouTube URL…”, accessible label “YouTube video or playlist URL”, test-support ID, submit handling and focus recovery when transport becomes unavailable.
-
-### Navigation
-
-Use `TabBar::underline().small()`: canvas backing, muted inactive text, brass active text/underline. Keep Queue count and History labels. Kit tabs do not take keyboard focus; Ctrl+1/Ctrl+2 remain supported switching shortcuts. Do not claim arrow-key tab navigation was added.
+Known nonzero duration exposes the existing native progress slider beneath title/state/time. Unknown or zero duration and live media retain elapsed time without a fabricated seek range. Drag previews remain local; release sends one controller-owned seek and returns to confirmed position until the result arrives. Preserve track identity, disabled capability checks, native accessible seek actions and focus recovery. Focused Left/Right, Page Down/Up, Home and End retain their existing meanings.
 
 ### Volume
 
-Existing speaker icon, native `Slider`, fixed-width right-aligned mono percentage. Bar uses control-border; thumb brass. Volume2/VolumeX follows the actual percentage. Focus uses the reserved wrapper border. Preserve Tab availability, custom keyboard support, live watch updates, release persistence and controller rollback.
+Keep the speaker icon, native slider and right-aligned mono percentage inside the bounded transport-row region. Volume2/VolumeX follows the actual percentage. Bar uses control-border; thumb uses brass. Preserve Tab availability, the reserved focus border, arrow/Page/Home/End handling, live watch updates, release persistence and controller rollback. This is a composition change; volume ownership remains unchanged.
 
-### Playback progress
+### Playback and seek errors
 
-Use the existing native kit slider and volume focus-border convention for playback progress. Its brass thumb follows authoritative position snapshots; a drag may show an explicitly labelled monospaced “Preview” time. Release returns to confirmed position until the controller reports the actual result. “Seeking…” accompanies pending work; failures use the existing callout. Disable seeking for incompatible sources and omit the percentage-like track entirely when duration is unknown. Focused keyboard actions stay within this control and focus returns to the URL input when the track is replaced or the control becomes unavailable. Preserve scrolling queue space at both supported window sizes.
+The danger callout sits immediately below the playback group, before link entry. It displays the playback error or, when absent, the seek failure. Keep native Alert semantics, a maximum two-line clamp, full-message tooltip, existing padding and control radius. Independent import feedback must not replace this error or alter playback phase.
+
+### Link input, More and playlist import
+
+Use the existing full-width native input with the current Paste YouTube link placeholder and accessible label. Preserve input handling, selection, focus/caret, controller gates and test-support identifier. Enter invokes Play now; Ctrl+Enter adds a single video to the queue. A watch link containing a playlist still keeps single-video behavior for those actions. Pasting alone never starts playback or import.
+
+Below the input, keep Play now and Add to queue at the left and the small ghost More disclosure at the right. More uses the native `Popover` and contains explicit Import playlist plus concise helper text. Selecting import uses the current link, closes More and focuses the input; it never starts or interrupts playback.
+
+Import feedback is an independent native Status region with a full accessible message and tooltip. During an import, Cancel import remains visibly available beside that status without reopening More. Preserve cancellation, pending-command protection, capacity rules and focus recovery when import finishes. No fabricated progress percentages or automatic paste action are introduced.
+
+### Queue options and navigation
+
+Use native underline tabs labelled Up next · N and History. The pending count appears once in Up next, with · Full at capacity. Queue options sits alongside the tabs and is available from History too. No pending-count header or separate queue-preferences toolbar remains.
+
+Queue options is a native `Popover` containing Repeat, Remember queue, Continue on error and Clear queue. Its small ghost trigger uses subtle brass text when repeat is active; tooltip and accessible label expose the actual repeat mode. It does not become a second filled primary. The repeat row labels and cycles Off → Repeat Track → Repeat Queue, preserving saved controller semantics: only successful natural completion repeats, and Next/Stop bypass repeat. Remember queue and Continue on error render saved preferences without optimistic state.
+
+Clear queue removes pending entries and cancels an active import while preserving the current track. It is disabled until the controller is ready and whenever both queue and import are absent. Keep its access from either tab. History retains its own saved count, notices and clear confirmation.
+
+Native popover triggers retain keyboard activation. Scoped `PlayerMenuControl` Enter/Space activation keeps menu controls from losing activation to the popover binding. Escape closes a popover and returns focus to its trigger. Selecting import closes More and focuses the input. Section changes close Queue options; opening Settings or losing gateway availability closes both menus. Gateway loss also recovers input focus. Ctrl+1/Ctrl+2 switches Up next/History; do not claim arrow-key tab navigation was added to kit tabs.
 
 ### Lists and empty states
 
-The Queue header includes a native extra-small ghost button, “Continue on error:
-Off/On”. It renders the persisted controller preference, retains native Tab/Space
-handling and explains the queued-only, three-failure limit in its tooltip. Recovery
-messages use the existing error callout; no settings panel or visual system is added.
+Rows retain one-line titles, full-title or explanatory URL tooltips, mono positions/durations and always-visible actions. Loading title… and Title unavailable remain factual and playable according to controller gates. Hover uses the native list-hover color. Queue/history scrolling, keyboard row navigation and accessible labels remain unchanged.
 
-Rows use 8px horizontal inset/gaps, flexible one-line titles and full tooltips. Queue positions use two digits; history duration stays right-aligned in its reserved slot. Hover uses list-hover. Essential actions never appear only on hover.
+Empty guidance is truthful and left-aligned near the list top, with existing row inset and top padding. Avoid decorative icons or a centered hero. Persistent History notices remain metadata-sized and clamp to two lines.
 
-Empty guidance is truthful and left-aligned near the top, with 8px horizontal and 12px top inset; no decorative icon or centered hero. Counts and persistent History notices use metadata type; notices clamp to two lines.
+### Discord setup and settings
 
-### Signature: transport stamp
+The setup source and design are unchanged by the player redesign. Keep compact native settings, masked token entry, explicit secure-storage/session-only actions, progressively disclosed help and named server/channel choices. Disabled choices explain recovery; full-name tooltips and visible keyboard focus remain. Confirm active-playback interruption before changing destination. Setup captures are regression context, not evidence of a new settings design or verified tray wording.
 
-The outlined 40px stamp is a status display, not a button. It appears once beside the title. Playing shows Play; Paused Pause; Initializing/Connecting/Resolving/Stopping Ellipsis; Ready/Error Square. Controller snapshots alone select symbol and explicit phase. Error presence takes precedence with danger color; playing/paused otherwise use brass, remaining phases muted.
+### Motion and rendering
 
-Stamp/title separation is 12px. Now Playing has 8px vertical padding and one bottom rule. Keep the prominent title, explicit 12px phase and measured time readable without waveform decoration. Known-duration media places the native progress slider directly below this group.
-
-### Errors and micro-interactions
-
-Error callout uses danger-fill, danger text, 4px/8px padding, three-line clamp and full-message tooltip. Healthy connection is a small dot plus muted “Discord voice connected” or “Discord ready · voice idle”; initializing/unavailable use actual connection text. Color never carries meaning alone.
-
-No application animations or extra frame requests are introduced. The v0.2.1 idle deadline is controller scheduling and requests no idle frames. Native hover/focus is sufficient; existing kit loading behavior is retained. Do not claim default kit animation behavior changed. Future transitions must express real state, remain roughly 120–180ms, respect reduced motion and leave status readable without motion. Never animate the stamp as an audio meter. Existing elapsed snapshots and volume coalescing remain the performance model.
+No new application animation, polling or frame-request loop belongs to this composition. Native hover/focus and existing kit loading behavior remain. Preserve elapsed snapshots, controller-owned seek behavior and volume coalescing. Never animate the state symbol as an audio meter or infer changes to kit animation defaults from the redesign.
 
 ## Do's and Don'ts
 
 ### Do:
 
-- **Do** use the centralized semantic palette through `Theme::update` and preserve native kit variants.
-- **Do** use one controller-driven stamp beside the track, paired with explicit phase text.
-- **Do** preserve the 16px root inset, 8px main gap, fixed controls and flexible 36px scrolling rows.
-- **Do** use installed Segoe UI on Windows and preserve installed Linux font resolution, the 22px track anchor, 14px body and 12px metadata/measurements.
-- **Do** retain visible keyboard focus, accessible icon labels, full-text tooltips and existing test-support identifiers.
-- **Do** inspect both native window sizes and error/disabled/loading layouts before extending the surface.
+- **Do** preserve Signal Ledger colors, native controls and installed platform font resolution.
+- **Do** lead with the title and factual playback state, then transport and bounded volume.
+- **Do** retain one filled primary, visible small header actions and disclosed secondary actions.
+- **Do** preserve the root inset, fixed controls, flexible lists and 36px row rhythm.
+- **Do** keep explicit state text, visible focus, accessible labels and full-text tooltips.
+- **Do** verify both native sizes, popovers, long text, loading, errors and disabled states against the final source.
 
 ### Don't:
 
-- **Don't** invent artwork, waveform data, playback positions, optimistic playback or animated loading percentages.
-- **Don't** add music-note ornaments, a retro hardware skin, streaming-service navigation or SaaS dashboard vocabulary.
-- **Don't** add nested rounded cards, gradients, glows, glass, arbitrary shadows or inconsistent radii.
-- **Don't** repeat the stamp in rows or let healthy connection status compete with the title.
-- **Don't** hide essential row actions until hover, shrink body titles below 14px or remove focus rings for aesthetics.
-- **Don't** assume CSS font stacks or sidecar HTML/CSS previews are native implementation APIs.
-- **Don't** claim light mode, live Discord playback, audio or fractional-scale proof from synthetic native captures.
-
-### Evidence and drift
-
-Reconciled against `src/style.rs`, `src/main.rs`, `src/app.rs`, `src/app/{controls,queue,history}.rs` and installed GPUI Kit/component 0.7.3 source. Provisional 14px phase/progress is corrected to shipped 12px. Unused 20px/24px spacing steps are not canonized as a layout scale. Danger pressed color and native neutral-versus-filled/ghost border geometry are recorded from source.
-
-`.impeccable/review/` contains `before-default.png` and `before-minimum.png` from the incumbent executable, plus `after-default.png` and `after-minimum.png` from the rebuilt production executable at 520×560 and 420×480. The after frames show missing-configuration feedback, disabled playback actions, focused URL input and an empty queue. They do not show synthetic playback or populated history. Local integration tests cover the eight controller phases, populated queue/history, long titles/errors, scrolling and commands; the captures establish local rendering/layout only. Neither screenshots nor tests establish live Discord connectivity, audio, compositor integration or fractional scaling. Final strict Cargo validation must come from actual command results, not be inferred from screenshots.
-
-`.impeccable/design.json` uses schemaVersion 2 for documentation-panel extensions and self-contained translated component previews. Synthesized tonal ramps are exploration metadata, not runtime colors. Native source/frontmatter remain authoritative. No craft defect was canonized; absent light mode and live-service proof remain explicit limitations.
-
-### Windows platform conventions
-
-Signal Ledger remains one Operate-mode surface. Use the native titlebar and GPUI's
-DPI-aware window/input APIs; retain visible focus, keyboard access and existing
-compact dimensions. Prefer installed Segoe UI on Windows and the existing Linux
-font order; the kit supplies the platform monospaced measurement font. OS media
-controls complement the window, with no extra transport row or invented metadata.
-Mixed-DPI, Narrator and actual Windows window interaction require native runtime
-verification; headless tests and cross-compilation cannot establish them.
-
-### Discord setup and settings
-
-Settings extends the same compact native surface; Now Playing and Queue/History
-remain primary. First run focuses a masked bot-token input and offers separate,
-explicit secure-storage and session-only actions. Keep setup help progressively
-disclosed and distinguish authentication from connecting to voice.
-
-Show named servers followed by their voice channels. Disabled choices explain
-why they are unavailable and how to recover; a temporarily unavailable server
-points to Refresh servers. Preserve visible keyboard focus, full-name tooltips,
-and the 420×480 minimum layout with scrolling settings content. Confirm an active
-playback interruption before changing destination. Tray background behavior is
-opt-in and its labels must describe the actual platform behavior.
+- **Don't** restore the outlined stamp, a separate volume row, inline preference controls or redundant pending count.
+- **Don't** introduce artwork, waveforms, invented playback positions, optimistic phase changes or loading percentages.
+- **Don't** add a retro hardware skin, music-note ornament, streaming-service navigation or SaaS dashboard vocabulary.
+- **Don't** hide essential row actions until hover or remove focus feedback for aesthetics.
+- **Don't** treat selected destination context as proof of connection or offline captures as live-service/platform acceptance.
+- **Don't** treat stale sidecar previews or older PRODUCT tray claims as authority for this redesigned player.
