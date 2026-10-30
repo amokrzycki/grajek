@@ -44,6 +44,8 @@ impl PlayerApp {
         }
         self.transport_seq = id;
         self.pending = Some(pending);
+        // Any other command retires the confirmed-add line.
+        self.added = None;
         true
     }
 
@@ -376,14 +378,24 @@ impl PlayerApp {
         };
         if self.send(command) {
             self.import_pending = true;
-            self.url_actions_open = false;
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
             cx.notify();
         }
     }
 
-    pub(super) fn import_button(&self, cx: &Context<Self>) -> impl IntoElement {
+    /// Import playlist, or Cancel import while one runs. A playlist link in the field gives it
+    /// the accent; otherwise it stays a quiet action beside Add to queue.
+    pub(super) fn import_button(
+        &self,
+        playlist_link: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let running = self.state.import == ImportStatus::Importing;
+        let label = if running {
+            "Cancel import"
+        } else {
+            "Import playlist"
+        };
         div()
             .flex_none()
             .track_focus(&self.import_focus)
@@ -394,19 +406,26 @@ impl PlayerApp {
                     .on_action(cx.listener(|this, _: &Activate, window, cx| {
                         this.import_playlist(window, cx);
                     }))
-                    .label(if running {
-                        "Cancel import"
+                    .icon(if running {
+                        SpeakerIcon::Close
                     } else {
-                        "Import playlist"
+                        SpeakerIcon::Import
                     })
-                    .when(!running, |button| button.child(div().flex_1()))
-                    .accessibility_label(if running {
-                        "Cancel import"
-                    } else {
-                        "Import playlist"
-                    })
+                    .label(label)
+                    .accessibility_label(label)
+                    .help(
+                        if running {
+                            "Stop the playlist import; tracks already found stay queued."
+                        } else {
+                            "Add the playlist in the link to the queue, up to 100 tracks. Never interrupts playback."
+                        },
+                        &self.help,
+                    )
                     .ghost()
                     .small()
+                    .when(playlist_link && !running, |button| {
+                        button.text_color(cx.theme().primary)
+                    })
                     .disabled(self.import_pending || (!running && !self.state.can_import()))
                     .on_click(cx.listener(|this, _, window, cx| this.import_playlist(window, cx))),
             )

@@ -77,12 +77,22 @@ components:
     textColor: "{colors.danger}"
     rounded: "{rounded.control}"
     height: "20px"
-  url-input:
+  link-composer-frame:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.text}"
     typography: "{typography.body}"
     rounded: "{rounded.control}"
+    height: "40px"
+  link-composer-play:
+    backgroundColor: "{colors.brass}"
+    textColor: "{colors.brass-ink}"
+    typography: "{typography.body}"
+    rounded: "{rounded.control}"
     height: "32px"
+  queue-action-row:
+    typography: "{typography.body}"
+    textColor: "{colors.muted}"
+    height: "28px"
   section-tabs:
     backgroundColor: "{colors.canvas}"
     textColor: "{colors.muted}"
@@ -120,13 +130,13 @@ This is the visual contract for a native Linux and Windows desktop application b
 - Prominent track type and monospaced measurements.
 - Informational playback symbols paired with explicit state text.
 - Flat composition grouped by proximity, with visible native affordances.
-- Compact controls, disclosed secondary actions and flexible lists.
+- Compact controls, quiet secondary actions and flexible lists.
 
 ### Evidence and documentation boundary
 
 The player refinement is implemented in `src/app.rs`, `src/app/{controls,queue,history,progress}.rs`, `src/style.rs`. The Signal Ledger palette and native font preferences are preserved.
 
-Native evidence comes from `native_player_redesign_evidence` in `src/app/tests/native_ui.rs`. Matching baseline and refined captures live in `.impeccable/review/refinement/{before,after}/{state}-{420,520}.png`; the suffixes mean 420×480 and 520×560. The base matrix includes idle, playing with populated/empty queue, focused/unfocused URL, paused, connecting, resolving, importing with an error, playback error, disconnected, full queue, History, Queue options, More and setup. `GRAJEK_CAPTURE_DIR` selects the destination. `GRAJEK_CAPTURE_INTERACTIONS=1` adds input/button hover, pressed button and keyboard focus on transport/queue actions. The fixture uses realistic long titles and Unicode, applies production snapshot subscriptions, and verifies the native Pause intent/acknowledgement and typing/Ctrl+Enter path. These captures replace the rejected visual conclusion of the previous review; tests alone do not establish craftsmanship.
+Evidence for the 2026-10-30 composition pass is `.impeccable/review/composition/{before,after}` (same fixture, 26 and 27 states at both sizes). Older native evidence comes from `native_player_redesign_evidence` in `src/app/tests/native_ui.rs`. Matching baseline and refined captures live in `.impeccable/review/refinement/{before,after}/{state}-{420,520}.png`; the suffixes mean 420×480 and 520×560. The base matrix includes idle, playing with populated/empty queue, focused/unfocused URL, paused, connecting, resolving, importing with an error, playback error, disconnected, full queue, History, Queue options, More and setup. `GRAJEK_CAPTURE_DIR` selects the destination. `GRAJEK_CAPTURE_INTERACTIONS=1` adds input/button hover, pressed button and keyboard focus on transport/queue actions. The fixture uses realistic long titles and Unicode, applies production snapshot subscriptions, and verifies the native Pause intent/acknowledgement and typing/Ctrl+Enter path. These captures replace the rejected visual conclusion of the previous review; tests alone do not establish craftsmanship.
 
 Linux captures use the actual GPUI X11 window through KDE XWayland. `scripts/capture-native-window.py` resolves only the fixture PID/caption to its KWin UUID and uses ScreenShot2 CaptureWindow directly, validating dimensions before saving compositor pixels. This avoids the desktop-focus race in the older Spectacle active-window driver. GPUI `render_to_image` is unsupported on Linux. The capture helper requires Python D-Bus, GLib and Pillow; it changes no desktop focus and is not an application runtime dependency. Offline snapshots establish only the states and local layout they show. They do not establish live Discord audio, the native Wayland backend, Windows runtime behavior, assistive-technology behavior or fractional scaling.
 
@@ -138,17 +148,31 @@ The previous theme used a 14px rem, making `p_4` 14px, `text_sm` 12.25px, `text_
 
 ## Product experience and native interaction contract
 
-The 2026-10-30 experience pass supersedes the earlier player-only composition and unchanged-setup scope above. Signal Ledger colors, fonts, type roles and native integration remain unchanged.
+The 2026-10-30 experience pass supersedes the earlier player-only composition and unchanged-setup scope above; the later Main player composition section supersedes its idle and link-entry descriptions. Signal Ledger colors, fonts, type roles and native integration remain unchanged.
 
 Configured settings lead with a compact factual bot status and **Playback destination**: one labeled native server Select, then one voice-channel Select. Refresh belongs beside each field. An explicit selected-destination Status remains controller-owned while browsing another server. Permission and unsupported-stage reasons stay inside the affected option; disabled names use one ellipsized line so their reason cannot collide with the next row, while the accessible name contains the full name and reason. Enabled names can wrap to two lines. Menus have a 224px maximum list height and use the kit's window-aware flip/clamp. Credential editing and Preferences are disclosures. Settings has an explicit scroll handle, scrollbar gutter, and focus-revealing wrappers for offscreen controls. Changing a live destination still invokes the controller's Stop-and-switch confirmation, with explicit focus on the confirmation and Escape/Keep playing cancellation.
 
-First run keeps token entry visible, masked, and labeled, with OS-vault versus session-only semantics and an optional creation/invite guide. No tutorial storage or new wizard is added. Authentication reveals destination selection without joining voice. The validated returning destination keeps the existing startup bypass. Empty playback invites a link; a pending queue retains a usable Play Queue action. Idle has no disabled Pause/Stop or repeated Ready phase line. Idle volume sits beside the link label. The active track, timeline and transport retain their existing ownership and geometry. Stop remains available while an accepted Play/Next request awaits its controller snapshot.
+First run keeps token entry visible, masked, and labeled, with OS-vault versus session-only semantics and an optional creation/invite guide. No tutorial storage or new wizard is added. Authentication reveals destination selection without joining voice. The validated returning destination keeps the existing startup bypass. Empty playback invites a link; a pending queue retains a usable Play Queue action. Idle has no disabled Pause/Stop or repeated Ready phase line; idle volume sits in the transport slot (beside Play Queue when entries are pending). The active track, timeline and transport retain their existing ownership and geometry. Stop remains available while an accepted Play/Next request awaits its controller snapshot.
 
-Help is now application-owned using Base TooltipOverlay/TooltipRequest and its anchor-aware Positioner. A 300px maximum-width surface wraps within viewport-minus-32px dimensions. Open/close transitions cancel both visible and delayed help, and help is suppressed while menus or settings are active. Pointer ownership prevents an old trigger's leave event from hiding a newer tooltip; keyboard F1 help is not dismissed by pointer modality changes. Escape, ordinary key navigation, pointer actions and window activation changes dismiss help. Required Queue options and More explanations are inline. No dependency or priority/z-order workaround was added.
+Help is now application-owned using Base TooltipOverlay/TooltipRequest and its anchor-aware Positioner. A 300px maximum-width surface wraps within viewport-minus-32px dimensions. Open/close transitions cancel both visible and delayed help, and help is suppressed while menus or settings are active. Pointer ownership prevents an old trigger's leave event from hiding a newer tooltip; keyboard F1 help is not dismissed by pointer modality changes. Escape, ordinary key navigation, pointer actions and window activation changes dismiss help. Required Queue options explanations are inline; import explanations live in the Import playlist tooltip. No dependency or priority/z-order workaround was added.
 
-Semantic rhythm: 4px title/status and label/control pairs, 8px related controls, 12px idle support, 16px conceptual separation and root inset. At 480px height the link group uses 4px gaps; only stacked playback-error/import feedback also compresses root section gaps to 4px, retaining two History rows and full-size controls. Queue insertion uses the existing confirmed count/list update: an extra status row was rejected because it moved scrolled content on routine snapshots. No optimistic playback/selection or extra animation was introduced.
+Semantic rhythm: 4px title/status pairs and frame/actions/status inside the composer, 8px related controls, 12–20px between regions as specified in Main player composition, 16px root inset. The minimum-size error-plus-import case keeps two full rows without any extra compression. Queue insertion is confirmed by the controller snapshot: the composer's fixed-height status line and a lit row position acknowledge it without moving the list (see Main player composition). No optimistic playback/selection or extra animation was introduced.
 
 Evidence and the independent Impeccable/UI UX Pro Max assessments are in `.impeccable/review/experience/REPORT.md`; the implementation specification is `docs/superpowers/plans/2026-10-30-product-experience.md`. The image gallery shows compositor captures, not an HTML implementation. Native XWayland evidence does not establish native Wayland, Windows runtime, live Discord audio, assistive technology or fractional scaling acceptance.
+
+## Main player composition (2026-10-30)
+
+This pass supersedes the earlier player order, idle headline, More disclosure and three-icon row treatment below. Signal Ledger colors, fonts, type roles, native controls and controller semantics are unchanged. Rationale, the two explored candidates and the rejected assessment items are in `docs/superpowers/plans/2026-10-30-player-composition.md`; matched compositor captures are in `.impeccable/review/composition/{before,after}`.
+
+The window is three regions, separated by unequal gaps instead of borders: **Listening** (current track, timeline, transport, volume), **Adding music** (the composer) and **Up next** (Queue/History). Related controls sit 4–8px apart. Between regions the gaps are header→listening 12, listening→composer 20 and composer→Up next 16 at 520×560, and 8/12/8 at 480px height or less (the root keeps this rhythm even when an error and import feedback are both present). The composer follows the listening slot at the same distance in every state.
+
+**Listening by state.** Playing, Paused and loading keep the 24px title, state row, seek slider, Pause 96 / Next 112 / Stop 32 and bounded 120px volume. Configured idle with an empty queue has no headline and no disabled transport; the volume alone sits right-aligned in the transport slot so it stays settable before anything plays. Configured idle with pending entries shows only Play Queue (brass, content-width, never a full-width bar) with volume at the right slot. Setup-needed states keep their headline, one guidance line and a content-width primary action. A playback error while idle is the native callout alone.
+
+**Composer.** One 40px frame owns the single 1px boundary and holds the native input plus Play now at its right end (32px, an Enter glyph, brass when it is the one primary, neutral during Playing/Paused). Under it a quiet row: Add to queue (neutral small, Ctrl+Enter glyph) and Import playlist (ghost; brass text only when the entered link is a playlist or a watch link with `list=`; it reads Cancel import while importing). Under that, one fixed 16px status line shows, in order: import progress/result, the confirmed-add line, link recognition, or nothing. Recognition uses the same pure URL parsers as the controller, never plays or imports, and does not scold unrecognized text. There is no visible link label and no More popover; the accessible name stays Paste YouTube link.
+
+**Confirmed add.** Add to queue sends Enqueue and records the submitted text with the ids already queued. A snapshot with a new id confirms it: the field is cleared only if the text is unchanged, the status line reads `Added to queue · #N · title` with a brass check, and that row's position lights. A snapshot with a new error refuses it: text stays and the error callout explains. Any other snapshot keeps waiting. Typing or another command retires the line. A repeat of the unanswered text is ignored; an empty field says `Paste a link first.` locally. No timer, toast, optimistic row or optimistic clearing exists.
+
+**Queue.** Rows are 36px: 24px mono position, one-line title, then actions. The next entry has a brass position and a medium-weight title; other titles use 86% ink. `↑ ↓` are one tight pair, 8px apart from `✕`. Their ink is 70% at rest (non-disabled) and full while focus is inside the row; disabled uses 35%. All three stay visible and reachable by Tab in the existing order. With focus in a row, Alt+Up / Alt+Down move the entry and Delete removes it; focus follows a moved entry. When the focused entry is removed, focus moves to the Remove control of the entry now in that slot (the last one if it was last), and to the link field when the queue is empty. The empty queue reads `Nothing up next.` and nothing else. Drag-and-drop is intentionally absent.
 
 ## Colors
 
@@ -208,18 +232,18 @@ The track title is 24px semibold on a 30px line; body/control/list titles and vo
 
 ## Layout
 
-The root is a vertical flex composition with a true 16px inset and 16px section gaps. At a viewport height of 480px or less, section gaps compress to 8px while type and controls keep their sizes. `style::space` names the shared 4px tight, 8px group, 12px detail and 16px section/inset values; kit utilities use the same 16px rem. Title/state/timeline/transport use a 4px internal cadence, the input/actions use 8px, and transport/volume retain at least 12px separation. Outer overflow stays hidden. Default window: 520×560; minimum: 420×480. These are native constraints, not web breakpoints. Larger windows reveal more list rows rather than enlarging controls.
+The root is a vertical flex composition with a true 16px inset. Section gaps are unequal and set in Main player composition above; type and controls keep their sizes at 480px height. `style::space` names the shared 4px tight, 8px group, 12px detail and 16px section/inset values; kit utilities use the same 16px rem. Title/state/timeline/transport use a 4px internal cadence, the input/actions use 8px, and transport/volume retain at least 12px separation. Outer overflow stays hidden. Default window: 520×560; minimum: 420×480. These are native constraints, not web breakpoints. Larger windows reveal more list rows rather than enlarging controls.
 
-The player orders: compact header; dominant title/state/time and conditional seek slider; transport with bounded volume on the same row; optional playback/seek error; full-width YouTube input and link actions; independent import status when present; underline Up next/History navigation with Queue options; flexible scrolling list. Spacing separates the player from URL entry; no player separator is needed. Input and transport remain fixed while lists scroll. An absent timeline creates no empty sibling or residual gap.
+The player orders: compact header; the listening block for the current state (none when idle and empty); the composer (frame with Play now, Add to queue and Import playlist, fixed status line); underline Up next/History navigation with Queue options; flexible scrolling list. Spacing separates the player from URL entry; no player separator is needed. Input and transport remain fixed while lists scroll. An absent timeline creates no empty sibling or residual gap.
 
 Established player geometry:
 
-- Input, transport, Play now, Add to queue and More share a 32px height and 4px radius. Native buttons retain 10px horizontal padding, 14px text and 16px icons.
+- Transport and Play now share 32px; the composer frame is 40px; Add to queue and Import playlist are the small 28px native size; all use 4px radius. Native buttons retain 10px horizontal padding, 14px text and 16px icons.
 - Pause/Resume reserves 96px; Next/Play Queue reserves 112px; Stop is a 32px square ghost icon with an explicit accessible label and tooltip. Play Queue omits the skip icon so its full label fits.
 - Volume occupies a bounded 120px region beside transport. The transport group retains its width instead of stretching Pause.
 - State symbol is 12px and unboxed; no square stamp or reserved decorative tile.
-- Rows are 36px high; three always-visible 24px native icon buttons form one compact group. Queue action ink is muted, with disabled actions further subdued. Queue positions reserve 24px; history duration reserves 48px.
-- Underline tabs retain native small height. Popover content is 240px wide.
+- Rows are 36px high; three always-visible 24px native icon buttons form a pair plus a separated Remove. Ink is quiet at rest and full while focus is inside the row. Queue positions reserve 24px; history duration reserves 48px.
+- Underline tabs retain native small height. Queue options popover content is 300px wide.
 
 Lists use flexible height, zero minimum height and native vertical scrollbars. Titles grow and truncate; positions, durations and actions retain their slots. Preserve two full rows in the stressed minimum-size layout, including error and import feedback. Avoid a redundant pending-count line or an additional queue toolbar.
 
@@ -255,7 +279,7 @@ Leave voice stops audio and leaves voice while preserving pending entries. Stop 
 
 The dominant title precedes an inline state row: a 12px informational symbol, explicit phase and monospaced elapsed/duration. Playing uses Play; Paused uses Pause; Ready/Error use Square; transitional phases use Ellipsis. The symbol is not interactive and is never rendered as an outlined transport stamp. Existing Preview and Seeking… status temporarily occupy the phase text slot during seek interaction.
 
-Without a visible track, the headline follows actual phase: Ready for a link, Starting Grajek…, Joining voice…, Preparing your track…, Stopping playback…, Leaving voice… or Playback stopped. Unavailable Ready/Error instead shows Connect to Discord; unavailability must not erase a real leaving/starting transition. A visible track lacking a title uses Untitled track.
+Without a visible track, the headline follows actual phase. A ready bot shows no headline (the composer leads); transitions and setup speak: Starting Grajek…, Joining voice…, Preparing your track…, Stopping playback…, Leaving voice… or Playback stopped. Unavailable Ready/Error instead shows Connect to Discord; unavailability must not erase a real leaving/starting transition. A visible track lacking a title uses Untitled track.
 
 Known nonzero duration exposes the existing native progress slider beneath title/state/time. Unknown or zero duration and live media retain elapsed time without a fabricated seek range. Drag previews remain local; release sends one controller-owned seek and returns to confirmed position until the result arrives. Preserve track identity, disabled capability checks, native accessible seek actions and focus recovery. Focused Left/Right, Page Down/Up, Home and End retain their existing meanings.
 
@@ -267,7 +291,7 @@ Keep the speaker icon, native slider and right-aligned mono percentage inside th
 
 The danger callout sits immediately below the playback group, before link entry. It displays the playback error or, when absent, the seek failure. Keep native Alert semantics, a maximum two-line clamp, full-message tooltip, existing padding and control radius. Independent import feedback must not replace this error or alter playback phase.
 
-### Link input, More and playlist import
+### Link input and playlist import
 
 Use the existing full-width native input with the current Paste YouTube link placeholder and accessible label. Preserve input handling, selection, focus/caret, controller gates and test-support identifier. Enter invokes Play now; Ctrl+Enter adds a single video to the queue. A watch link containing a playlist still keeps single-video behavior for those actions. Pasting alone never starts playback or import.
 
@@ -275,9 +299,9 @@ The URL frame is the sole owner of its 1px boundary; the embedded native `Input`
 
 URL focus retention is intentional: startup/Play prepare the next link, native mouse buttons preserve typing focus, and disabled-control recovery returns here. Snapshot updates do not automatically blur the field. Capture focused and unfocused states explicitly.
 
-Below the input, group Play now, Add to queue and the ghost More disclosure together with 8px gaps. More uses the native `Popover`, a trailing native chevron, a left-aligned Import playlist action and concise aligned helper text. Selecting import uses the current link, closes More and focuses the input; it never starts or interrupts playback.
+Play now lives inside the frame; Add to queue and Import playlist sit beneath it as quiet native buttons (see Main player composition). Import uses the current link, focuses the input afterwards and never starts or interrupts playback. The earlier More popover was removed because it concealed a single action.
 
-Import feedback is an independent native Status region with a full accessible message and tooltip. During an import, Cancel import remains visibly available beside that status without reopening More. Preserve cancellation, pending-command protection, capacity rules and focus recovery when import finishes. No fabricated progress percentages or automatic paste action are introduced.
+Import feedback shares the composer's fixed status line (a native Status region with a full accessible message and tooltip). During an import the Import playlist control becomes Cancel import in place. Preserve cancellation, pending-command protection, capacity rules and focus recovery when import finishes. No fabricated progress percentages or automatic paste action are introduced.
 
 ### Queue options and navigation
 
@@ -287,13 +311,13 @@ Queue options is a native `Popover` with left-aligned Repeat, Remember queue, Co
 
 Clear queue removes pending entries and cancels an active import while preserving the current track. It is disabled until the controller is ready and whenever both queue and import are absent. Keep its access from either tab. History retains its own saved count, notices and clear confirmation.
 
-Native popover triggers retain keyboard activation. Scoped `PlayerMenuControl` Enter/Space activation keeps menu controls from losing activation to the popover binding. Escape closes a popover and returns focus to its trigger. Selecting import closes More and focuses the input. Section changes close Queue options; opening Settings or losing gateway availability closes both menus. Gateway loss also recovers input focus. Ctrl+1/Ctrl+2 switches Up next/History; do not claim arrow-key tab navigation was added to kit tabs.
+Native popover triggers retain keyboard activation. Scoped `PlayerMenuControl` Enter/Space activation keeps menu controls from losing activation to the popover binding. Escape closes a popover and returns focus to its trigger. Section changes close Queue options; opening Settings or losing gateway availability closes both menus. Gateway loss also recovers input focus. Ctrl+1/Ctrl+2 switches Up next/History; do not claim arrow-key tab navigation was added to kit tabs.
 
 ### Lists and empty states
 
-Rows retain one-line titles, full-title or explanatory URL tooltips, mono positions/durations and always-visible actions. Loading title… and Title unavailable remain factual and playable according to controller gates. Hover uses the native list-hover color. Queue/history scrolling, keyboard row navigation and accessible labels remain unchanged.
+Rows retain one-line titles, full-title or explanatory URL tooltips, mono positions/durations and always-visible actions (queue behavior is specified in Main player composition). Loading title… and Title unavailable remain factual and playable according to controller gates. Hover uses the native list-hover color. Queue/history scrolling, keyboard row navigation and accessible labels remain unchanged.
 
-Empty guidance is truthful and left-aligned near the list top, with existing row inset and top padding. Avoid decorative icons or a centered hero. Persistent History notices remain metadata-sized and clamp to two lines.
+Empty guidance is one short truthful line, left-aligned near the list top, never a restatement of the composer. Avoid decorative icons or a centered hero. Persistent History notices remain metadata-sized and clamp to two lines.
 
 ### Discord setup and settings
 
@@ -309,13 +333,16 @@ No new application animation, polling or frame-request loop belongs to this comp
 
 - **Do** preserve Signal Ledger colors, native controls and installed platform font resolution.
 - **Do** lead with the title and factual playback state, then transport and bounded volume.
-- **Do** retain one filled primary, visible small header actions and disclosed secondary actions.
+- **Do** retain one filled primary, visible small header actions and quiet visible secondary actions.
 - **Do** preserve the root inset, fixed controls, flexible lists and 36px row rhythm.
 - **Do** keep explicit state text, visible focus, accessible labels and full-text tooltips.
 - **Do** verify both native sizes, popovers, long text, loading, errors and disabled states against the final source.
 
 ### Don't:
 
+- **Don't** repeat the link instruction in a headline, subline, label and empty list; the composer's placeholder and glyph hints carry it.
+- **Don't** bring back a full-width brass bar, a one-item More menu, or a composer that moves relative to its state's listening block.
+- **Don't** clear the link field, light a row or claim a queue insertion before a controller snapshot confirms it.
 - **Don't** restore the outlined stamp, a separate volume row, inline preference controls or redundant pending count.
 - **Don't** introduce artwork, waveforms, invented playback positions, optimistic phase changes or loading percentages.
 - **Don't** add a retro hardware skin, music-note ornament, streaming-service navigation or SaaS dashboard vocabulary.

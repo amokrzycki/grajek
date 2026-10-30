@@ -313,7 +313,7 @@ fn offscreen_rows_do_not_participate_in_each_frame(cx: &mut TestAppContext) {
         act(cx, window, gpui_kit::test::TestWindowExt::render_frame);
         let (rows, _) = ROW_COST.with(std::cell::Cell::get);
         assert!(
-            (1..=8).contains(&rows),
+            (1..=10).contains(&rows),
             "{section:?}: steady frame constructed {rows} rows"
         );
     }

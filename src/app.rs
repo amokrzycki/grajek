@@ -1,3 +1,4 @@
+pub(super) mod composer;
 mod controls;
 mod help;
 mod history;
@@ -11,15 +12,15 @@ use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
-    popover::Popover,
     slider::{SliderEvent, SliderState},
     tab::{Tab, TabBar},
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AppContext, Context, ElementId, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
-    Subscription, Task, TestSupportExt, Window, div, px, relative,
+    AnyElement, AppContext, Context, ElementId, Entity, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
+    StatefulInteractiveElement, Styled, Subscription, Task, TestSupportExt, Window, div, px,
+    relative,
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -59,11 +60,15 @@ pub struct PlayerApp {
     settings_focus: FocusHandle,
     settings_scroll: gpui_kit::ScrollHandle,
     confirm_setup_focus: FocusHandle,
-    url_actions_open: bool,
     queue_options_open: bool,
     setup_starting: bool,
     setup_help: bool,
     input: Entity<InputState>,
+    /// An Add to queue the controller has not answered yet.
+    enqueue_pending: Option<composer::PendingEnqueue>,
+    /// The entry the controller last inserted for this window's Add to queue.
+    added: Option<u64>,
+    local_hint: Option<&'static str>,
     volume: Entity<SliderState>,
     volume_focus: FocusHandle,
     progress: Entity<SliderState>,
@@ -153,8 +158,8 @@ impl PlayerApp {
         });
         let subscriptions = vec![
             cx.observe_window_activation(window, |this, _, cx| this.help.dismiss(cx)),
-            cx.subscribe_in(&input, window, |this, _, event, window, cx| {
-                if let InputEvent::PressEnter { secondary, .. } = event {
+            cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
+                InputEvent::PressEnter { secondary, .. } => {
                     // Enter plays; Ctrl+Enter queues.
                     if *secondary {
                         this.enqueue(cx);
@@ -162,6 +167,16 @@ impl PlayerApp {
                         this.play(window, cx);
                     }
                 }
+                InputEvent::Change => {
+                    // Typing starts a new entry; programmatic clearing keeps the confirmation.
+                    if !this.input_text(cx).is_empty() {
+                        this.added = None;
+                        this.local_hint = None;
+                        this.enqueue_pending = None;
+                    }
+                    cx.notify();
+                }
+                _ => {}
             }),
             cx.subscribe_in(&volume, window, |this, _, event, _, cx| match event {
                 SliderEvent::Change(value) => {
@@ -205,11 +220,13 @@ impl PlayerApp {
             settings_focus: cx.focus_handle(),
             settings_scroll: gpui_kit::ScrollHandle::default(),
             confirm_setup_focus: cx.focus_handle(),
-            url_actions_open: false,
             queue_options_open: false,
             setup_starting: true,
             setup_help: false,
             input,
+            enqueue_pending: None,
+            added: None,
+            local_hint: None,
             volume,
             volume_focus: cx.focus_handle(),
             progress,
@@ -271,9 +288,30 @@ impl PlayerApp {
         }
         if lost_gateway {
             self.queue_options_open = false;
-            self.url_actions_open = false;
         }
+        let resolution = self.resolve_enqueue(&state);
+        let focused_row = self
+            .queue_scroll
+            .rows
+            .iter()
+            .position(|(_, focus)| focus.contains_focused(window, cx))
+            .and_then(|index| {
+                let id = self.state.queue.get(index)?.id;
+                let action = self
+                    .queue_scroll
+                    .actions
+                    .get(&ElementId::from(("queue-row", id)))
+                    .and_then(|trackers| {
+                        trackers
+                            .iter()
+                            .position(|tracker| tracker.contains_focused(window, cx))
+                    });
+                Some((index, id, action))
+            });
         self.state = state;
+        if let Some(resolution) = &resolution {
+            self.finish_enqueue(resolution, window, cx);
+        }
         if authenticated {
             self.credentials_open = false;
         }
@@ -288,8 +326,38 @@ impl PlayerApp {
             self.pending = None;
         }
         self.sync_lists(cx);
+        let lost_row =
+            focused_row.filter(|(_, id, _)| self.state.queue.iter().all(|item| item.id != *id));
+        // A move can leave the focused arrow disabled (first slot: Move up; last: Move down).
+        // A disabled control cannot hold focus, so hand it to the opposite arrow.
+        let stranded = focused_row.and_then(|(_, id, action)| {
+            let index = self.state.queue.iter().position(|item| item.id == id)?;
+            let action = action.filter(|action| *action < 2)?;
+            (!self.row_actions(Section::Queue, index)[action]).then_some((index, 1 - action))
+        });
         // Gateway loss also disables preferences outside the transport group.
-        if lost_gateway || lost_voice_control || import_finished || lost_progress {
+        if let Some((index, action)) = stranded
+            && self.section == Section::Queue
+        {
+            self.focus_row_action(Section::Queue, index, action, window, cx);
+        } else if let Some((index, _, _)) = lost_row
+            && self.section == Section::Queue
+            && !self.state.queue.is_empty()
+        {
+            // The focused entry left the queue: keep keyboard focus in the list, on the same slot.
+            self.focus_row_action(
+                Section::Queue,
+                index.min(self.state.queue.len() - 1),
+                2,
+                window,
+                cx,
+            );
+        } else if lost_gateway
+            || lost_voice_control
+            || import_finished
+            || lost_progress
+            || lost_row.is_some()
+        {
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
         } else {
             self.rescue_focus(before, window, cx);
@@ -465,7 +533,6 @@ impl PlayerApp {
                                 this.setup_starting = false;
                                 this.settings_open = !this.settings_open;
                                 this.queue_options_open = false;
-                                this.url_actions_open = false;
                                 if this.settings_open {
                                     this.focus_settings(window, cx);
                                 } else {
@@ -475,57 +542,6 @@ impl PlayerApp {
                             })),
                     ),
             )
-    }
-
-    fn url_row(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
-        let importing = self.state.import == crate::player::ImportStatus::Importing;
-        div().id("link-entry").test_support().flex().flex_none().flex_col().gap(if window.viewport_size().height <= px(480.) { space::TIGHT } else { space::GROUP })
-            .child(div().flex().flex_col().gap(space::TIGHT)
-                .child(div().flex().items_center().justify_between().gap_2()
-                    .child(div().text_xs().line_height(px(16.)).text_color(cx.theme().muted_foreground).child("YouTube link"))
-                    .when(self.idle() && self.state.available, |row| row.child(div().w(px(120.)).flex_none().child(self.volume_row(window, cx)))))
-                .child({
-                let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
-                let theme = cx.theme();
-                // One frame owns the boundary; kit Input exposes no hover styling API.
-                div().id("url").w_full().h(px(32.)).rounded(theme.radius)
-                    .border_1().border_color(if focused { theme.ring } else { theme.input })
-                    .hover(move |frame| frame.border_color(if focused { theme.ring } else { theme.muted_foreground }))
-                    .child(Input::new(&self.input).id("url-editor")
-                        .aria_label("Paste YouTube link").bordered(false)
-                        .w_full().h_full().bg(theme.muted))
-                    .test_support()
-            }))
-            .child(div().flex().items_center().gap_2()
-                .child(Button::new("play")
-                    .when(self.state.available && !matches!(self.state.phase, Phase::Playing | Phase::Paused) && (!self.idle() || self.state.queue.is_empty()), ButtonVariants::primary)
-                    .label("Play now")
-                    .help("Play one video · Enter. Playlist links can be imported from More.", &self.help)
-                    .disabled(!self.play_enabled())
-                    .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))))
-                .child(Button::new("enqueue").label("Add to queue")
-                    .disabled(!self.state.can_enqueue())
-                    .help(if self.state.queue.len() >= crate::queue::QUEUE_LIMIT { "Queue full · remove a track to add another" } else { "Add a single video · Ctrl+Enter" }, &self.help)
-                    .on_click(cx.listener(|this, _, _, cx| this.enqueue(cx))))
-                .child(Popover::new("url-actions-popover")
-                    .open(self.url_actions_open)
-                    .on_open_change(cx.listener(|this, open, _, cx| { this.url_actions_open = *open; this.help.dismiss(cx); cx.notify(); }))
-                    .anchor(gpui_kit::Anchor::TopRight)
-                    .trigger(Button::new("url-more").label("More").dropdown_caret(true)
-                        .ghost().accessibility_label("More link actions")
-                        )
-                    .child(div().flex().flex_col().w(px(240.)).gap_2()
-                        .when(!importing, |menu| menu.child(self.import_button(cx)))
-                        .child(div().px_2().text_xs().text_color(cx.theme().muted_foreground)
-                            .child("Uses the link above. Adds up to 100 tracks without interrupting playback.")))))
-            .children((self.state.import != crate::player::ImportStatus::Ready).then(|| {
-                div().flex().items_center().gap_2()
-                    .child(div().id("import-status").role(gpui_kit::Role::Status)
-                        .aria_label(self.state.import.message()).flex().flex_1().min_w_0().text_xs()
-                        .text_color(if matches!(self.state.import, crate::player::ImportStatus::Failed(_)) { cx.theme().danger } else { cx.theme().muted_foreground })
-                        .child(label("import-message", self.state.import.message(), &self.help)).test_support())
-                    .when(importing, |row| row.child(self.import_button(cx)))
-            }))
     }
 
     /// Title and status are single lines that truncate with an ellipsis, so a long
@@ -694,87 +710,91 @@ impl PlayerApp {
             .test_support()
     }
 
-    fn idle_player(&self, _window: &Window, cx: &Context<Self>) -> impl IntoElement {
-        let (title, guidance) = if !self.state.available {
-            if self.state.setup.bot.is_none() {
+    /// Idle composition. Setup tasks keep a headline and one action. Once the bot can play, the
+    /// listening slot holds only what is useful: Play Queue beside volume when entries are
+    /// pending, or the volume alone, right-aligned in the same slot, when the queue is empty
+    /// (volume can be set before anything plays). No headline, no disabled transport.
+    fn idle_player(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let error = self.error(cx);
+        let panel = div().id("idle-player").flex().flex_none().flex_col();
+        if self.state.available {
+            panel
+                .gap(space::GROUP)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(space::DETAIL)
+                        .child(if self.state.queue.is_empty() {
+                            div().into_any_element()
+                        } else {
+                            self.play_queue_button(cx).into_any_element()
+                        })
+                        .child(
+                            div()
+                                .w(px(120.))
+                                .flex_none()
+                                .child(self.volume_row(window, cx)),
+                        ),
+                )
+                .children(error)
+                .test_support()
+                .into_any_element()
+        } else {
+            let (title, guidance, action) = if self.state.setup.bot.is_none() {
                 (
                     "Connect your Discord bot",
                     "Set up a bot to play YouTube in your Discord voice channel.",
+                    "Connect a bot",
                 )
             } else {
                 (
                     "Choose where to play",
                     "Select a server and voice channel in Discord settings.",
+                    "Choose destination",
                 )
-            }
-        } else if self.state.phase == Phase::Error {
-            (
-                "Playback stopped",
-                "Try another link, or start the next track in your queue.",
-            )
-        } else if !self.state.queue.is_empty() {
-            (
-                "Your queue is ready",
-                "Start the queue, or paste a link to play something else.",
-            )
-        } else {
-            (
-                "Start with a link",
-                "Paste a YouTube link below, then choose Play now.",
-            )
-        };
-        div()
-            .id("idle-player")
-            .flex()
-            .flex_none()
-            .flex_col()
-            .gap(space::DETAIL)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(space::TIGHT)
-                    .child(
-                        div()
-                            .text_size(px(24.))
-                            .line_height(px(30.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(label("title", title.into(), &self.help)),
-                    )
-                    .when(self.state.phase != Phase::Error, |group| {
-                        group.child(
+            };
+            panel
+                .gap(space::DETAIL)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(space::TIGHT)
+                        .child(
+                            div()
+                                .text_size(px(24.))
+                                .line_height(px(30.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(label("title", title.into(), &self.help)),
+                        )
+                        .child(
                             div()
                                 .text_sm()
                                 .line_height(px(20.))
                                 .text_color(cx.theme().muted_foreground)
                                 .child(guidance),
-                        )
-                    }),
-            )
-            .when(!self.state.available, |panel| {
-                panel.child(
-                    Button::new("setup-next-step")
-                        .primary()
-                        .label(if self.state.setup.bot.is_none() {
-                            "Connect a bot"
-                        } else {
-                            "Choose destination"
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.setup_starting = false;
-                            this.settings_open = true;
-                            this.help.dismiss(cx);
-                            this.focus_settings(window, cx);
-                            cx.notify();
-                        })),
+                        ),
                 )
-            })
-            .when(
-                self.state.available && !self.state.queue.is_empty(),
-                |panel| panel.child(self.play_queue_button(cx)),
-            )
-            .children(self.error(cx))
-            .test_support()
+                .child(
+                    div().flex().child(
+                        Button::new("setup-next-step")
+                            .primary()
+                            .label(action)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.setup_starting = false;
+                                this.settings_open = true;
+                                this.help.dismiss(cx);
+                                this.focus_settings(window, cx);
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .children(error)
+                .test_support()
+                .into_any_element()
+        }
     }
 
     fn empty(id: &'static str, text: &'static str, cx: &Context<Self>) -> impl IntoElement {
@@ -846,10 +866,8 @@ impl PlayerApp {
 
 impl Render for PlayerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.help.enable(
-            !self.settings_open && !self.queue_options_open && !self.url_actions_open,
-            cx,
-        );
+        self.help
+            .enable(!self.settings_open && !self.queue_options_open, cx);
         let help = self.help.clone();
         let theme = cx.theme();
         if self.settings_open {
@@ -882,6 +900,19 @@ impl Render for PlayerApp {
                 .child(self.help.overlay.clone())
                 .into_any_element();
         }
+        // Related controls sit 4–8px apart; the three jobs (listening, adding music, up next)
+        // are separated by larger, unequal gaps so they read as regions without borders.
+        let compact = window.viewport_size().height <= px(480.);
+        let (after_header, before_composer, before_queue) = if compact {
+            (px(8.), px(12.), px(8.))
+        } else {
+            (px(12.), px(20.), px(16.))
+        };
+        let listening = if self.idle() {
+            self.idle_player(window, cx)
+        } else {
+            self.active_player(window, cx).into_any_element()
+        };
         div()
             .size_full()
             .bg(theme.background)
@@ -891,17 +922,6 @@ impl Render for PlayerApp {
             .text_sm()
             .flex()
             .flex_col()
-            .gap(if window.viewport_size().height <= px(480.) {
-                if self.state.error.is_some()
-                    && self.state.import != crate::player::ImportStatus::Ready
-                {
-                    space::TIGHT
-                } else {
-                    space::GROUP
-                }
-            } else {
-                space::SECTION
-            })
             .overflow_hidden()
             .capture_any_mouse_down(move |_, _, cx| help.dismiss(cx))
             .capture_key_down({
@@ -923,13 +943,17 @@ impl Render for PlayerApp {
                 }
             }))
             .child(self.header(cx))
-            .child(if self.idle() {
-                self.idle_player(window, cx).into_any_element()
-            } else {
-                self.active_player(window, cx).into_any_element()
-            })
-            .child(self.url_row(window, cx))
-            .child(self.sections(cx))
+            .child(div().mt(after_header).child(listening))
+            .child(div().mt(before_composer).child(self.composer(window, cx)))
+            .child(
+                div()
+                    .mt(before_queue)
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(self.sections(cx)),
+            )
             .child(self.help.overlay.clone())
             .into_any_element()
     }

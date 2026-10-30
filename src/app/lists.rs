@@ -20,6 +20,8 @@ pub(super) fn init(cx: &mut gpui_kit::App) {
 pub(super) struct ListNavigation {
     pub state: ListState,
     pub rows: Vec<(ElementId, FocusHandle)>,
+    /// One tracker per row action, so the window can tell which action holds focus.
+    pub actions: HashMap<ElementId, [FocusHandle; 3]>,
 }
 
 impl ListNavigation {
@@ -28,6 +30,7 @@ impl ListNavigation {
             // shortcut: GPUI drops height hints on width changes; measure once per width until it retains them.
             state: ListState::new(0, ListAlignment::Top, px(0.)).measure_all(),
             rows: Vec::new(),
+            actions: HashMap::new(),
         }
     }
 
@@ -39,6 +42,12 @@ impl ListNavigation {
         }
         let offset = self.state.logical_scroll_top();
         let old_len = self.rows.len();
+        self.actions.retain(|id, _| ids.contains(id));
+        for id in &ids {
+            self.actions
+                .entry(id.clone())
+                .or_insert_with(|| std::array::from_fn(|_| cx.focus_handle()));
+        }
         let mut old: HashMap<_, _> = self.rows.drain(..).collect();
         self.rows = ids
             .into_iter()
@@ -85,13 +94,14 @@ impl PlayerApp {
             .flex()
             .overflow_hidden()
             .child(
-                list(scroll.clone(), move |position, _, cx| {
+                list(scroll.clone(), move |position, window, cx| {
                     view.update(cx, |app, cx| match section {
                         Section::Queue => app
                             .queue_row(
                                 position,
                                 position + 1 == app.state.queue.len(),
                                 &app.state.queue[position],
+                                window,
                                 cx,
                             )
                             .into_any_element(),
@@ -110,7 +120,7 @@ impl PlayerApp {
             .test_support()
     }
 
-    fn row_actions(&self, section: Section, row: usize) -> [bool; 3] {
+    pub(super) fn row_actions(&self, section: Section, row: usize) -> [bool; 3] {
         match section {
             Section::Queue => [
                 self.state.controller_ready && row > 0,
@@ -123,6 +133,36 @@ impl PlayerApp {
                 self.state.controller_ready,
             ],
         }
+    }
+
+    /// Focuses one action of a row, revealing the row first (it may be outside the viewport).
+    pub(super) fn focus_row_action(
+        &self,
+        section: Section,
+        row: usize,
+        action: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let navigation = match section {
+            Section::Queue => &self.queue_scroll,
+            Section::History => &self.history_scroll,
+        };
+        navigation.state.scroll_to_reveal_item(row);
+        cx.notify();
+        let focus = navigation.rows[row].1.clone();
+        let steps = self.row_actions(section, row)[..=action]
+            .iter()
+            .filter(|enabled| **enabled)
+            .count();
+        window.focus(&focus, cx);
+        cx.on_next_frame(window, move |_, window, cx| {
+            if focus.is_focused(window) {
+                for _ in 0..steps {
+                    window.focus_next(cx);
+                }
+            }
+        });
     }
 
     /// Native buttons handle activation and within-row Tab; cross-row Tab must also
@@ -178,19 +218,7 @@ impl PlayerApp {
                 }
                 return;
             }
-            let focus = navigation.rows[next_row].1.clone();
-            let steps = self.row_actions(section, next_row)[..=next % 3]
-                .iter()
-                .filter(|enabled| **enabled)
-                .count();
-            window.focus(&focus, cx);
-            cx.on_next_frame(window, move |_, window, cx| {
-                if focus.is_focused(window) {
-                    for _ in 0..steps {
-                        window.focus_next(cx);
-                    }
-                }
-            });
+            self.focus_row_action(section, next_row, next % 3, window, cx);
             return;
         }
     }

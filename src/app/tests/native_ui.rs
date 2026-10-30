@@ -151,7 +151,7 @@ fn native_player_redesign_evidence() {
         })).expect("native window");
         let executor = cx.background_executor().clone();
         cx.spawn(async move |cx| {
-            let mut cases = vec!["idle", "playing", "playing-empty", "focused", "unfocused", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "more", "setup", "settings", "destination", "credentials", "help", "options-hover", "server-selector", "channel-selector", "selector-keyboard", "permission", "setup-help", "auth-error", "idle-queued", "settings-long", "onboarding-player", "destination-player", "settings-scroll", "confirmation", "help-bottom"];
+            let mut cases = vec!["idle", "playing", "playing-empty", "focused", "unfocused", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "setup", "settings", "destination", "credentials", "help", "options-hover", "server-selector", "channel-selector", "selector-keyboard", "permission", "setup-help", "auth-error", "idle-queued", "long-title", "link-video", "link-playlist", "added", "reordered", "removed", "removed-keyboard", "settings-long", "onboarding-player", "destination-player", "settings-scroll", "confirmation", "help-bottom"];
             if std::env::var_os("GRAJEK_CAPTURE_INTERACTIONS").is_some() {
                 cases.extend(["hover-input", "hover-button", "pressed-button", "keyboard-button", "keyboard-row"]);
             }
@@ -244,15 +244,20 @@ fn native_player_redesign_evidence() {
                         snapshot.track = None;
                     }
                     if name == "playing-empty" { snapshot.queue.clear(); }
+                    if name == "long-title" { snapshot.track = playing(Phase::Playing, Some("Nils Frahm & Ólafur Arnalds — Collaborative Improvisation Sessions, Full Concert Recording (Live at the Funkhaus Berlin, 2019 — Remastered)"), 84).track; }
                     if name == "full" { snapshot.queue = with_lists(Phase::Playing, 100, 0).queue; }
                     if name == "options" { snapshot.preferences.repeat = RepeatMode::Queue; }
                     let expected_phase = snapshot.phase;
-                    let expected_count = snapshot.queue.len();
+                    let mut expected_count = snapshot.queue.len();
+                    let after_commands = snapshot.clone();
                     cx.update_window(window, |_, window, cx| view.update(cx, |app, cx| {
-                        app.url_actions_open = name == "more";
                         app.settings_open = !matches!(name, "onboarding-player" | "destination-player") && matches!(name, "setup" | "setup-help" | "auth-error" | "onboarding-player" | "settings" | "destination" | "credentials" | "server-selector" | "channel-selector" | "selector-keyboard" | "permission" | "settings-long" | "destination-player" | "settings-scroll" | "confirmation");
                         app.credentials_open = matches!(name, "credentials" | "settings-scroll");
                         app.preferences_open = matches!(name, "settings-long" | "settings-scroll");
+                        app.input.update(cx, |input, cx| input.set_value("", window, cx));
+                        app.added = None;
+                        app.enqueue_pending = None;
+                        app.local_hint = None;
                         app.settings_scroll.set_offset(gpui_kit::point(px(0.), px(0.)));
                         app.setup_help = matches!(name, "setup-help" | "settings-long" | "settings-scroll");
                         app.help.dismiss(cx);
@@ -269,6 +274,55 @@ fn native_player_redesign_evidence() {
                     })).expect("configure fixture surface");
                     snapshots.send_replace(snapshot);
                     executor.timer(Duration::from_millis(500)).await;
+                    if matches!(name, "link-video" | "link-playlist" | "added") {
+                        let link = if name == "link-playlist" { "https://www.youtube.com/watch?v=aqz-KE-bpKQ&list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG" } else { "https://youtu.be/aqz-KE-bpKQ" };
+                        cx.update_window(window, |_, window, cx| {
+                            view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx));
+                            window.input(link, cx);
+                            if name == "added" { window.press("ctrl-enter", cx); }
+                        }).expect("type a link");
+                        if name == "added" {
+                            executor.timer(Duration::from_millis(150)).await;
+                            assert!(matches!(receiver.try_recv(), Ok(Command::Enqueue(url)) if url == link), "added: Enqueue intent sent");
+                            let mut acknowledged = after_commands.clone();
+                            let id = acknowledged.queue.iter().map(|item| item.id).max().unwrap_or(0) + 1;
+                            acknowledged.queue.push(crate::queue::QueueItem { id, url: link.into(), title: Some("Aqua Mundi — Live from the Funkhaus (acknowledged by the controller)".into()), title_unavailable: false });
+                            expected_count = acknowledged.queue.len();
+                            snapshots.send_replace(acknowledged);
+                            executor.timer(Duration::from_millis(300)).await;
+                        }
+                    }
+                    if matches!(name, "reordered" | "removed" | "removed-keyboard") {
+                        let ids: Vec<u64> = after_commands.queue.iter().map(|item| item.id).collect();
+                        let mut acknowledged = after_commands.clone();
+                        if name == "reordered" {
+                            cx.update_window(window, |_, window, cx| window.click(("queue-down", ids[0]), cx)).expect("move first row down");
+                            executor.timer(Duration::from_millis(150)).await;
+                            assert!(matches!(receiver.try_recv(), Ok(Command::Shift { id, up: false }) if id == ids[0]), "reordered: Shift intent sent");
+                            acknowledged.queue.swap(0, 1);
+                        } else {
+                            if name == "removed-keyboard" {
+                                // Keyboard removal: focus the second row's Remove by Tab, then press Delete.
+                                cx.update_window(window, |_, window, cx| {
+                                    view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx));
+                                    for _ in 0..40 {
+                                        if window.find(("queue-remove", ids[1])).focused() == Some(true) { break; }
+                                        window.press("tab", cx);
+                                    }
+                                    assert_eq!(window.find(("queue-remove", ids[1])).focused(), Some(true), "keyboard focus reached Remove");
+                                    window.press("delete", cx);
+                                }).expect("remove second row from the keyboard");
+                            } else {
+                                cx.update_window(window, |_, window, cx| window.click(("queue-remove", ids[1]), cx)).expect("remove second row");
+                            }
+                            executor.timer(Duration::from_millis(150)).await;
+                            assert!(matches!(receiver.try_recv(), Ok(Command::Dequeue(id)) if id == ids[1]), "removed: Dequeue intent sent");
+                            acknowledged.queue.remove(1);
+                            expected_count = acknowledged.queue.len();
+                        }
+                        snapshots.send_replace(acknowledged);
+                        executor.timer(Duration::from_millis(300)).await;
+                    }
                     if matches!(name, "options" | "options-hover") {
                         cx.update_window(window, |_, window, cx| window.click("queue-options", cx)).expect("open native options");
                         executor.timer(Duration::from_millis(500)).await;
