@@ -72,6 +72,22 @@ impl PlayerApp {
                     }
                 }),
             ))
+            .child(self.queue_actions(position, last, id, cx))
+            .test_support()
+    }
+
+    fn queue_actions(
+        &self,
+        position: usize,
+        last: bool,
+        id: u64,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
             .child(
                 Button::new(("queue-up", id))
                     .key_context("PlayerList")
@@ -84,6 +100,11 @@ impl PlayerApp {
                     .icon(IconName::ArrowUp)
                     .ghost()
                     .small()
+                    .text_color(if !self.state.controller_ready || position == 0 {
+                        theme.muted_foreground.opacity(0.35)
+                    } else {
+                        theme.muted_foreground
+                    })
                     .accessibility_label("Move up")
                     .tooltip("Move up")
                     .disabled(!self.state.controller_ready || position == 0)
@@ -103,6 +124,11 @@ impl PlayerApp {
                     .icon(IconName::ArrowDown)
                     .ghost()
                     .small()
+                    .text_color(if !self.state.controller_ready || last {
+                        theme.muted_foreground.opacity(0.35)
+                    } else {
+                        theme.muted_foreground
+                    })
                     .accessibility_label("Move down")
                     .tooltip("Move down")
                     .disabled(!self.state.controller_ready || last)
@@ -122,6 +148,11 @@ impl PlayerApp {
                     .icon(IconName::Close)
                     .ghost()
                     .small()
+                    .text_color(if self.state.controller_ready {
+                        theme.muted_foreground
+                    } else {
+                        theme.muted_foreground.opacity(0.35)
+                    })
                     .accessibility_label("Remove from queue")
                     .tooltip("Remove from queue")
                     .disabled(!self.state.controller_ready)
@@ -129,7 +160,6 @@ impl PlayerApp {
                         this.send(Command::Dequeue(id));
                     })),
             )
-            .test_support()
     }
 
     pub(super) fn queue_list(&self, cx: &Context<Self>) -> impl IntoElement {

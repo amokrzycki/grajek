@@ -19,12 +19,13 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AppContext, Context, ElementId, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
     IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Task, TestSupportExt, Window, div, px,
+    Styled, Subscription, Task, TestSupportExt, Window, div, px, relative,
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 use crate::player::{Command, Phase, State, VolumeRequest};
+use crate::style::space;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Section {
@@ -313,6 +314,11 @@ impl PlayerApp {
     fn header(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let status = connection(&self.state);
+        let (settings_icon, settings_label) = if self.settings_open {
+            (AudioIcon::ArrowLeft, "Back to player")
+        } else {
+            (AudioIcon::Settings, "Discord settings")
+        };
         let color = if self.state.available {
             theme.green
         } else if self.state.phase == Phase::Initializing {
@@ -339,6 +345,7 @@ impl PlayerApp {
                     .flex_1()
                     .min_w_0()
                     .text_xs()
+                    .line_height(px(16.))
                     .child(
                         div()
                             .flex()
@@ -383,13 +390,10 @@ impl PlayerApp {
                     .child(self.leave_button(cx))
                     .child(
                         Button::new("settings")
-                            .label(if self.settings_open {
-                                "Back"
-                            } else {
-                                "Settings"
-                            })
+                            .icon(settings_icon)
+                            .accessibility_label(settings_label)
+                            .tooltip(settings_label)
                             .ghost()
-                            .small()
                             .flex_none()
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.settings_open = !this.settings_open;
@@ -406,34 +410,42 @@ impl PlayerApp {
             )
     }
 
-    fn url_row(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn url_row(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let importing = self.state.import == crate::player::ImportStatus::Importing;
-        div().flex().flex_none().flex_col().gap_1()
-            .child(Input::new(&self.input)
-                .id("url").aria_label("Paste YouTube link")
-                .w_full().h(px(32.)).bg(cx.theme().muted))
+        div().flex().flex_none().flex_col().gap(space::GROUP)
+            .child({
+                let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
+                let theme = cx.theme();
+                // One frame owns the boundary; kit Input exposes no hover styling API.
+                div().id("url").w_full().h(px(32.)).rounded(theme.radius)
+                    .border_1().border_color(if focused { theme.ring } else { theme.input })
+                    .hover(move |frame| frame.border_color(if focused { theme.ring } else { theme.muted_foreground }))
+                    .child(Input::new(&self.input).id("url-editor")
+                        .aria_label("Paste YouTube link").bordered(false)
+                        .w_full().h_full().bg(theme.muted))
+                    .test_support()
+            })
             .child(div().flex().items_center().gap_2()
                 .child(Button::new("play")
                     .when(!matches!(self.state.phase, Phase::Playing | Phase::Paused), ButtonVariants::primary)
-                    .label("Play now").small().h(px(28.))
+                    .label("Play now")
                     .tooltip("Play a single video · Enter. A watch link with a playlist still plays only its video.")
                     .disabled(!self.play_enabled())
                     .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))))
-                .child(Button::new("enqueue").label("Add to queue").small().h(px(28.))
+                .child(Button::new("enqueue").label("Add to queue")
                     .disabled(!self.state.can_enqueue())
                     .tooltip(if self.state.queue.len() >= crate::queue::QUEUE_LIMIT { "Queue full · remove a track to add another" } else { "Add a single video · Ctrl+Enter" })
                     .on_click(cx.listener(|this, _, _, cx| this.enqueue(cx))))
-                .child(div().flex_1())
                 .child(Popover::new("url-actions-popover")
                     .open(self.url_actions_open)
                     .on_open_change(cx.listener(|this, open, _, cx| { this.url_actions_open = *open; cx.notify(); }))
                     .anchor(gpui_kit::Anchor::TopRight)
-                    .trigger(Button::new("url-more").label("More").icon(AudioIcon::ChevronDown)
-                        .ghost().small().accessibility_label("More link actions")
+                    .trigger(Button::new("url-more").label("More").dropdown_caret(true)
+                        .ghost().accessibility_label("More link actions")
                         .tooltip("Import a public YouTube playlist"))
                     .child(div().flex().flex_col().w(px(240.)).gap_2()
                         .when(!importing, |menu| menu.child(self.import_button(cx)))
-                        .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                        .child(div().px_2().text_xs().text_color(cx.theme().muted_foreground)
                             .child("Uses the link above. Adds up to 100 tracks without interrupting playback.")))))
             .children((self.state.import != crate::player::ImportStatus::Ready).then(|| {
                 div().flex().items_center().gap_2()
@@ -493,7 +505,7 @@ impl PlayerApp {
             | Phase::Stopping
             | Phase::Disconnecting => AudioIcon::Ellipsis,
         };
-        div().flex().flex_none().items_center().pt_1().child(
+        div().flex().flex_none().items_center().child(
             div()
                 .flex_1()
                 .min_w_0()
@@ -504,6 +516,7 @@ impl PlayerApp {
                     div()
                         .flex()
                         .text_size(px(24.))
+                        .line_height(relative(1.25))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(title_color)
                         .child(label("title", title)),
@@ -514,6 +527,7 @@ impl PlayerApp {
                         .items_center()
                         .gap_2()
                         .text_xs()
+                        .line_height(px(16.))
                         .child(Icon::new(symbol).size(px(12.)).text_color(phase_color))
                         .child(
                             div()
@@ -561,6 +575,7 @@ impl PlayerApp {
                 .rounded(theme.radius)
                 .bg(theme.button_danger)
                 .text_xs()
+                .line_height(px(16.))
                 .text_color(theme.danger)
                 .line_clamp(2)
                 .child(error)
@@ -575,8 +590,7 @@ impl PlayerApp {
             .flex_1()
             .flex()
             .items_start()
-            .px_2()
-            .pt_3()
+            .pt_2()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
             .child(text)
@@ -657,10 +671,15 @@ impl Render for PlayerApp {
             .bg(theme.background)
             .text_color(theme.foreground)
             .font_family(theme.font_family.clone())
-            .p_4()
+            .p(space::INSET)
+            .text_sm()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap(if window.viewport_size().height <= px(480.) {
+                space::GROUP
+            } else {
+                space::SECTION
+            })
             .overflow_hidden()
             // The kit's tabs cannot take focus, so Ctrl+1 / Ctrl+2 switch sections.
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -678,28 +697,26 @@ impl Render for PlayerApp {
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .pb_2()
-                    .border_b_1()
-                    .border_color(crate::style::separator())
+                    .gap(space::TIGHT)
                     .child(self.now_playing(cx))
-                    .child(self.progress_row(window, cx))
+                    .children(self.progress_row(window, cx))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_3()
-                            .child(div().flex_1().min_w_0().child(self.controls(cx)))
+                            .justify_between()
+                            .gap(space::DETAIL)
+                            .child(self.controls(cx))
                             .child(
                                 div()
-                                    .w(px(112.))
+                                    .w(px(120.))
                                     .flex_none()
                                     .child(self.volume_row(window, cx)),
                             ),
-                    ),
+                    )
+                    .children(self.error(cx)),
             )
-            .children(self.error(cx))
-            .child(self.url_row(cx))
+            .child(self.url_row(window, cx))
             .child(self.sections(cx))
             .into_any_element()
     }

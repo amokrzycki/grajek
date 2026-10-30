@@ -64,61 +64,67 @@ impl PlayerApp {
                     .child(clock(duration))
             }))
             .child(
-                Button::new(("history-play", index))
-                    .key_context("PlayerList")
-                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
-                        this.list_tab(Section::History, index, 0, false, window, cx);
-                    }))
-                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
-                        this.list_tab(Section::History, index, 0, true, window, cx);
-                    }))
-                    .icon(IconName::Play)
-                    .ghost()
-                    .small()
-                    .accessibility_label("Play now")
-                    .tooltip("Play now")
-                    .disabled(!self.play_enabled())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.play_url(play_url.clone(), window, cx);
-                    })),
-            )
-            .child(
-                Button::new(("history-queue", index))
-                    .key_context("PlayerList")
-                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
-                        this.list_tab(Section::History, index, 1, false, window, cx);
-                    }))
-                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
-                        this.list_tab(Section::History, index, 1, true, window, cx);
-                    }))
-                    .icon(IconName::Plus)
-                    .ghost()
-                    .small()
-                    .accessibility_label("Add to queue")
-                    .tooltip("Add to queue")
-                    .disabled(!self.state.can_enqueue())
-                    .on_click(cx.listener(move |this, _, _, _| {
-                        this.enqueue_url(queue_url.clone());
-                    })),
-            )
-            .child(
-                Button::new(("history-remove", index))
-                    .key_context("PlayerList")
-                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
-                        this.list_tab(Section::History, index, 2, false, window, cx);
-                    }))
-                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
-                        this.list_tab(Section::History, index, 2, true, window, cx);
-                    }))
-                    .icon(IconName::Close)
-                    .ghost()
-                    .small()
-                    .accessibility_label("Remove from history")
-                    .tooltip("Remove from history")
-                    .disabled(!self.state.controller_ready)
-                    .on_click(cx.listener(move |this, _, _, _| {
-                        this.send(Command::ForgetHistory(forget_url.clone()));
-                    })),
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .child(
+                        Button::new(("history-play", index))
+                            .key_context("PlayerList")
+                            .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                                this.list_tab(Section::History, index, 0, false, window, cx);
+                            }))
+                            .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                                this.list_tab(Section::History, index, 0, true, window, cx);
+                            }))
+                            .icon(IconName::Play)
+                            .ghost()
+                            .small()
+                            .accessibility_label("Play now")
+                            .tooltip("Play now")
+                            .disabled(!self.play_enabled())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.play_url(play_url.clone(), window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("history-queue", index))
+                            .key_context("PlayerList")
+                            .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                                this.list_tab(Section::History, index, 1, false, window, cx);
+                            }))
+                            .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                                this.list_tab(Section::History, index, 1, true, window, cx);
+                            }))
+                            .icon(IconName::Plus)
+                            .ghost()
+                            .small()
+                            .accessibility_label("Add to queue")
+                            .tooltip("Add to queue")
+                            .disabled(!self.state.can_enqueue())
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.enqueue_url(queue_url.clone());
+                            })),
+                    )
+                    .child(
+                        Button::new(("history-remove", index))
+                            .key_context("PlayerList")
+                            .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                                this.list_tab(Section::History, index, 2, false, window, cx);
+                            }))
+                            .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                                this.list_tab(Section::History, index, 2, true, window, cx);
+                            }))
+                            .icon(IconName::Close)
+                            .ghost()
+                            .small()
+                            .accessibility_label("Remove from history")
+                            .tooltip("Remove from history")
+                            .disabled(!self.state.controller_ready)
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.send(Command::ForgetHistory(forget_url.clone()));
+                            })),
+                    ),
             )
             .test_support()
     }
@@ -132,7 +138,6 @@ impl PlayerApp {
             .min_h_0()
             .flex()
             .flex_col()
-            .gap_1()
             .child(
                 div()
                     .flex()

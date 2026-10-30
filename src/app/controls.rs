@@ -12,6 +12,7 @@ use gpui_kit::{
 
 use super::{Pending, PlayerApp};
 use crate::player::{Command, ImportStatus, Phase, RepeatMode, VolumeRequest, percent_from};
+use crate::style::space;
 
 gpui_kit::actions!(player_menu, [Activate]);
 
@@ -54,7 +55,7 @@ impl PlayerApp {
             return;
         }
         if self.send_transport(Command::Play(url), Pending::Play) {
-            // ponytail: always focuses input for next URL entry, unlike rescue_focus pattern in next/leave_voice/stop
+            // Keep typing ready for the next link; native buttons also preserve input focus.
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
             cx.notify();
         }
@@ -214,7 +215,7 @@ impl PlayerApp {
         div()
             .flex()
             .flex_none()
-            .gap_1()
+            .gap(space::GROUP)
             .track_focus(&self.controls_focus)
             .tab_stop(false)
             .child(
@@ -226,13 +227,15 @@ impl PlayerApp {
                         SpeakerIcon::Pause
                     })
                     .label(if resume { "Resume" } else { "Pause" })
-                    .flex_1()
+                    .w(px(96.))
                     .disabled(!toggle_enabled)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx))),
             )
             .child(
                 Button::new("next")
-                    .icon(SpeakerIcon::SkipForward)
+                    .when(self.state.next_label() == "Next", |button| {
+                        button.icon(SpeakerIcon::SkipForward)
+                    })
                     .label(self.state.next_label())
                     .w(px(112.))
                     .tooltip(if self.state.queue.is_empty() {
@@ -248,8 +251,9 @@ impl PlayerApp {
             .child(
                 Button::new("stop")
                     .ghost()
-                    .label("Stop")
-                    .w(px(48.))
+                    .icon(SpeakerIcon::Square)
+                    .accessibility_label("Stop")
+                    .tooltip("Stop playback; keep the queue")
                     .disabled(!self.controls_enabled()[2])
                     .on_click(cx.listener(|this, _, window, cx| this.stop(window, cx))),
             )
@@ -260,10 +264,10 @@ impl PlayerApp {
             .key_context("PlayerMenuControl")
             .on_action(cx.listener(|this, _: &Activate, _, _| { if this.state.available { this.send(Command::Repeat(this.state.preferences.repeat.next())); } }))
             .label(self.state.preferences.repeat.label())
+            .child(div().flex_1())
             .accessibility_label(self.state.preferences.repeat.label())
             .ghost()
             .small()
-            .h(px(28.))
             .w_full()
             .disabled(!self.state.available)
             .tooltip("Change repeat: Off → Repeat Track → Repeat Queue. Successful natural completion repeats; Next and Stop bypass repeat.")
@@ -277,6 +281,7 @@ impl PlayerApp {
             .key_context("PlayerMenuControl")
             .on_action(cx.listener(|this, _: &Activate, _, _| { if this.state.available { this.send(Command::RememberQueue(!this.state.preferences.remember_queue)); } }))
             .label(if self.state.preferences.remember_queue { "Remember queue: On" } else { "Remember queue: Off" })
+            .child(div().flex_1())
             .ghost()
             .small().w_full()
             .disabled(!self.state.available)
@@ -294,7 +299,7 @@ impl PlayerApp {
             .anchor(gpui_kit::Anchor::TopRight)
             .trigger(Button::new("queue-options")
                 .label("Queue options")
-                .ghost().small().icon(SpeakerIcon::ChevronDown)
+                .ghost().small().dropdown_caret(true)
                 .when(repeat != RepeatMode::Off, |button| button.text_color(cx.theme().primary))
                 .tooltip(format!("{} · Remember queue · Continue on error · Clear queue", repeat.label()))
                 .accessibility_label(format!("Queue options. {}. Remember queue, continue on error, clear queue", repeat.label())))
@@ -305,6 +310,7 @@ impl PlayerApp {
                     .key_context("PlayerMenuControl")
                     .on_action(cx.listener(|this, _: &Activate, _, _| { if this.state.available { this.send(Command::ContinueOnError(!this.state.preferences.continue_on_error)); } }))
                     .label(if self.state.preferences.continue_on_error { "Continue on error: On" } else { "Continue on error: Off" })
+                    .child(div().flex_1())
                     .ghost().small().w_full().disabled(!self.state.available)
                     .tooltip("Skip queued media failures only; stop after 3 consecutive failures. Saved across restarts.")
                     .on_click(cx.listener(|this, _, _, _| {
@@ -313,11 +319,11 @@ impl PlayerApp {
                 .child(div().mt_2().pt_2().border_t_1().border_color(crate::style::separator())
                     .child(Button::new("queue-clear")
                         .key_context("PlayerMenuControl")
-                        .on_action(cx.listener(|this, _: &Activate, _, _| { if this.state.controller_ready && (!this.state.queue.is_empty() || this.state.import == ImportStatus::Importing) { this.send(Command::ClearQueue); } })).label("Clear queue").ghost().small().w_full()
+                        .on_action(cx.listener(|this, _: &Activate, _, _| { if this.state.controller_ready && (!this.state.queue.is_empty() || this.state.import == ImportStatus::Importing) { this.send(Command::ClearQueue); } })).label("Clear queue").child(div().flex_1()).ghost().small().w_full()
                         .disabled(!self.state.controller_ready || (self.state.queue.is_empty() && self.state.import != ImportStatus::Importing))
                         .tooltip("Remove pending tracks and cancel any playlist import. Keeps the current track.")
                         .on_click(cx.listener(|this, _, _, _| { this.send(Command::ClearQueue); }))))
-                .child(div().pt_2().text_xs().text_color(cx.theme().muted_foreground)
+                .child(div().pt_2().px_2().text_xs().text_color(cx.theme().muted_foreground)
                     .child("Preferences are saved across restarts.")))
     }
 
@@ -349,8 +355,9 @@ impl PlayerApp {
                 .key_context("PlayerMenuControl")
                 .on_action(cx.listener(|this, _: &Activate, window, cx| this.import_playlist(window, cx)))
                 .label(if running { "Cancel import" } else { "Import playlist" })
+                .when(!running, |button| button.child(div().flex_1()))
                 .accessibility_label(if running { "Cancel import" } else { "Import playlist" })
-                .ghost().small().h(px(28.))
+                .ghost().small()
                 .disabled(self.import_pending || (!running && !self.state.can_import()))
                 .tooltip(if running { "Cancel without adding any tracks" } else { "Ready to import a public YouTube playlist. Checks the first 100 entries; queue limit 100. Never starts playback." })
                 .on_click(cx.listener(|this, _, window, cx| this.import_playlist(window, cx))),
@@ -373,7 +380,7 @@ impl PlayerApp {
             .flex()
             .flex_none()
             .items_center()
-            .gap_2()
+            .gap(space::TIGHT)
             .child(
                 Icon::new(speaker)
                     .small()

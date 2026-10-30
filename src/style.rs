@@ -1,6 +1,17 @@
 //! Signal Ledger palette. Keep the kit's native components and synchronized theme.
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{App, px, rgb};
+use gpui_kit::{App, Pixels, px, rgb};
+
+/// Pixel rhythm shared by the player; kit rem utilities use the same 16px base.
+pub mod space {
+    use super::{Pixels, px};
+
+    pub const TIGHT: Pixels = px(4.);
+    pub const GROUP: Pixels = px(8.);
+    pub const DETAIL: Pixels = px(12.);
+    pub const SECTION: Pixels = px(16.);
+    pub const INSET: Pixels = px(16.);
+}
 
 pub fn init(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
@@ -16,10 +27,14 @@ pub fn init(cx: &mut App) {
         if let Some(family) = family {
             theme.font_family = family.into();
         }
-        theme.font_size = px(14.);
+        // GPUI uses this as its rem, including spacing and kit control geometry.
+        // Body text uses text_sm (14px), metadata text_xs (12px).
+        theme.font_size = px(16.);
         theme.radius = px(4.);
         theme.radius_lg = px(6.);
         theme.shadow = false;
+        // Kit keeps a single tinted boundary (or inset line on filled buttons).
+        theme.focus_ring = false;
 
         let canvas = rgb(0x0019_1b18).into();
         let surface = rgb(0x0023_2620).into();

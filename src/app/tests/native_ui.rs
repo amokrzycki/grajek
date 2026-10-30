@@ -110,18 +110,28 @@ fn native_offline_animation_check() {
 #[expect(
     clippy::expect_used,
     clippy::too_many_lines,
+    clippy::panic,
     reason = "opt-in native state matrix keeps compositor and capture lifecycle together and fails on capture errors"
 )]
 fn native_player_redesign_evidence() {
     use crate::player::{ImportStatus, RepeatMode};
-    let directory = std::path::PathBuf::from(".impeccable/review/redesign");
+    use gpui_kit::component::ActiveTheme;
+    use gpui_kit::{InputEvent as _, MouseButton, MouseDownEvent, MouseUpEvent};
+    let directory = std::env::var_os("GRAJEK_CAPTURE_DIR").map_or_else(
+        || std::path::PathBuf::from(".impeccable/review/refinement/after"),
+        std::path::PathBuf::from,
+    );
     std::fs::create_dir_all(&directory).expect("capture directory");
-    let (commands, _receiver) = mpsc::channel(16);
+    let (commands, mut receiver) = mpsc::channel(16);
     let (volume, _volume_rx) = watch::channel(VolumeRequest::default());
     let (snapshots, updates) = watch::channel(state(Phase::Ready));
     application().with_assets(crate::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         crate::style::init(cx);
+        std::fs::write(directory.join("renderer.txt"), format!(
+            "OS: {}\nFont: {}\nMono: {}\nRem: {:?}\nOffline snapshots; no Discord audio.\n",
+            std::env::consts::OS, cx.theme().font_family, cx.theme().mono_font_family, cx.theme().font_size,
+        )).expect("renderer metadata");
         let (window, view) = gpui_kit::open_window(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(520.), px(560.)), cx))),
             titlebar: Some(TitlebarOptions { title: Some("Grajek · offline UX evidence".into()), ..Default::default() }),
@@ -135,10 +145,18 @@ fn native_player_redesign_evidence() {
         })).expect("native window");
         let executor = cx.background_executor().clone();
         cx.spawn(async move |cx| {
+            let mut cases = vec!["idle", "playing", "playing-empty", "focused", "unfocused", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "more", "setup"];
+            if std::env::var_os("GRAJEK_CAPTURE_INTERACTIONS").is_some() {
+                cases.extend(["hover-input", "hover-button", "pressed-button", "keyboard-button", "keyboard-row"]);
+            }
+            if let Ok(filter) = std::env::var("GRAJEK_CAPTURE_CASES") {
+                cases.retain(|name| filter.split(',').any(|selected| selected == *name));
+            }
             for (width, height) in [(520., 560.), (420., 480.)] {
+                if std::env::var("GRAJEK_CAPTURE_WIDTH").is_ok_and(|filter| filter != format!("{width:.0}")) { continue; }
                 cx.update_window(window, |_, window, _| window.resize(size(px(width), px(height)))).expect("resize");
                 executor.timer(Duration::from_millis(350)).await;
-                for name in ["idle", "playing", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "more", "setup"] {
+                for name in cases.iter().copied() {
                     let mut snapshot = if name == "setup" {
                         State::default()
                     } else if name == "idle" {
@@ -152,7 +170,18 @@ fn native_player_redesign_evidence() {
                             _ => Phase::Playing,
                         };
                         let mut snapshot = with_lists(phase, 12, 12);
-                        snapshot.track = playing(phase, Some("Offline fixture · A quieter kind of music"), 84).track;
+                        snapshot.track = playing(phase, Some("Nils Frahm — Says (Live at the Funkhaus Berlin)"), 84).track;
+                        for (index, item) in snapshot.queue.iter_mut().enumerate() {
+                            let titles = [
+                                "Ólafur Arnalds — Near Light (Official Music Video)",
+                                "Hania Rani — Glass | Live from Studio S2",
+                                "坂本龍一 — Merry Christmas Mr. Lawrence",
+                                "Portico Quartet — Prickly Pear",
+                                "GoGo Penguin — Hopopono (Live at the Roundhouse)",
+                                "Żółć · Привет · A very long title that should truncate gracefully",
+                            ];
+                            item.title = Some(titles[index % titles.len()].into());
+                        }
                         snapshot.track_id = 1;
                         snapshot.position = Duration::from_secs(84);
                         snapshot.voice_connected = true;
@@ -162,7 +191,7 @@ fn native_player_redesign_evidence() {
                         snapshot.setup.destination = Some(crate::setup::Destination {
                             bot: serenity::all::UserId::new(1),
                                 guild: serenity::all::GuildId::new(2), channel: serenity::all::ChannelId::new(3),
-                            guild_name: "Offline fixture · Friends' server".into(),
+                            guild_name: "Friends’ listening room".into(),
                             channel_name: "Music room".into(),
                         });
                     }
@@ -179,6 +208,7 @@ fn native_player_redesign_evidence() {
                         snapshot.voice_connected = false;
                         snapshot.track = None;
                     }
+                    if name == "playing-empty" { snapshot.queue.clear(); }
                     if name == "full" { snapshot.queue = with_lists(Phase::Playing, 100, 0).queue; }
                     if name == "options" { snapshot.preferences.repeat = RepeatMode::Queue; }
                     let expected_phase = snapshot.phase;
@@ -187,7 +217,13 @@ fn native_player_redesign_evidence() {
                         app.url_actions_open = name == "more";
                         app.settings_open = name == "setup";
                         app.select_section(if name == "history" { Section::History } else { Section::Queue }, cx);
-                        if name == "setup" { window.focus(&app.token.read(cx).focus_handle(cx), cx); }
+                        if name == "setup" {
+                            window.focus(&app.token.read(cx).focus_handle(cx), cx);
+                        } else if name == "focused" {
+                            window.focus(&app.input.read(cx).focus_handle(cx), cx);
+                        } else {
+                            window.blur(cx);
+                        }
                         window.refresh();
                         window.on_next_frame(|_, _| {});
                     })).expect("configure fixture surface");
@@ -197,6 +233,31 @@ fn native_player_redesign_evidence() {
                         cx.update_window(window, |_, window, cx| window.click("queue-options", cx)).expect("open native options");
                         executor.timer(Duration::from_millis(500)).await;
                     }
+                    cx.update_window(window, |_, window, cx| {
+                        window.simulate_mouse_move(gpui_kit::point(px(2.), px(2.)), cx);
+                        if name == "hover-input" { window.hover("url", cx); }
+                        if matches!(name, "hover-button" | "pressed-button") {
+                            window.hover("pause-resume", cx);
+                        }
+                        if name == "pressed-button" {
+                            window.dispatch_event(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position: window.find("pause-resume").bounds().center(),
+                                ..Default::default()
+                            }.to_platform_input(), cx);
+                        }
+                        if matches!(name, "keyboard-button" | "keyboard-row") {
+                            view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx));
+                            let target: ElementId = if name == "keyboard-button" {
+                                "pause-resume".into()
+                            } else { ("queue-down", 10_u64).into() };
+                            for _ in 0..32 {
+                                if window.find(target.clone()).focused() == Some(true) { break; }
+                                window.press(if name == "keyboard-button" { "shift-tab" } else { "tab" }, cx);
+                            }
+                            assert_eq!(window.find(target).focused(), Some(true), "{name}: native keyboard focus reached target");
+                        }
+                    }).expect("configure native pointer and keyboard state");
                     // Settle X11's buffered presentation before reading native pixels.
                     for _ in 0..3 {
                         let (presented, frame) = tokio::sync::oneshot::channel();
@@ -222,51 +283,65 @@ fn native_player_redesign_evidence() {
                     let path = directory.join(format!("{name}-{width:.0}.png"));
                     #[cfg(target_os = "linux")]
                     {
-                        // Linux has no render_to_image; KDE captures the displayed frame rather than a stale X11 backing buffer.
-                        let found = std::process::Command::new("xdotool")
-                            .args(["search", "--pid", &std::process::id().to_string(), "--name", "Grajek"])
-                            .output().expect("find native X11 fixture");
-                        let ids = String::from_utf8(found.stdout).expect("X11 window IDs");
-                        let id = ids.lines().last().expect("native fixture window ID");
-                        // The test driver selects only its own window, as in scripts/check-tray-linux.py.
-                        let activation = r"import dbus, sys, tempfile, time
-pid = int(sys.argv[1])
-bus = dbus.SessionBus()
-kwin = dbus.Interface(bus.get_object('org.kde.KWin', '/Scripting'), 'org.kde.kwin.Scripting')
-plugin = 'grajek-ux-capture-' + str(pid)
-with tempfile.NamedTemporaryFile(mode='w', suffix='.js') as script:
-    script.write('const w = workspace.windowList().filter(w => w.pid === ' + str(pid) + '); if (w.length === 1) workspace.activeWindow = w[0];')
-    script.flush()
-    idx = bus.call_blocking('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss', (script.name, plugin))
-    try:
-        dbus.Interface(bus.get_object('org.kde.KWin', '/Scripting/Script' + str(idx)), 'org.kde.kwin.Script').run()
-        time.sleep(0.2)
-    finally:
-        kwin.unloadScript(plugin)
-";
-                        assert!(std::process::Command::new("python3").args(["-c", activation, &std::process::id().to_string()]).status().expect("select fixture window").success());
-                        executor.timer(Duration::from_millis(200)).await;
-                        let active = std::process::Command::new("xdotool").arg("getactivewindow").output().expect("active fixture");
-                        assert_eq!(String::from_utf8(active.stdout).expect("active window ID").trim(), id, "capture only the fixture");
-                        let mut capture = std::process::Command::new("spectacle")
-                            .env("WAYLAND_DISPLAY", std::env::var("GRAJEK_CAPTURE_WAYLAND_DISPLAY").expect("set GRAJEK_CAPTURE_WAYLAND_DISPLAY to the compositor socket"))
-                            .env("QT_QPA_PLATFORM", "wayland")
-                            .args(["--background", "--nonotify", "--activewindow", "--no-decoration", "--no-shadow", "--output"])
-                            .arg(&path).spawn().expect("capture compositor pixels");
+                        // Target the fixture UUID: active-window capture races desktop focus changes.
+                        let mut capture = std::process::Command::new("python3")
+                            .arg("scripts/capture-native-window.py")
+                            .arg(std::process::id().to_string()).arg(&path)
+                            .arg(format!("{width:.0}")).arg(format!("{height:.0}"))
+                            .spawn().expect("capture fixture compositor pixels");
                         let mut captured = None;
-                        for _ in 0..100 {
+                        for _ in 0..200 {
                             captured = capture.try_wait().expect("capture status");
                             if captured.is_some() { break; }
                             executor.timer(Duration::from_millis(50)).await;
                         }
                         if captured.is_none() { capture.kill().expect("stop stalled capture"); }
-                        assert!(captured.is_some_and(|status| status.success()), "compositor capture failed");
+                        assert!(captured.is_some_and(|status| status.success()), "fixture compositor capture failed");
                     }
                     #[cfg(not(target_os = "linux"))]
                     cx.update_window(window, |_, window, _| window.render_to_image().expect("native pixels").save(&path).expect("save native image")).expect("capture window");
-                    cx.update_window(window, |_, window, cx| window.press("escape", cx)).expect("dismiss menus");
+                    cx.update_window(window, |_, window, cx| {
+                        if name == "pressed-button" {
+                            window.dispatch_event(MouseUpEvent {
+                                button: MouseButton::Left,
+                                position: gpui_kit::point(px(2.), px(2.)),
+                                ..Default::default()
+                            }.to_platform_input(), cx);
+                        }
+                        window.press("escape", cx);
+                    }).expect("dismiss menus and release pointer");
                 }
             }
+            // Exercise transport against the actual native event loop, without optimistic state.
+            let mut response = playing(Phase::Playing, Some("Native interaction check"), 84);
+            response.queue = with_lists(Phase::Playing, 2, 0).queue;
+            cx.update_window(window, |_, _, cx| view.update(cx, |app, cx| {
+                app.settings_open = false;
+                app.select_section(Section::Queue, cx);
+            })).expect("return to player");
+            snapshots.send_replace(response.clone());
+            executor.timer(Duration::from_millis(150)).await;
+            cx.update_window(window, |_, window, cx| window.click("pause-resume", cx)).expect("native Pause click");
+            executor.timer(Duration::from_millis(150)).await;
+            let Command::Transport { id, command } = receiver.try_recv().expect("native transport intent") else { panic!("expected transport"); };
+            assert!(matches!(*command, Command::Pause));
+            cx.update_window(window, |_, window, _| {
+                assert_eq!(window.find("pause-resume").label(), Some("Pause"));
+                assert!(window.find("pause-resume").focused().is_none());
+            }).expect("pending control retains confirmed state");
+            response.phase = Phase::Paused;
+            response.transport_ack = id;
+            snapshots.send_replace(response);
+            executor.timer(Duration::from_millis(150)).await;
+            cx.update_window(window, |_, window, cx| {
+                assert_eq!(window.find("pause-resume").label(), Some("Resume"));
+                assert!(window.find("pause-resume").focused().is_some());
+                view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx));
+                window.input("https://youtu.be/aqz-KE-bpKQ", cx);
+                window.press("ctrl-enter", cx);
+            }).expect("native input and shortcut");
+            assert!(matches!(receiver.try_recv(), Ok(Command::Enqueue(url)) if url == "https://youtu.be/aqz-KE-bpKQ"));
+            std::fs::write(directory.join("interactions.txt"), "Native Pause: one intent; confirmed Playing retained while pending.\nAcknowledged Paused snapshot: Resume rendered and enabled.\nNative typing + Ctrl+Enter: Enqueue submitted with unchanged URL.\n").expect("interaction evidence");
             cx.update(|cx| cx.quit());
         }).detach();
     });
