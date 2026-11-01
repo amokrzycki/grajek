@@ -123,7 +123,9 @@ fn the_composer_is_one_frame_with_play_attached(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn an_empty_idle_player_has_no_headline_or_transport_but_keeps_volume(cx: &mut TestAppContext) {
+fn an_empty_idle_player_has_no_headline_or_transport_but_keeps_footer_volume(
+    cx: &mut TestAppContext,
+) {
     let (window, _, _, _) = open(cx, state(Phase::Ready));
     for id in ["title", "pause-resume", "stop", "next", "seek-status"] {
         assert!(
@@ -135,13 +137,12 @@ fn an_empty_idle_player_has_no_headline_or_transport_but_keeps_volume(cx: &mut T
     // Volume stays settable before anything plays, in the same right-hand slot as elsewhere.
     let volume = bounds(cx, window, "volume-percent");
     assert!(volume.right() <= px(520. - 16. + 1.) && volume.right() >= px(520. - 16. - 1.));
-    let header = bounds(cx, window, "player-header");
-    let frame = bounds(cx, window, "url");
-    assert!(volume.top() >= header.bottom() && volume.bottom() <= frame.top());
+    let footer = bounds(cx, window, "audio-footer");
+    assert!(volume.top() >= footer.top() && volume.bottom() <= footer.bottom());
 }
 
 #[gpui_kit::test]
-fn an_idle_pending_queue_starts_beside_volume_not_as_a_slab(cx: &mut TestAppContext) {
+fn an_idle_pending_queue_starts_above_the_collection_with_footer_volume(cx: &mut TestAppContext) {
     let (window, _, mut received, _) = open(cx, with_lists(Phase::Ready, 3, 0));
     assert!(!present(cx, window, "title"));
     let start = bounds(cx, window, "next");
@@ -149,7 +150,7 @@ fn an_idle_pending_queue_starts_beside_volume_not_as_a_slab(cx: &mut TestAppCont
         start.size.width < px(160.),
         "Play Queue is not a full-width bar"
     );
-    assert!(bounds(cx, window, "volume-percent").left() > start.right());
+    assert!(bounds(cx, window, "volume-percent").top() > start.bottom());
     click(cx, window, "next");
     assert!(matches!(received.try_recv(), Ok(Command::Next)));
 }
@@ -275,7 +276,7 @@ fn the_status_line_never_moves_the_queue(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn alt_arrows_and_delete_act_on_the_focused_entry(cx: &mut TestAppContext) {
     let (window, _, mut received, _) = open(cx, with_lists(Phase::Ready, 3, 0));
-    tab_until(cx, window, ("queue-down", 10_u64));
+    tab_until(cx, window, ("queue-more", 10_u64));
     act(cx, window, |window, cx| window.press("alt-up", cx));
     assert!(
         received.try_recv().is_err(),
@@ -288,7 +289,7 @@ fn alt_arrows_and_delete_act_on_the_focused_entry(cx: &mut TestAppContext) {
     ));
     act(cx, window, |window, cx| window.press("delete", cx));
     assert!(matches!(received.try_recv(), Ok(Command::Dequeue(10))));
-    tab_until(cx, window, ("queue-up", 12_u64));
+    tab_until(cx, window, ("queue-more", 12_u64));
     act(cx, window, |window, cx| window.press("alt-down", cx));
     assert!(
         received.try_recv().is_err(),
@@ -305,7 +306,7 @@ fn alt_arrows_and_delete_act_on_the_focused_entry(cx: &mut TestAppContext) {
 fn removing_the_focused_entry_keeps_focus_in_the_list(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Ready, 3, 0);
     let (window, _, mut received, states) = open(cx, initial.clone());
-    tab_until(cx, window, ("queue-remove", 11_u64));
+    tab_until(cx, window, ("queue-more", 11_u64));
     act(cx, window, |window, cx| window.press("delete", cx));
     assert!(matches!(received.try_recv(), Ok(Command::Dequeue(11))));
     let mut after = initial;
@@ -313,7 +314,7 @@ fn removing_the_focused_entry_keeps_focus_in_the_list(cx: &mut TestAppContext) {
     states.send_replace(after.clone());
     settle(cx, window);
     assert!(
-        focused(cx, window, ("queue-remove", 12_u64)),
+        focused(cx, window, ("queue-more", 12_u64)),
         "focus lands on the entry that took its place"
     );
     // Removing the last entry moves focus to the new last one.
@@ -322,7 +323,7 @@ fn removing_the_focused_entry_keeps_focus_in_the_list(cx: &mut TestAppContext) {
     after.queue.remove(1);
     states.send_replace(after.clone());
     settle(cx, window);
-    assert!(focused(cx, window, ("queue-remove", 10_u64)));
+    assert!(focused(cx, window, ("queue-more", 10_u64)));
     // An emptied queue hands focus back to the link field.
     act(cx, window, |window, cx| window.press("delete", cx));
     assert!(matches!(received.try_recv(), Ok(Command::Dequeue(10))));
@@ -336,7 +337,7 @@ fn removing_the_focused_entry_keeps_focus_in_the_list(cx: &mut TestAppContext) {
 fn a_moved_entry_keeps_keyboard_focus(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Ready, 3, 0);
     let (window, _, mut received, states) = open(cx, initial.clone());
-    tab_until(cx, window, ("queue-down", 10_u64));
+    tab_until(cx, window, ("queue-more", 10_u64));
     act(cx, window, |window, cx| window.press("alt-down", cx));
     assert!(matches!(
         received.try_recv(),
@@ -347,7 +348,7 @@ fn a_moved_entry_keeps_keyboard_focus(cx: &mut TestAppContext) {
     states.send_replace(after);
     settle(cx, window);
     assert!(
-        focused(cx, window, ("queue-down", 10_u64)),
+        focused(cx, window, ("queue-more", 10_u64)),
         "focus follows the entry, not the slot"
     );
 }
@@ -471,49 +472,33 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn focus_survives_a_move_that_disables_the_focused_arrow(cx: &mut TestAppContext) {
-    let initial = with_lists(Phase::Ready, 3, 0);
-    let (window, _, mut received, states) = open(cx, initial.clone());
-    tab_until(cx, window, ("queue-up", 11_u64));
-    act(cx, window, |window, cx| window.press("enter", cx));
-    assert!(matches!(
-        received.try_recv(),
-        Ok(Command::Shift { id: 11, up: true })
-    ));
-    let mut after = initial.clone();
-    after.queue.swap(0, 1);
-    states.send_replace(after);
-    settle(cx, window);
-    // Entry 11 now leads, so its Move up is disabled; keyboard focus must still be usable.
-    assert!(
-        !focused(cx, window, ("queue-up", 11_u64)),
-        "focus never rests on a disabled control"
-    );
-    assert!(
-        focused(cx, window, ("queue-down", 11_u64))
-            || focused(cx, window, ("queue-remove", 11_u64)),
-        "focus stays in the moved entry's row"
-    );
-    act(cx, window, |window, cx| window.press("tab", cx));
-    assert!(!focused(cx, window, ("queue-up", 11_u64)));
-    // And the symmetric edge: moving an entry into the last slot.
-    let (window, _, mut received, states) = open(cx, initial.clone());
-    tab_until(cx, window, ("queue-down", 11_u64));
-    act(cx, window, |window, cx| window.press("enter", cx));
-    assert!(matches!(
-        received.try_recv(),
-        Ok(Command::Shift { id: 11, up: false })
-    ));
-    let mut after = initial;
-    after.queue.swap(1, 2);
-    states.send_replace(after);
-    settle(cx, window);
-    assert!(
-        !focused(cx, window, ("queue-down", 11_u64)),
-        "focus never rests on a disabled control"
-    );
-    assert!(
-        focused(cx, window, ("queue-up", 11_u64)) || focused(cx, window, ("queue-remove", 11_u64)),
-        "focus stays in the moved entry's row"
-    );
+fn focus_survives_moves_to_both_boundaries_and_shortcuts_still_work(cx: &mut TestAppContext) {
+    for up in [true, false] {
+        let initial = with_lists(Phase::Ready, 3, 0);
+        let (window, _, mut received, states) = open(cx, initial.clone());
+        tab_until(cx, window, ("queue-more", 11_u64));
+        act(cx, window, |window, cx| {
+            window.press(if up { "alt-up" } else { "alt-down" }, cx);
+        });
+        assert!(
+            matches!(received.try_recv(), Ok(Command::Shift { id: 11, up: sent }) if sent == up)
+        );
+        let mut after = initial;
+        after.queue.swap(1, if up { 0 } else { 2 });
+        states.send_replace(after);
+        settle(cx, window);
+        assert!(
+            focused(cx, window, ("queue-more", 11_u64)),
+            "stable trigger retains usable focus at the boundary"
+        );
+        act(cx, window, |window, cx| {
+            window.press(if up { "alt-up" } else { "alt-down" }, cx);
+        });
+        assert!(received.try_recv().is_err(), "boundary move is ignored");
+        act(cx, window, |window, cx| window.press("tab", cx));
+        assert!(
+            !focused(cx, window, ("queue-more", 11_u64)),
+            "Tab is not stranded"
+        );
+    }
 }

@@ -2,9 +2,7 @@
 //! actions, and a single fixed-height status line for recognition and confirmed feedback.
 use gpui_kit::assets::IconName as AudioIcon;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, Sizable,
-    button::{Button, ButtonVariants},
-    input::Input,
+    ActiveTheme, Disableable, Icon, Sizable, button::ButtonVariants, input::Input,
 };
 use gpui_kit::{
     Context, Focusable, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
@@ -144,7 +142,9 @@ impl PlayerApp {
 
     /// The status line: import progress, then confirmed add, then recognition.
     fn composer_status(&self, cx: &Context<Self>) -> Option<(String, bool)> {
-        if self.state.import != ImportStatus::Ready {
+        if self.state.import != ImportStatus::Ready
+            && self.retired_import.as_ref() != Some(&self.state.import)
+        {
             let failed = matches!(self.state.import, ImportStatus::Failed(_));
             return Some((self.state.import.message(), failed));
         }
@@ -173,10 +173,10 @@ impl PlayerApp {
     fn link_frame(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
+        let boundary = self.focus.editing_border(focused, cx);
         let primary = self.state.available
             && !matches!(self.state.phase, Phase::Playing | Phase::Paused)
             && (!self.idle() || self.state.queue.is_empty());
-        let hint = |icon: AudioIcon| Icon::new(icon).size(px(12.)).opacity(0.7);
         div()
             .id("url")
             .flex()
@@ -187,10 +187,10 @@ impl PlayerApp {
             .rounded(theme.radius)
             .bg(theme.muted)
             .border_1()
-            .border_color(if focused { theme.ring } else { theme.input })
+            .border_color(boundary)
             .hover(move |frame| {
                 frame.border_color(if focused {
-                    theme.ring
+                    boundary
                 } else {
                     theme.muted_foreground
                 })
@@ -212,11 +212,10 @@ impl PlayerApp {
                     ),
             )
             .child(
-                Button::new("play")
+                self.button("play")
                     .when(primary, ButtonVariants::primary)
                     .icon(AudioIcon::Play)
                     .label("Play now")
-                    .child(hint(AudioIcon::CornerDownLeft))
                     .flex_none()
                     .help(
                         "Play this video now · Enter. Replaces what is playing; the queue is kept.",
@@ -230,29 +229,17 @@ impl PlayerApp {
 
     /// Quiet queue and import actions; the keyboard hint sits on the action it belongs to.
     fn link_actions(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
         let kind = LinkKind::of(&self.input_text(cx));
         div()
             .flex()
             .items_center()
             .gap(space::GROUP)
-            .mt(space::TIGHT)
             .child(
-                Button::new("enqueue")
+                self.button("enqueue")
                     .icon(AudioIcon::ListPlus)
                     .label("Add to queue")
+                    .ghost()
                     .small()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(2.))
-                            .opacity(0.7)
-                            .text_xs()
-                            .font_family(theme.mono_font_family.clone())
-                            .child("Ctrl")
-                            .child(Icon::new(AudioIcon::CornerDownLeft).size(px(12.))),
-                    )
                     .flex_none()
                     .disabled(!self.state.can_enqueue())
                     .help(

@@ -1,8 +1,6 @@
 use gpui_kit::assets::IconName as SpeakerIcon;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, Sizable,
-    button::{Button, ButtonVariants},
-    popover::Popover,
+    ActiveTheme, Disableable, Icon, Sizable, button::ButtonVariants, popover::Popover,
     slider::Slider,
 };
 use gpui_kit::{
@@ -51,6 +49,13 @@ impl PlayerApp {
 
     pub(super) fn play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let url = self.input_text(cx);
+        if url.trim().is_empty() {
+            self.local_hint = Some("Paste a YouTube link to play.");
+            window.focus(&self.input.read(cx).focus_handle(cx), cx);
+            cx.notify();
+            return;
+        }
+        self.local_hint = None;
         self.play_url(url, window, cx);
     }
 
@@ -87,7 +92,7 @@ impl PlayerApp {
     }
 
     pub(super) fn leave_button(&self, cx: &Context<Self>) -> impl IntoElement {
-        Button::new("leave-voice")
+        self.button("leave-voice")
             .label("Leave voice")
             .accessibility_label("Leave voice")
             .ghost()
@@ -223,7 +228,7 @@ impl PlayerApp {
             .track_focus(&self.controls_focus)
             .tab_stop(false)
             .child(
-                Button::new("pause-resume")
+                self.button("pause-resume")
                     .when(toggle_enabled, ButtonVariants::primary)
                     .icon(if resume {
                         SpeakerIcon::Play
@@ -236,7 +241,7 @@ impl PlayerApp {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx))),
             )
             .child(
-                Button::new("next")
+                self.button("next")
                     .when(self.state.next_label() == "Next", |button| {
                         button.icon(SpeakerIcon::SkipForward)
                     })
@@ -256,7 +261,7 @@ impl PlayerApp {
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),
             )
             .child(
-                Button::new("stop")
+                self.button("stop")
                     .ghost()
                     .icon(SpeakerIcon::Square)
                     .accessibility_label("Stop")
@@ -267,7 +272,7 @@ impl PlayerApp {
     }
 
     pub(super) fn play_queue_button(&self, cx: &Context<Self>) -> impl IntoElement {
-        Button::new("next")
+        self.button("next")
             .primary()
             .label("Play Queue")
             .icon(SpeakerIcon::Play)
@@ -277,7 +282,7 @@ impl PlayerApp {
     }
 
     pub(super) fn repeat_button(&self, cx: &Context<Self>) -> impl IntoElement {
-        Button::new("repeat")
+        self.button("repeat")
             .key_context("PlayerMenuControl")
             .on_action(cx.listener(|this, _: &Activate, _, _| {
                 if this.state.available {
@@ -297,7 +302,7 @@ impl PlayerApp {
     }
 
     pub(super) fn remember_button(&self, cx: &Context<Self>) -> impl IntoElement {
-        Button::new("remember-queue")
+        self.button("remember-queue")
             .key_context("PlayerMenuControl")
             .on_action(cx.listener(|this, _: &Activate, _, _| {
                 if this.state.available {
@@ -327,20 +332,20 @@ impl PlayerApp {
         let repeat = self.state.preferences.repeat;
         Popover::new("queue-options-popover")
             .open(self.queue_options_open)
-            .on_open_change(cx.listener(|this, open, _, cx| { this.queue_options_open = *open; this.help.dismiss(cx); cx.notify(); }))
-            .anchor(gpui_kit::Anchor::TopRight)
-            .trigger(Button::new("queue-options")
-                .label("Queue options")
+            .on_open_change(cx.listener(|this, open, _, cx| { this.queue_options_open = *open; if *open { this.row_menu = None; } this.help.dismiss(cx); cx.notify(); }))
+            .anchor(gpui_kit::Anchor::BottomLeft)
+            .trigger(self.button("queue-options")
+                .label("Playback")
                 .ghost().small().dropdown_caret(true)
                 .when(repeat != RepeatMode::Off, |button| button.text_color(cx.theme().primary))
 
                 .accessibility_label(format!("Queue options. {}. Remember queue, continue on error, clear queue", repeat.label())))
-            .child(div().id("queue-options-menu").flex().flex_col().w(px(300.)).max_h(px(392.)).overflow_y_scroll().gap_1()
+            .child(div().id("queue-options-menu").on_key_down(Self::menu_key).flex().flex_col().w(px(300.)).max_h(px(392.)).overflow_y_scroll().gap_1()
                 .child(self.repeat_button(cx))
                 .child(menu_detail("After a track finishes. Next and Stop never repeat.", cx))
                 .child(self.remember_button(cx))
                 .child(menu_detail("Restore pending tracks on launch. Turning off erases only the saved queue.", cx))
-                .child(Button::new("continue-on-error")
+                .child(self.button("continue-on-error")
                     .key_context("PlayerMenuControl")
                     .on_action(cx.listener(|this, _: &Activate, _, _| { if this.state.available { this.send(Command::ContinueOnError(!this.state.preferences.continue_on_error)); } }))
                     .label(if self.state.preferences.continue_on_error { "Continue on error: On" } else { "Continue on error: Off" })
@@ -352,7 +357,7 @@ impl PlayerApp {
                     })))
                 .child(menu_detail("Skip unplayable queued tracks. Stop after 3 in a row.", cx))
                 .child(div().mt_2().pt_2().border_t_1().border_color(crate::style::separator())
-                    .child(Button::new("queue-clear")
+                    .child(self.button("queue-clear")
                         .key_context("PlayerMenuControl")
                         .on_action(cx.listener(|this, _: &Activate, _, _| { if this.state.controller_ready && (!this.state.queue.is_empty() || this.state.import == ImportStatus::Importing) { this.send(Command::ClearQueue); } })).label("Clear queue").child(div().flex_1()).ghost().small().w_full()
                         .disabled(!self.state.controller_ready || (self.state.queue.is_empty() && self.state.import != ImportStatus::Importing))
@@ -377,6 +382,7 @@ impl PlayerApp {
             Command::ImportPlaylist(self.input_text(cx))
         };
         if self.send(command) {
+            self.retired_import = None;
             self.import_pending = true;
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
             cx.notify();
@@ -401,7 +407,7 @@ impl PlayerApp {
             .track_focus(&self.import_focus)
             .tab_stop(false)
             .child(
-                Button::new("import-playlist")
+                self.button("import-playlist")
                     .key_context("PlayerMenuControl")
                     .on_action(cx.listener(|this, _: &Activate, window, cx| {
                         this.import_playlist(window, cx);
@@ -431,11 +437,33 @@ impl PlayerApp {
             )
     }
 
+    pub(super) fn audio_footer(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .id("audio-footer")
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_between()
+            .gap(space::GROUP)
+            .mt(space::GROUP)
+            .pt(space::TIGHT)
+            .border_t_1()
+            .border_color(crate::style::separator())
+            .child(self.queue_options(cx))
+            .child(
+                div()
+                    .w(px(220.))
+                    .flex_none()
+                    .child(self.volume_row(window, cx)),
+            )
+            .test_support()
+    }
+
     pub(super) fn volume_row(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let available = self.state.available;
         let percent = percent_from(self.slider_value(cx)).unwrap_or(self.state.volume);
-        let focused = self.volume_focus.is_focused(window);
+        let focused = self.focus.keyboard && self.volume_focus.is_focused(window);
         let speaker = if percent == 0 {
             SpeakerIcon::VolumeX
         } else {
@@ -453,11 +481,12 @@ impl PlayerApp {
                     .small()
                     .text_color(theme.muted_foreground),
             )
+            .child(div().text_xs().text_color(theme.muted_foreground).child("Bot volume"))
             .child(
                 div()
                     .id("volume")
                     .role(gpui_kit::Role::Group)
-                    .aria_label("Volume. Arrow keys: 5 percent; Page Up/Down: 10 percent; Home: mute; End: full volume.")
+                    .aria_label("Bot volume. Arrow keys: 5 percent; Page Up/Down: 10 percent; Home: mute; End: full volume.")
                     .flex_1()
                     .min_w_0()
                     .px_1()
@@ -473,7 +502,8 @@ impl PlayerApp {
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         this.volume_key(event.keystroke.key.as_str(), window, cx);
                     }))
-                    .child(Slider::new(&self.volume).disabled(!available)),
+                    .child(Slider::new(&self.volume).disabled(!available))
+                    .test_support(),
             )
             .child(
                 div()

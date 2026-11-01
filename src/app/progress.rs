@@ -187,7 +187,7 @@ impl PlayerApp {
             clock(self.state.position)
         );
         Some(
-            div().flex_none().flex().items_center().gap_2().child(
+            div().flex_1().min_w_0().flex().items_center().child(
                 div()
                     .id("seek-slider")
                     .flex_1()
@@ -195,11 +195,13 @@ impl PlayerApp {
                     .px_1()
                     .rounded(theme.radius)
                     .border_1()
-                    .border_color(if self.progress_focus.is_focused(window) {
-                        theme.ring
-                    } else {
-                        theme.transparent
-                    })
+                    .border_color(
+                        if self.focus.keyboard && self.progress_focus.is_focused(window) {
+                            theme.ring
+                        } else {
+                            theme.transparent
+                        },
+                    )
                     .track_focus(&self.progress_focus)
                     .role(gpui_kit::Role::Slider)
                     .aria_label(label)

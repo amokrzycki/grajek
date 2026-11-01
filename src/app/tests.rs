@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 pub(in crate::app) mod animation_fixes;
+mod cohesion;
 mod composition;
 mod experience;
 mod native_ui;
@@ -128,7 +129,22 @@ fn open(cx: &mut TestAppContext, initial: State) -> Harness {
 }
 
 // Secondary actions are reached through the same native disclosure as production.
-fn reveal_action(cx: &mut TestAppContext, window: AnyWindowHandle, id: &ElementId) {
+fn reveal_action(cx: &mut TestAppContext, window: AnyWindowHandle, id: &ElementId) -> ElementId {
+    if let ElementId::NamedInteger(name, key) = id {
+        let trigger = match name.as_ref() {
+            "queue-up" | "queue-down" | "queue-remove" => "queue-more",
+            "history-queue" | "history-remove" => "history-more",
+            _ => return id.clone(),
+        };
+        if !present(cx, window, id.clone()) {
+            act(cx, window, |window, cx| window.press("escape", cx));
+            act(cx, window, |window, cx| {
+                window.render_frame(cx);
+                window.click((trigger, *key), cx);
+            });
+        }
+        return id.clone();
+    }
     let menu = match id {
         ElementId::Name(name)
             if matches!(
@@ -155,6 +171,7 @@ fn reveal_action(cx: &mut TestAppContext, window: AnyWindowHandle, id: &ElementI
             window.render_frame(cx);
         });
     }
+    id.clone()
 }
 
 #[expect(
@@ -163,7 +180,7 @@ fn reveal_action(cx: &mut TestAppContext, window: AnyWindowHandle, id: &ElementI
 )]
 fn click(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) {
     let id = id.into();
-    reveal_action(cx, window, &id);
+    let id = reveal_action(cx, window, &id);
     cx.update_window(window, |_, window, cx| window.click(id, cx))
         .expect("test window should dispatch the click");
 }
@@ -178,7 +195,7 @@ fn button(
     id: impl Into<ElementId>,
 ) -> (String, bool) {
     let id = id.into();
-    reveal_action(cx, window, &id);
+    let id = reveal_action(cx, window, &id);
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         let snapshot = window.find(id);
@@ -730,7 +747,7 @@ fn long_lists_scroll_inside_the_window(cx: &mut TestAppContext) {
     cx.update_window(window, |_, window, cx| {
         window.scroll(
             ("queue-row", 10_u64),
-            ScrollDelta::Pixels(point(px(0.), px(-4000.))),
+            ScrollDelta::Pixels(point(px(0.), px(-10000.))),
             cx,
         );
     })
@@ -742,7 +759,7 @@ fn long_lists_scroll_inside_the_window(cx: &mut TestAppContext) {
     cx.update_window(window, |_, window, cx| {
         window.scroll(
             ("history-row", 0_usize),
-            ScrollDelta::Pixels(point(px(0.), px(-4000.))),
+            ScrollDelta::Pixels(point(px(0.), px(-10000.))),
             cx,
         );
     })
@@ -1358,15 +1375,9 @@ fn queue_metadata_states_and_unicode_keep_row_actions_visible(cx: &mut TestAppCo
                 let ((window, _, _, _), _) = open_at(cx, initial, width, height);
                 let row = bounds(cx, window, ("queue-row", 10_u64));
                 let title = bounds(cx, window, ("queue-title", 10_u64));
-                let up = bounds(cx, window, ("queue-up", 10_u64));
-                let down = bounds(cx, window, ("queue-down", 10_u64));
-                let remove = bounds(cx, window, ("queue-remove", 10_u64));
-                assert!(
-                    title.right() <= up.left()
-                        && up.right() <= down.left()
-                        && down.right() <= remove.left()
-                );
-                assert!(remove.right() <= row.right() && row.right() <= px(width));
+                let more = bounds(cx, window, ("queue-more", 10_u64));
+                assert!(title.right() <= more.left());
+                assert!(more.right() <= row.right() && row.right() <= px(width));
                 assert!(title.size.width > px(100.));
                 assert!(button(cx, window, ("queue-up", 10_u64)).1);
                 assert!(button(cx, window, ("queue-down", 12_u64)).1);

@@ -1,5 +1,6 @@
 pub(super) mod composer;
 mod controls;
+mod focus;
 mod help;
 mod history;
 mod lists;
@@ -50,6 +51,8 @@ enum Pending {
 )]
 pub struct PlayerApp {
     help: help::Help,
+    focus: focus::FocusPresentation,
+    row_menu: Option<lists::TrackTarget>,
     token_error: bool,
     token: Entity<InputState>,
     settings_open: bool,
@@ -69,6 +72,7 @@ pub struct PlayerApp {
     /// The entry the controller last inserted for this window's Add to queue.
     added: Option<u64>,
     local_hint: Option<&'static str>,
+    retired_import: Option<crate::player::ImportStatus>,
     volume: Entity<SliderState>,
     volume_focus: FocusHandle,
     progress: Entity<SliderState>,
@@ -96,6 +100,7 @@ pub struct PlayerApp {
     section: Section,
     /// "Clear history" was pressed once and awaits confirmation.
     confirm_clear: bool,
+    history_header_focus: FocusHandle,
     subscriptions: Vec<Subscription>,
     _updates: Task<()>,
     #[cfg(target_os = "windows")]
@@ -169,9 +174,12 @@ impl PlayerApp {
                 }
                 InputEvent::Change => {
                     // Typing starts a new entry; programmatic clearing keeps the confirmation.
+                    this.local_hint = None;
+                    if this.state.import != crate::player::ImportStatus::Importing {
+                        this.retired_import = Some(this.state.import.clone());
+                    }
                     if !this.input_text(cx).is_empty() {
                         this.added = None;
-                        this.local_hint = None;
                         this.enqueue_pending = None;
                     }
                     cx.notify();
@@ -210,6 +218,8 @@ impl PlayerApp {
         let transport_seq = state.transport_ack;
         let mut app = Self {
             help,
+            focus: focus::FocusPresentation::from_window(window),
+            row_menu: None,
             token_error: false,
             token,
             settings_open: true,
@@ -227,6 +237,7 @@ impl PlayerApp {
             enqueue_pending: None,
             added: None,
             local_hint: None,
+            retired_import: None,
             volume,
             volume_focus: cx.focus_handle(),
             progress,
@@ -249,6 +260,7 @@ impl PlayerApp {
             volume_pending: None,
             section: Section::Queue,
             confirm_clear: false,
+            history_header_focus: cx.focus_handle(),
             subscriptions,
             _updates: updates,
             #[cfg(target_os = "windows")]
@@ -288,26 +300,13 @@ impl PlayerApp {
         }
         if lost_gateway {
             self.queue_options_open = false;
+            self.row_menu = None;
         }
+        let list_focus = self.list_focus(&state, window, cx);
         let resolution = self.resolve_enqueue(&state);
-        let focused_row = self
-            .queue_scroll
-            .rows
-            .iter()
-            .position(|(_, focus)| focus.contains_focused(window, cx))
-            .and_then(|index| {
-                let id = self.state.queue.get(index)?.id;
-                let action = self
-                    .queue_scroll
-                    .actions
-                    .get(&ElementId::from(("queue-row", id)))
-                    .and_then(|trackers| {
-                        trackers
-                            .iter()
-                            .position(|tracker| tracker.contains_focused(window, cx))
-                    });
-                Some((index, id, action))
-            });
+        if self.state.import != state.import {
+            self.retired_import = None;
+        }
         self.state = state;
         if let Some(resolution) = &resolution {
             self.finish_enqueue(resolution, window, cx);
@@ -326,40 +325,9 @@ impl PlayerApp {
             self.pending = None;
         }
         self.sync_lists(cx);
-        let lost_row =
-            focused_row.filter(|(_, id, _)| self.state.queue.iter().all(|item| item.id != *id));
-        // A move can leave the focused arrow disabled (first slot: Move up; last: Move down).
-        // A disabled control cannot hold focus, so hand it to the opposite arrow.
-        let stranded = focused_row.and_then(|(_, id, action)| {
-            let index = self.state.queue.iter().position(|item| item.id == id)?;
-            let action = action.filter(|action| *action < 2)?;
-            (!self.row_actions(Section::Queue, index)[action]).then_some((index, 1 - action))
-        });
-        // Gateway loss also disables preferences outside the transport group.
-        if let Some((index, action)) = stranded
-            && self.section == Section::Queue
-        {
-            self.focus_row_action(Section::Queue, index, action, window, cx);
-        } else if let Some((index, _, _)) = lost_row
-            && self.section == Section::Queue
-            && !self.state.queue.is_empty()
-        {
-            // The focused entry left the queue: keep keyboard focus in the list, on the same slot.
-            self.focus_row_action(
-                Section::Queue,
-                index.min(self.state.queue.len() - 1),
-                2,
-                window,
-                cx,
-            );
-        } else if lost_gateway
-            || lost_voice_control
-            || import_finished
-            || lost_progress
-            || lost_row.is_some()
-        {
+        if lost_gateway || lost_voice_control || import_finished || lost_progress {
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
-        } else {
+        } else if !self.restore_list_focus(list_focus, window, cx) {
             self.rescue_focus(before, window, cx);
         }
         self.sync_volume(window, cx);
@@ -373,15 +341,48 @@ impl PlayerApp {
         self.commands.try_send(command).is_ok()
     }
 
+    fn button(&self, id: impl Into<ElementId>) -> Button {
+        self.focus.button(id)
+    }
+
     fn input_text(&self, cx: &Context<Self>) -> String {
         self.input.read(cx).value().to_string()
     }
 
+    fn activate_section(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
+        let list_had_focus = self.queue_options_open
+            || self.row_menu.is_some()
+            || self
+                .queue_scroll
+                .rows
+                .iter()
+                .chain(&self.history_scroll.rows)
+                .any(|(_, focus)| focus.contains_focused(window, cx));
+        self.select_section(section, cx);
+        if list_had_focus {
+            window.focus(&self.input.read(cx).focus_handle(cx), cx);
+        }
+    }
+
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
         self.section = section;
+        self.row_menu = None;
         self.queue_options_open = false;
         self.confirm_clear = false;
         cx.notify();
+    }
+}
+
+fn state_symbol(phase: Phase) -> AudioIcon {
+    match phase {
+        Phase::Playing => AudioIcon::Play,
+        Phase::Paused => AudioIcon::Pause,
+        Phase::Ready | Phase::Error => AudioIcon::Square,
+        Phase::Initializing
+        | Phase::Connecting
+        | Phase::Resolving
+        | Phase::Stopping
+        | Phase::Disconnecting => AudioIcon::Ellipsis,
     }
 }
 
@@ -522,7 +523,7 @@ impl PlayerApp {
                         row.child(self.leave_button(cx))
                     })
                     .child(
-                        Button::new("settings")
+                        self.button("settings")
                             .icon(settings_icon)
                             .accessibility_label(settings_label)
                             .help(settings_label, &self.help)
@@ -533,6 +534,7 @@ impl PlayerApp {
                                 this.setup_starting = false;
                                 this.settings_open = !this.settings_open;
                                 this.queue_options_open = false;
+                                this.row_menu = None;
                                 if this.settings_open {
                                     this.focus_settings(window, cx);
                                 } else {
@@ -546,8 +548,9 @@ impl PlayerApp {
 
     /// Title and status are single lines that truncate with an ellipsis, so a long
     /// title can never widen the window or push the controls away.
-    fn now_playing(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn now_playing(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let compact = window.viewport_size().height <= px(480.);
         let phase_color = if self.state.error.is_some() {
             theme.danger
         } else if self.state.phase == Phase::Playing {
@@ -582,16 +585,7 @@ impl PlayerApp {
             ),
         };
         let progress = track.map(|info| format_progress(self.state.position, info.duration));
-        let symbol = match self.state.phase {
-            Phase::Playing => AudioIcon::Play,
-            Phase::Paused => AudioIcon::Pause,
-            Phase::Ready | Phase::Error => AudioIcon::Square,
-            Phase::Initializing
-            | Phase::Connecting
-            | Phase::Resolving
-            | Phase::Stopping
-            | Phase::Disconnecting => AudioIcon::Ellipsis,
-        };
+        let symbol = state_symbol(self.state.phase);
         div().flex().flex_none().items_center().child(
             div()
                 .flex_1()
@@ -602,7 +596,7 @@ impl PlayerApp {
                 .child(
                     div()
                         .flex()
-                        .text_size(px(24.))
+                        .text_size(px(if compact { 20. } else { 24. }))
                         .line_height(relative(1.25))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(title_color)
@@ -620,6 +614,12 @@ impl PlayerApp {
                             div()
                                 .id("seek-status")
                                 .flex_none()
+                                .when(
+                                    track.is_some_and(|track| {
+                                        track.duration.is_some_and(|duration| !duration.is_zero())
+                                    }),
+                                    |status| status.w(px(104.)).truncate(),
+                                )
                                 .role(gpui_kit::Role::Status)
                                 .text_color(phase_color)
                                 .when(self.progress_preview.is_some(), |status| {
@@ -637,7 +637,8 @@ impl PlayerApp {
                                 .text_color(theme.muted_foreground)
                                 .child(progress)
                                 .test_support()
-                        })),
+                        }))
+                        .children(self.progress_row(window, cx)),
                 ),
         )
     }
@@ -689,55 +690,30 @@ impl PlayerApp {
                     .flex()
                     .flex_col()
                     .gap(space::TIGHT)
-                    .child(self.now_playing(cx))
-                    .children(self.progress_row(window, cx)),
+                    .child(self.now_playing(window, cx)),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(space::DETAIL)
-                    .child(self.controls(cx))
-                    .child(
-                        div()
-                            .w(px(120.))
-                            .flex_none()
-                            .child(self.volume_row(window, cx)),
-                    ),
-            )
+            .child(self.controls(cx))
             .children(self.error(cx))
             .test_support()
     }
 
-    /// Idle composition. Setup tasks keep a headline and one action. Once the bot can play, the
-    /// listening slot holds only what is useful: Play Queue beside volume when entries are
-    /// pending, or the volume alone, right-aligned in the same slot, when the queue is empty
-    /// (volume can be set before anything plays). No headline, no disabled transport.
-    fn idle_player(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+    /// Idle keeps the next useful action: setup guidance or Play Queue. An empty, ready
+    /// player leads with its composer; audio adjustment remains in the permanent footer.
+    fn idle_player(&self, _window: &Window, cx: &Context<Self>) -> AnyElement {
         let error = self.error(cx);
-        let panel = div().id("idle-player").flex().flex_none().flex_col();
+        let panel = div()
+            .id("idle-player")
+            .track_focus(&self.controls_focus)
+            .tab_stop(false)
+            .flex()
+            .flex_none()
+            .flex_col();
         if self.state.available {
             panel
                 .gap(space::GROUP)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(space::DETAIL)
-                        .child(if self.state.queue.is_empty() {
-                            div().into_any_element()
-                        } else {
-                            self.play_queue_button(cx).into_any_element()
-                        })
-                        .child(
-                            div()
-                                .w(px(120.))
-                                .flex_none()
-                                .child(self.volume_row(window, cx)),
-                        ),
-                )
+                .when(!self.state.queue.is_empty(), |panel| {
+                    panel.child(div().flex().child(self.play_queue_button(cx)))
+                })
                 .children(error)
                 .test_support()
                 .into_any_element()
@@ -779,7 +755,7 @@ impl PlayerApp {
                 )
                 .child(
                     div().flex().child(
-                        Button::new("setup-next-step")
+                        self.button("setup-next-step")
                             .primary()
                             .label(action)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -834,13 +810,14 @@ impl PlayerApp {
                             .underline()
                             .small()
                             .selected_index(selected)
-                            .on_click(cx.listener(|this, index: &usize, _, cx| {
-                                this.select_section(
+                            .on_click(cx.listener(|this, index: &usize, window, cx| {
+                                this.activate_section(
                                     if *index == 0 {
                                         Section::Queue
                                     } else {
                                         Section::History
                                     },
+                                    window,
                                     cx,
                                 );
                             }))
@@ -853,9 +830,13 @@ impl PlayerApp {
                                     ""
                                 }
                             )))
-                            .child(Tab::new().label("History")),
+                            .child(
+                                Tab::new().label(format!("History · {}", self.state.history.len())),
+                            ),
                     )
-                    .child(self.queue_options(cx)),
+                    .when(self.section == Section::History, |header| {
+                        header.child(self.history_header(cx))
+                    }),
             )
             .child(match self.section {
                 Section::Queue => self.queue_list(cx).into_any_element(),
@@ -866,39 +847,15 @@ impl PlayerApp {
 
 impl Render for PlayerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.help
-            .enable(!self.settings_open && !self.queue_options_open, cx);
+        self.focus = focus::FocusPresentation::from_window(window);
+        self.help.enable(
+            !self.settings_open && !self.queue_options_open && self.row_menu.is_none(),
+            cx,
+        );
         let help = self.help.clone();
         let theme = cx.theme();
         if self.settings_open {
-            return div()
-                .size_full()
-                .bg(theme.background)
-                .text_color(theme.foreground)
-                .font_family(theme.font_family.clone())
-                .p_4()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        if this.state.confirm_setup {
-                            this.send(Command::ConfirmSetup(false));
-                        } else if this.credentials_open {
-                            this.credentials_open = false;
-                            this.focus_settings(window, cx);
-                        } else {
-                            this.settings_open = false;
-                            this.input.read(cx).focus_handle(cx).focus(window, cx);
-                        }
-                        this.help.dismiss(cx);
-                        cx.notify();
-                    }
-                }))
-                .child(self.header(cx))
-                .child(self.settings(cx))
-                .child(self.help.overlay.clone())
-                .into_any_element();
+            return self.settings_surface(window, cx);
         }
         // Related controls sit 4–8px apart; the three jobs (listening, adding music, up next)
         // are separated by larger, unequal gaps so they read as regions without borders.
@@ -906,8 +863,12 @@ impl Render for PlayerApp {
         let (after_header, before_composer, before_queue) = if compact {
             (px(8.), px(12.), px(8.))
         } else {
-            (px(12.), px(20.), px(16.))
+            (px(12.), px(16.), px(12.))
         };
+        let has_listening = !self.idle()
+            || !self.state.available
+            || !self.state.queue.is_empty()
+            || self.error(cx).is_some();
         let listening = if self.idle() {
             self.idle_player(window, cx)
         } else {
@@ -933,18 +894,28 @@ impl Render for PlayerApp {
                 }
             })
             // The kit's tabs cannot take focus, so Ctrl+1 / Ctrl+2 switch sections.
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.modifiers.control {
                     match event.keystroke.key.as_str() {
-                        "1" => this.select_section(Section::Queue, cx),
-                        "2" => this.select_section(Section::History, cx),
+                        "1" => this.activate_section(Section::Queue, window, cx),
+                        "2" => this.activate_section(Section::History, window, cx),
                         _ => {}
                     }
                 }
             }))
             .child(self.header(cx))
-            .child(div().mt(after_header).child(listening))
-            .child(div().mt(before_composer).child(self.composer(window, cx)))
+            .when(has_listening, |root| {
+                root.child(div().mt(after_header).child(listening))
+            })
+            .child(
+                div()
+                    .mt(if has_listening {
+                        before_composer
+                    } else {
+                        after_header
+                    })
+                    .child(self.composer(window, cx)),
+            )
             .child(
                 div()
                     .mt(before_queue)
@@ -954,6 +925,7 @@ impl Render for PlayerApp {
                     .flex_col()
                     .child(self.sections(cx)),
             )
+            .child(self.audio_footer(window, cx))
             .child(self.help.overlay.clone())
             .into_any_element()
     }

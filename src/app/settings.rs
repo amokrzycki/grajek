@@ -2,7 +2,7 @@ mod reveal;
 use reveal::RevealExt;
 
 use gpui_kit::component::{
-    ActiveTheme, IndexPath, Sizable,
+    ActiveTheme, FocusableExt, IndexPath, Sizable,
     button::ButtonVariants,
     scroll::ScrollableElement,
     select::{Select, SelectDelegate, SelectEvent, SelectItem, SelectState},
@@ -12,9 +12,8 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{AnyElement, App, Focusable, SharedString, TestSupportExt, px};
 
 use super::{
-    AppContext, Button, Context, Disableable, Entity, FontWeight, Input, InputState,
-    InteractiveElement, IntoElement, ParentElement, PlayerApp, StatefulInteractiveElement, Styled,
-    Window, div,
+    AppContext, Context, Disableable, Entity, FontWeight, Input, InputState, InteractiveElement,
+    IntoElement, ParentElement, PlayerApp, StatefulInteractiveElement, Styled, Window, div,
 };
 use crate::player::Command;
 use crate::setup::{Destination, Request, Status};
@@ -301,7 +300,41 @@ impl PlayerApp {
         }
     }
 
-    pub(super) fn settings(&self, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn settings_surface(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        div()
+            .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .font_family(theme.font_family.clone())
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .on_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        if this.state.confirm_setup {
+                            this.send(Command::ConfirmSetup(false));
+                        } else if this.credentials_open {
+                            this.credentials_open = false;
+                            this.focus_settings(window, cx);
+                        } else {
+                            this.settings_open = false;
+                            this.input.read(cx).focus_handle(cx).focus(window, cx);
+                        }
+                        this.help.dismiss(cx);
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(self.header(cx))
+            .child(self.settings(window, cx))
+            .child(self.help.overlay.clone())
+            .into_any_element()
+    }
+
+    pub(super) fn settings(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let setup = &self.state.setup;
         let configured = setup.bot.is_some();
         let theme = cx.theme();
@@ -339,18 +372,18 @@ impl PlayerApp {
                         .border_1().border_color(theme.button_primary)
                         .hover(|button| button.bg(theme.button_primary_hover))
                         .active(|button| button.bg(theme.button_primary_active))
-                        .focus(|button| button.border_2().border_color(theme.button_primary_foreground))
+                        .focus_visible(|button| button.border_2().border_color(theme.button_primary_foreground))
                         .child("Stop and switch")
                         .on_click(cx.listener(|this, _, _, _| { this.send(Command::ConfirmSetup(true)); })))
-                    .child(Button::new("cancel-setup").label("Keep playing")
+                    .child(self.button("cancel-setup").label("Keep playing")
                         .on_click(cx.listener(|this, _, _, _| { this.send(Command::ConfirmSetup(false)); })))));
         }
-        panel = panel.child(self.connection_settings(cx));
+        panel = panel.child(self.connection_settings(window, cx));
         if let Some(notice) = &self.state.notice {
             panel = panel.child(detail(notice.clone(), cx));
         }
         if configured {
-            panel = panel.child(self.destination_settings(cx));
+            panel = panel.child(self.destination_settings(window, cx));
         }
         panel.child(self.preferences_settings(cx))
     }
@@ -369,7 +402,7 @@ impl PlayerApp {
         }
     }
 
-    fn connection_settings(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn connection_settings(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let setup = &self.state.setup;
         let busy = self.state.setup_busy;
         let configured = setup.bot.is_some();
@@ -397,7 +430,7 @@ impl PlayerApp {
                 )
                 .when(configured && !setup.external, |row| {
                     row.child(
-                        Button::new("change-credentials")
+                        self.button("change-credentials")
                             .ghost()
                             .small()
                             .label(if self.credentials_open {
@@ -436,7 +469,7 @@ impl PlayerApp {
                 )
                 .child(
                     div().flex().child(
-                        Button::new("retry-authentication")
+                        self.button("retry-authentication")
                             .label("Retry connection")
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, _| {
@@ -459,38 +492,38 @@ impl PlayerApp {
         if setup.external {
             connection = connection.child(detail("Bot credentials come from your environment or .env file. Change or remove them there.", cx));
         } else if credentials {
-            connection = connection.child(self.credential_settings(cx));
+            connection = connection.child(self.credential_settings(window, cx));
         }
         connection
     }
 
-    fn credential_settings(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn credential_settings(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let busy = self.state.setup_busy;
         div().flex().flex_none().flex_col().gap_2()
             .when(self.state.setup.bot.is_none(), |panel| panel.child(detail("Play YouTube in a Discord voice channel through your own bot.", cx)))
             .child(div().flex().flex_col().gap_1()
                 .child("Bot token")
-                .child(Input::new(&self.token).id("bot-token").aria_label("Discord bot token").disabled(busy).reveal("token-control", &self.settings_scroll)))
+                .child(Input::new(&self.token).focus_bordered(self.focus.keyboard || self.token_error).border_color(self.focus.editing_border(self.token.read(cx).focus_handle(cx).is_focused(window), cx)).id("bot-token").aria_label("Discord bot token").disabled(busy).reveal("token-control", &self.settings_scroll)))
             .when(self.token_error, |panel| panel.child(div().id("token-error").role(gpui_kit::Role::Alert).text_xs().text_color(cx.theme().danger).child("Paste a bot token before connecting.").test_support()))
             .child(div().flex().flex_wrap().gap_2()
-                .child(Button::new("save-token").primary().label("Connect and remember").disabled(busy)
+                .child(self.button("save-token").primary().label("Connect and remember").disabled(busy)
                     .on_click(cx.listener(|this, _, window, cx| this.authenticate(true, window, cx))).reveal("save-control", &self.settings_scroll))
-                .child(Button::new("session-token").label("Use for this session").disabled(busy)
+                .child(self.button("session-token").label("Use for this session").disabled(busy)
                     .on_click(cx.listener(|this, _, window, cx| this.authenticate(false, window, cx))).reveal("session-control", &self.settings_scroll)))
             .child(detail("Remember stores the token in your OS credential vault. Session-only lasts until Quit; an older saved token may return next launch. Never use a personal Discord token or password.", cx))
-            .child(div().flex().child(Button::new("setup-help").ghost().small().label(if self.setup_help { "Hide bot setup guide" } else { "Create and invite a bot…" })
+            .child(div().flex().child(self.button("setup-help").ghost().small().label(if self.setup_help { "Hide bot setup guide" } else { "Create and invite a bot…" })
                 .on_click(cx.listener(|this, _, _, cx| { this.setup_help = !this.setup_help; cx.notify(); })).reveal("guide-control", &self.settings_scroll)))
             .when(self.setup_help, |panel| panel.child(div().flex().flex_col().gap_2()
                 .child(detail("In the Discord Developer Portal, create an application. Open Bot and copy its bot token here. Keep it private: anyone with it can control your bot.", cx))
                 .child(detail("Under OAuth2 → URL Generator, choose bot with View Channels, Connect and Speak. Open the generated link to invite the bot to your server. No privileged intents are needed.", cx))
-                .child(Button::new("developer-portal").label("Open Developer Portal").on_click(|_, _, cx| cx.open_url("https://discord.com/developers/applications")).reveal("portal-control", &self.settings_scroll))))
+                .child(self.button("developer-portal").label("Open Developer Portal").on_click(|_, _, cx| cx.open_url("https://discord.com/developers/applications")).reveal("portal-control", &self.settings_scroll))))
             .when(self.state.setup.bot.is_some() || matches!(self.state.setup.status, Status::Failed(_)) || self.state.setup.storage_notice.is_some(), |panel| panel
-                .child(div().flex().child(Button::new("remove-token").ghost().label("Remove credentials and disconnect").disabled(busy)
+                .child(div().flex().child(self.button("remove-token").ghost().label("Remove credentials and disconnect").disabled(busy)
                     .on_click(cx.listener(|this, _, _, _| { this.send(Command::Setup(Request::Remove)); })).reveal("remove-control", &self.settings_scroll)))
                 .child(detail("Also removes the saved token from this computer. It does not revoke the token on Discord.", cx)))
     }
 
-    fn destination_settings(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn destination_settings(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let setup = &self.state.setup;
         let busy = self.state.setup_busy;
         let mut panel = div().flex().flex_none().flex_col().gap_3()
@@ -498,19 +531,23 @@ impl PlayerApp {
             .when(setup.destination.is_none(), |panel| panel.child(detail("Choose a server, then a voice channel. Selecting a channel won’t join voice or start music.", cx)))
             .child(div().flex().flex_col().gap_1()
                 .child(div().flex().items_center().justify_between().child("Server")
-                    .child(Button::new("refresh-servers").ghost().small().label("Refresh").accessibility_label("Refresh servers").disabled(busy)
+                    .child(self.button("refresh-servers").ghost().small().label("Refresh").accessibility_label("Refresh servers").disabled(busy)
                         .on_click(cx.listener(|this, _, _, _| { this.send(Command::Setup(Request::Refresh)); })).reveal("refresh-server-control", &self.settings_scroll)))
-                .child(Select::new(&self.server_select).id("server-selector").w_full().h(px(32.)).accessibility_label("Discord server")
-                    .placeholder("Choose a server").menu_max_h(px(224.)).disabled(busy || setup.servers.is_empty()).reveal("server-control", &self.settings_scroll)))
+                .child(Select::new(&self.server_select).appearance(false)
+                    .bg(cx.theme().muted).text_color(cx.theme().foreground).rounded(cx.theme().radius)
+                    .border_1().border_color(self.focus.editing_border(self.server_select.read(cx).focus_handle(cx).is_focused(window), cx)).id("server-selector").w_full().h(px(32.)).accessibility_label("Discord server")
+                    .placeholder("Choose a server").menu_max_h(px(224.)).when(busy || setup.servers.is_empty(), |select| select.opacity(0.5)).disabled(busy || setup.servers.is_empty()).reveal("server-control", &self.settings_scroll)))
             .when(setup.servers.is_empty() && !busy, |panel| panel.child(detail("No servers found. Invite this bot to your server, then refresh.", cx)))
             .child(div().flex().flex_col().gap_1()
                 .child(div().flex().items_center().justify_between().child("Voice channel")
-                    .child(Button::new("refresh-channels").ghost().small().label("Refresh").accessibility_label("Refresh voice channels")
+                    .child(self.button("refresh-channels").ghost().small().label("Refresh").accessibility_label("Refresh voice channels")
                         .disabled(busy || setup.browsing.is_none())
                         .on_click(cx.listener(|this, _, _, _| { if let Some(guild) = this.state.setup.browsing { this.send(Command::Setup(Request::Channels(guild))); } })).reveal("refresh-channel-control", &self.settings_scroll)))
-                .child(Select::new(&self.channel_select).id("channel-selector").w_full().h(px(32.)).accessibility_label("Discord voice channel")
+                .child(Select::new(&self.channel_select).appearance(false)
+                    .bg(cx.theme().muted).text_color(cx.theme().foreground).rounded(cx.theme().radius)
+                    .border_1().border_color(self.focus.editing_border(self.channel_select.read(cx).focus_handle(cx).is_focused(window), cx)).id("channel-selector").w_full().h(px(32.)).accessibility_label("Discord voice channel")
                     .placeholder(if setup.browsing.is_none() { "Choose a server first" } else { "Choose a voice channel" })
-                    .menu_max_h(px(224.)).disabled(busy || setup.browsing.is_none() || setup.channels.is_empty()).reveal("channel-control", &self.settings_scroll)))
+                    .menu_max_h(px(224.)).when(busy || setup.browsing.is_none() || setup.channels.is_empty(), |select| select.opacity(0.5)).disabled(busy || setup.browsing.is_none() || setup.channels.is_empty()).reveal("channel-control", &self.settings_scroll)))
             .when(setup.browsing.is_some() && setup.channels.is_empty() && !busy, |panel| panel.child(detail("No voice channels found. Check the bot’s access in this server, then refresh.", cx)));
         if setup
             .channels
@@ -539,7 +576,7 @@ impl PlayerApp {
             if self.state.available {
                 panel = panel.child(
                     div().flex().child(
-                        Button::new("done-settings")
+                        self.button("done-settings")
                             .primary()
                             .label("Back to music")
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -557,10 +594,10 @@ impl PlayerApp {
 
     fn preferences_settings(&self, cx: &Context<Self>) -> impl IntoElement {
         div().flex().flex_none().flex_col().gap_2()
-            .child(div().flex().child(Button::new("preferences-disclosure").ghost().small().label(if self.preferences_open { "Hide preferences" } else { "Preferences…" })
+            .child(div().flex().child(self.button("preferences-disclosure").ghost().small().label(if self.preferences_open { "Hide preferences" } else { "Preferences…" })
                 .on_click(cx.listener(|this, _, _, cx| { this.preferences_open = !this.preferences_open; cx.notify(); })).reveal("preferences-control", &self.settings_scroll)))
             .when(self.preferences_open, |panel| panel
-                .child(Switch::new("close-to-tray").label("Keep playing when the window closes").checked(self.state.close_to_tray)
+                .child(Switch::new("close-to-tray").focus_ring(self.focus.keyboard).label("Keep playing when the window closes").checked(self.state.close_to_tray)
                     .on_change(cx.listener(|this, enabled, _, _| { this.send(Command::CloseToTray(*enabled)); })).reveal("tray-control", &self.settings_scroll))
                 .child(detail("Uses the system tray when available. Choose Quit in the tray to stop Grajek. Without a tray, closing the window quits.", cx)))
     }

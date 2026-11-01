@@ -26,6 +26,9 @@ typography:
   track-title:
     fontSize: "24px"
     fontWeight: 600
+  track-title-compact:
+    fontSize: "20px"
+    fontWeight: 600
   body:
     fontSize: "14px"
   label:
@@ -105,7 +108,7 @@ components:
     textColor: "{colors.text}"
     rounded: "{rounded.control}"
     padding: "0px 8px"
-    height: "36px"
+    height: "44px"
   error-callout:
     backgroundColor: "{colors.danger-fill}"
     textColor: "{colors.danger}"
@@ -148,31 +151,39 @@ The previous theme used a 14px rem, making `p_4` 14px, `text_sm` 12.25px, `text_
 
 ## Product experience and native interaction contract
 
-The 2026-10-30 experience pass supersedes the earlier player-only composition and unchanged-setup scope above; the later Main player composition section supersedes its idle and link-entry descriptions. Signal Ledger colors, fonts, type roles and native integration remain unchanged.
+The 2026-10-30 experience pass supersedes the earlier player-only composition and unchanged-setup scope above; the later Main player cohesion section supersedes its idle and link-entry descriptions. Signal Ledger colors, fonts, type roles and native integration remain unchanged.
 
 Configured settings lead with a compact factual bot status and **Playback destination**: one labeled native server Select, then one voice-channel Select. Refresh belongs beside each field. An explicit selected-destination Status remains controller-owned while browsing another server. Permission and unsupported-stage reasons stay inside the affected option; disabled names use one ellipsized line so their reason cannot collide with the next row, while the accessible name contains the full name and reason. Enabled names can wrap to two lines. Menus have a 224px maximum list height and use the kit's window-aware flip/clamp. Credential editing and Preferences are disclosures. Settings has an explicit scroll handle, scrollbar gutter, and focus-revealing wrappers for offscreen controls. Changing a live destination still invokes the controller's Stop-and-switch confirmation, with explicit focus on the confirmation and Escape/Keep playing cancellation.
 
-First run keeps token entry visible, masked, and labeled, with OS-vault versus session-only semantics and an optional creation/invite guide. No tutorial storage or new wizard is added. Authentication reveals destination selection without joining voice. The validated returning destination keeps the existing startup bypass. Empty playback invites a link; a pending queue retains a usable Play Queue action. Idle has no disabled Pause/Stop or repeated Ready phase line; idle volume sits in the transport slot (beside Play Queue when entries are pending). The active track, timeline and transport retain their existing ownership and geometry. Stop remains available while an accepted Play/Next request awaits its controller snapshot.
+First run keeps token entry visible, masked, and labeled, with OS-vault versus session-only semantics and an optional creation/invite guide. No tutorial storage or new wizard is added. Authentication reveals destination selection without joining voice. The validated returning destination keeps the existing startup bypass. Empty playback invites a link; a pending queue retains a usable Play Queue action. Idle has no disabled Pause/Stop or repeated Ready phase line; idle volume stays in the permanent audio footer. The active track, timeline and transport retain their existing controller ownership. Stop remains available while an accepted Play/Next request awaits its controller snapshot.
 
 Help is now application-owned using Base TooltipOverlay/TooltipRequest and its anchor-aware Positioner. A 300px maximum-width surface wraps within viewport-minus-32px dimensions. Open/close transitions cancel both visible and delayed help, and help is suppressed while menus or settings are active. Pointer ownership prevents an old trigger's leave event from hiding a newer tooltip; keyboard F1 help is not dismissed by pointer modality changes. Escape, ordinary key navigation, pointer actions and window activation changes dismiss help. Required Queue options explanations are inline; import explanations live in the Import playlist tooltip. No dependency or priority/z-order workaround was added.
 
-Semantic rhythm: 4px title/status pairs and frame/actions/status inside the composer, 8px related controls, 12–20px between regions as specified in Main player composition, 16px root inset. The minimum-size error-plus-import case keeps two full rows without any extra compression. Queue insertion is confirmed by the controller snapshot: the composer's fixed-height status line and a lit row position acknowledge it without moving the list (see Main player composition). No optimistic playback/selection or extra animation was introduced.
+Semantic rhythm: 4px title/status pairs and frame/actions/status inside the composer, 8px related controls, 8–16px between regions as specified in Main player cohesion, 16px root inset. The minimum-size error-plus-import case keeps two complete 44px rows inside the actual clipped viewport. Queue insertion is confirmed by the controller snapshot: the composer's fixed-height status line and a status check acknowledge it without moving the list (see Main player cohesion). No optimistic playback/selection or extra animation was introduced.
 
 Evidence and the independent Impeccable/UI UX Pro Max assessments are in `.impeccable/review/experience/REPORT.md`; the implementation specification is `docs/superpowers/plans/2026-10-30-product-experience.md`. The image gallery shows compositor captures, not an HTML implementation. Native XWayland evidence does not establish native Wayland, Windows runtime, live Discord audio, assistive technology or fractional scaling acceptance.
 
-## Main player composition (2026-10-30)
+## Main player cohesion (2026-11-01)
 
-This pass supersedes the earlier player order, idle headline, More disclosure and three-icon row treatment below. Signal Ledger colors, fonts, type roles, native controls and controller semantics are unchanged. Rationale, the two explored candidates and the rejected assessment items are in `docs/superpowers/plans/2026-10-30-player-composition.md`; matched compositor captures are in `.impeccable/review/composition/{before,after}`.
+This implementation supersedes earlier transport-volume, three-action rows and composer shortcut glyph descriptions. The Signal Ledger palette, native typography and controller semantics remain. The candidate comparison is `docs/superpowers/plans/2026-11-01-player-cohesion.md`; native evidence and its limitations are in `.impeccable/review/cohesion/REPORT.md`.
 
-The window is three regions, separated by unequal gaps instead of borders: **Listening** (current track, timeline, transport, volume), **Adding music** (the composer) and **Up next** (Queue/History). Related controls sit 4–8px apart. Between regions the gaps are header→listening 12, listening→composer 20 and composer→Up next 16 at 520×560, and 8/12/8 at 480px height or less (the root keeps this rhythm even when an error and import feedback are both present). The composer follows the listening slot at the same distance in every state.
+**Composition.** A compact connection header leads into the real track, state/time/seek line and transport when applicable, then music entry and a flexible collection. A permanent footer owns Playback preferences and Bot volume. Default region gaps are 12/16/12px; at heights of 480px or less they are 8/12/8px. Related controls retain 4/8px spacing and the root retains 16px insets. Ready with an empty queue omits the listening region entirely; the composer follows the header directly. Pending idle tracks expose a content-width Play Queue. Setup guidance and factual transitional headlines remain.
 
-**Listening by state.** Playing, Paused and loading keep the 24px title, state row, seek slider, Pause 96 / Next 112 / Stop 32 and bounded 120px volume. Configured idle with an empty queue has no headline and no disabled transport; the volume alone sits right-aligned in the transport slot so it stays settable before anything plays. Configured idle with pending entries shows only Play Queue (brass, content-width, never a full-width bar) with volume at the right slot. Setup-needed states keep their headline, one guidance line and a content-width primary action. A playback error while idle is the native callout alone.
+**Listening.** Track titles are 24px on a 30px line at the default size, 20px on 25px at minimum height. State, measured elapsed/duration and the native seek slider share one line. A 104px state slot accommodates Preview and Seeking without resizing the slider during a drag; keyboard and accessible seek semantics remain controller-owned. Pause/Resume 96px, Next 112px and Stop 32px form a content-width transport group. No disabled idle transport or simulated progress appears.
 
-**Composer.** One 40px frame owns the single 1px boundary and holds the native input plus Play now at its right end (32px, an Enter glyph, brass when it is the one primary, neutral during Playing/Paused). Under it a quiet row: Add to queue (neutral small, Ctrl+Enter glyph) and Import playlist (ghost; brass text only when the entered link is a playlist or a watch link with `list=`; it reads Cancel import while importing). Under that, one fixed 16px status line shows, in order: import progress/result, the confirmed-add line, link recognition, or nothing. Recognition uses the same pure URL parsers as the controller, never plays or imports, and does not scold unrecognized text. There is no visible link label and no More popover; the accessible name stays Paste YouTube link.
+**Volume.** The footer is outside scrolling content, separated by one quiet top rule. Playback preferences stay on the left; a bounded 220px group on the right contains speaker, Bot volume, the native slider and a readable 14px mono percentage. Position is stable in idle, loading, playing and paused states, including an empty queue. It controls the bot stream, not system/device volume. No popover is required to adjust it. Keyboard arrows, Page keys, Home/End, coalescing, commit and controller rollback are unchanged.
 
-**Confirmed add.** Add to queue sends Enqueue and records the submitted text with the ids already queued. A snapshot with a new id confirms it: the field is cleared only if the text is unchanged, the status line reads `Added to queue · #N · title` with a brass check, and that row's position lights. A snapshot with a new error refuses it: text stays and the error callout explains. Any other snapshot keeps waiting. Typing or another command retires the line. A repeat of the unanswered text is ignored; an empty field says `Paste a link first.` locally. No timer, toast, optimistic row or optimistic clearing exists.
+**Music entry.** One 40px frame holds the native editor and 32px Play now. Add to queue and explicit Import playlist are quiet ghost actions beneath it. Enter/Ctrl+Enter live in tooltips and F1 help rather than visible technical glyphs. Empty submission gives local actionable guidance and sends no empty Play request. Every edit retires local validation. Editing also retires an old completed/failed import message; a running import remains visible, and a changed controller import status is shown anew. The fixed 16px Status line preserves geometry and prioritizes current import feedback, controller-confirmed insertion, then link recognition. Confirmed insertion clears only unchanged submitted text and marks the added entry with a check in the status line. Playback, queue insertion and playlist import are never claimed optimistically. Paste never submits.
 
-**Queue.** Rows are 36px: 24px mono position, one-line title, then actions. The next entry has a brass position and a medium-weight title; other titles use 86% ink. `↑ ↓` are one tight pair, 8px apart from `✕`. Their ink is 70% at rest (non-disabled) and full while focus is inside the row; disabled uses 35%. All three stay visible and reachable by Tab in the existing order. With focus in a row, Alt+Up / Alt+Down move the entry and Delete removes it; focus follows a moved entry. When the focused entry is removed, focus moves to the Remove control of the entry now in that slot (the last one if it was last), and to the link field when the queue is empty. The empty queue reads `Nothing up next.` and nothing else. Drag-and-drop is intentionally absent.
+**One track-row system.** Queue and History use a shared 44px row shell with 8px horizontal padding, 14px title, quiet 12px mono measurements, a reserved scrollbar gutter, full-title accessible text/tooltips, restrained hover and keyboard focus. Rows are flat; they do not silently start playback. Queue has quiet ordinals, a medium-weight next title and a visible More trigger. History has an explicit leading Replay button, title, aligned duration when known and the same More trigger. No fabricated metadata or artwork is added.
+
+**Actions.** Queue More exposes Move up, Move down and Remove from queue; unavailable moves retain native disabled controls. Alt+Up/Down and Delete remain direct row shortcuts. History More exposes Add to queue and Forget from History; Replay is explicit and its accessible help explains that it replaces current playback. Tab/Shift+Tab traverse every row, Up/Down and Home/End reveal logical rows, and arrows/Tab navigate enabled native popover buttons. Enter/Space activate once, Escape dismisses, and focus returns to the trigger or a surviving neighbour/input after controller changes. Queue focus follows stable IDs; History menu operations capture URL identity and focus follows the same URL across History insertion, closing the obsolete menu. Snapshot removal reconciles open menu targets. Clear History retains confirmation and keyboard cancellation recovery.
+
+**Context.** Counts appear once per tab: Up next · N (· Full at capacity) and History · N. Only History shows Clear history beside the tabs. Playback in the footer keeps Repeat, Remember queue, Continue on error and Clear queue available from either collection without competing with History actions.
+
+**Focus-visible.** GPUI already tracks per-window modality and refreshes when it changes. Kit Button 0.7.3 paints raw focus; Select also paints a focused border independently of its focus-ring option. `src/app/focus.rs` adapts Kit's button option through one window policy; the native selector keeps its behavior with appearance supplied by that same policy. Base confirmation uses `focus_visible`. Sliders gate their reserved border through the window policy. URL/token inputs retain a brighter neutral editing boundary for pointer focus and brass for keyboard focus; token validation may explicitly emphasize recovery. Actual focus, native activation, accessible names, disabled state and selection semantics are preserved. Pointer hover/press remain native. Typing only affects the actual focused editor. No replacement input event tracker, focus-clearing hack, global accessibility suppression or backend patch is introduced.
+
+**Evidence boundary.** Tests and native screenshots establish the exercised Linux X11/XWayland offline states and intents. They do not establish live Discord audio, native Wayland, Windows runtime, assistive-technology output, fractional scaling or owner acceptance. No performance gain is claimed.
 
 ## Colors
 
@@ -226,13 +237,13 @@ Dark remains the existing default. `style::init` calls `Theme::change(ThemeMode:
 - **Measurement:** `measurement`, with mono, for elapsed/duration, history duration and queue positions.
 - **Volume measurement:** `volume-measurement`, with mono, in a reserved right-aligned slot.
 
-The track title is 24px semibold on a 30px line; body/control/list titles and volume are 14px. Connection and playback metadata use 12px on a 16px line; errors use the same 12/16 rhythm. Measurements and queue positions retain the native mono family. Kit sizing uses a 16px rem, independently of the player's 14px body role. Preserve the same hierarchy at minimum size rather than shrinking text.
+The track title is 24px semibold on a 30px line (20/25px at minimum height); body/control/list titles and volume are 14px. Connection and playback metadata use 12px on a 16px line; errors use the same 12/16 rhythm. Measurements and queue positions retain the native mono family. Kit sizing uses a 16px rem, independently of the player's 14px body role. Body titles and controls keep their established size at minimum height.
 
 **The Measured Data Rule.** Align changing digits with mono. Keep titles on one line with an ellipsis and full-text tooltip; do not shrink body titles below their established size to solve density.
 
 ## Layout
 
-The root is a vertical flex composition with a true 16px inset. Section gaps are unequal and set in Main player composition above; type and controls keep their sizes at 480px height. `style::space` names the shared 4px tight, 8px group, 12px detail and 16px section/inset values; kit utilities use the same 16px rem. Title/state/timeline/transport use a 4px internal cadence, the input/actions use 8px, and transport/volume retain at least 12px separation. Outer overflow stays hidden. Default window: 520×560; minimum: 420×480. These are native constraints, not web breakpoints. Larger windows reveal more list rows rather than enlarging controls.
+The root is a vertical flex composition with a true 16px inset. Section gaps are unequal and set in Main player cohesion above; body type and controls keep their sizes at 480px height. `style::space` names the shared 4px tight, 8px group, 12px detail and 16px section/inset values; kit utilities use the same 16px rem. Title/state/timeline/transport use a 4px internal cadence, the input/actions use 4px, and audio volume has its own permanent footer. Outer overflow stays hidden. Default window: 520×560; minimum: 420×480. These are native constraints, not web breakpoints. Larger windows reveal more list rows rather than enlarging controls.
 
 The player orders: compact header; the listening block for the current state (none when idle and empty); the composer (frame with Play now, Add to queue and Import playlist, fixed status line); underline Up next/History navigation with Queue options; flexible scrolling list. Spacing separates the player from URL entry; no player separator is needed. Input and transport remain fixed while lists scroll. An absent timeline creates no empty sibling or residual gap.
 
@@ -240,9 +251,9 @@ Established player geometry:
 
 - Transport and Play now share 32px; the composer frame is 40px; Add to queue and Import playlist are the small 28px native size; all use 4px radius. Native buttons retain 10px horizontal padding, 14px text and 16px icons.
 - Pause/Resume reserves 96px; Next/Play Queue reserves 112px; Stop is a 32px square ghost icon with an explicit accessible label and tooltip. Play Queue omits the skip icon so its full label fits.
-- Volume occupies a bounded 120px region beside transport. The transport group retains its width instead of stretching Pause.
+- Volume occupies a bounded 220px footer group. Transport retains its content width.
 - State symbol is 12px and unboxed; no square stamp or reserved decorative tile.
-- Rows are 36px high; three always-visible 24px native icon buttons form a pair plus a separated Remove. Ink is quiet at rest and full while focus is inside the row. Queue positions reserve 24px; history duration reserves 48px.
+- Shared rows are 44px high. A visible 24px More trigger exposes row operations; History also has explicit Replay. Queue positions reserve 24px; History durations reserve 40px.
 - Underline tabs retain native small height. Queue options popover content is 300px wide.
 
 Lists use flexible height, zero minimum height and native vertical scrollbars. Titles grow and truncate; positions, durations and actions retain their slots. Preserve two full rows in the stressed minimum-size layout, including error and import feedback. Avoid a redundant pending-count line or an additional queue toolbar.
@@ -259,15 +270,15 @@ No decorative surface shadows: `theme.shadow = false`. Depth comes from tones, f
 
 Use the frontmatter control radius and existing large-radius token. List rows and error callouts use the control radius; slider thumbs and the small connection dot stay round. Native neutral buttons and inputs retain their boundaries. Filled primary and ghost buttons retain native borderless geometry.
 
-The playback-state symbol has no background, border, button geometry, hover behavior or focus target. Volume and seek wrappers reserve a transparent border at rest and switch to brass on focus without shifting layout.
+The playback-state symbol has no background, border, button geometry, hover behavior or focus target. Volume and seek wrappers reserve a transparent border at rest and switch to brass for keyboard focus without shifting layout.
 
 ## Components
 
 ### Buttons and priority
 
-Keep native `Button`, theme variants, keyboard handling, disabled logic and accessible labels. Pause/Resume is the filled primary while usable in Playing/Paused; Play now supplies that emphasis in other phases. Play now remains available according to the existing controller gate even while playback controls carry the visual priority. Add to queue and Next remain neutral; Stop stays ghost.
+Keep native `Button`, theme variants, keyboard handling, disabled logic and accessible labels. Pause/Resume is the filled primary while usable in Playing/Paused; Play now supplies that emphasis in other phases. Play now remains available according to the existing controller gate even while playback controls carry the visual priority. Add to queue and Stop stay ghost; Next remains neutral.
 
-Row actions remain always visible native ghost icon buttons with explicit accessible labels and tooltips. First/last queue moves retain disabled logic. Clear history keeps its existing two-step confirmation, danger Yes, clear and separate Cancel.
+Row action triggers remain always visible native ghost buttons with explicit accessible labels and tooltips; their operations live in shared native popovers. First/last queue moves retain disabled logic. Clear history keeps its existing two-step confirmation, danger Yes, clear and separate Cancel.
 
 ### Header and Discord context
 
@@ -285,7 +296,7 @@ Known nonzero duration exposes the existing native progress slider beneath title
 
 ### Volume
 
-Keep the speaker icon, native slider and right-aligned mono percentage inside the bounded transport-row region. Volume2/VolumeX follows the actual percentage. Bar uses control-border; thumb uses brass. Preserve Tab availability, the reserved focus border, arrow/Page/Home/End handling, live watch updates, release persistence and controller rollback. This is a composition change; volume ownership remains unchanged.
+Keep the speaker icon, Bot volume label, native slider and right-aligned mono percentage inside the permanent audio footer. Volume2/VolumeX follows the actual percentage. Bar uses control-border; thumb uses brass. Preserve Tab availability, the reserved focus border, arrow/Page/Home/End handling, live watch updates, release persistence and controller rollback. This is a composition change; volume ownership remains unchanged.
 
 ### Playback and seek errors
 
@@ -295,27 +306,27 @@ The danger callout sits immediately below the playback group, before link entry.
 
 Use the existing full-width native input with the current Paste YouTube link placeholder and accessible label. Preserve input handling, selection, focus/caret, controller gates and test-support identifier. Enter invokes Play now; Ctrl+Enter adds a single video to the queue. A watch link containing a playlist still keeps single-video behavior for those actions. Pasting alone never starts playback or import.
 
-The URL frame is the sole owner of its 1px boundary; the embedded native `Input` uses `bordered(false)` and keeps editing, selection and accessibility. The kit otherwise paints both its input border and an outer focus ring. A neutral boundary becomes slightly brighter on hover and brass on focus, without changing geometry. This frame supplies hover styling because kit Input does not expose that builder API. Do not add another wrapper border or suppress the replacement focus indicator.
+The URL frame is the sole owner of its 1px boundary; the embedded native `Input` uses `bordered(false)` and keeps editing, selection and accessibility. The kit otherwise paints both its input border and an outer focus ring. A neutral boundary becomes brighter on hover/pointer editing and brass on keyboard focus, without changing geometry. This frame supplies hover styling because kit Input does not expose that builder API. Do not add another wrapper border or suppress the replacement focus indicator.
 
 URL focus retention is intentional: startup/Play prepare the next link, native mouse buttons preserve typing focus, and disabled-control recovery returns here. Snapshot updates do not automatically blur the field. Capture focused and unfocused states explicitly.
 
-Play now lives inside the frame; Add to queue and Import playlist sit beneath it as quiet native buttons (see Main player composition). Import uses the current link, focuses the input afterwards and never starts or interrupts playback. The earlier More popover was removed because it concealed a single action.
+Play now lives inside the frame; Add to queue and Import playlist sit beneath it as quiet native buttons (see Main player cohesion). Import uses the current link, focuses the input afterwards and never starts or interrupts playback. The earlier More popover was removed because it concealed a single action.
 
 Import feedback shares the composer's fixed status line (a native Status region with a full accessible message and tooltip). During an import the Import playlist control becomes Cancel import in place. Preserve cancellation, pending-command protection, capacity rules and focus recovery when import finishes. No fabricated progress percentages or automatic paste action are introduced.
 
 ### Queue options and navigation
 
-Use native underline tabs labelled Up next · N and History. The pending count appears once in Up next, with · Full at capacity. Queue options sits alongside the tabs and is available from History too. No pending-count header or separate queue-preferences toolbar remains.
+Use native underline tabs labelled Up next · N and History · N. The pending count appears once in Up next, with · Full at capacity. The Playback disclosure in the footer makes queue preferences available from History too. No pending-count header or separate queue-preferences toolbar remains.
 
 Queue options is a native `Popover` with left-aligned Repeat, Remember queue, Continue on error and Clear queue actions and a trailing native chevron. Its small ghost trigger uses subtle brass text when repeat is active; tooltip and accessible label expose the actual repeat mode. It does not become a second filled primary. The repeat row labels and cycles Off → Repeat Track → Repeat Queue, preserving saved controller semantics: only successful natural completion repeats, and Next/Stop bypass repeat. Remember queue and Continue on error render saved preferences without optimistic state.
 
-Clear queue removes pending entries and cancels an active import while preserving the current track. It is disabled until the controller is ready and whenever both queue and import are absent. Keep its access from either tab. History retains its own saved count, notices and clear confirmation.
+Clear queue removes pending entries and cancels an active import while preserving the current track. It is disabled until the controller is ready and whenever both queue and import are absent. Keep its access from either tab. History retains its tab count, notices and clear confirmation.
 
 Native popover triggers retain keyboard activation. Scoped `PlayerMenuControl` Enter/Space activation keeps menu controls from losing activation to the popover binding. Escape closes a popover and returns focus to its trigger. Section changes close Queue options; opening Settings or losing gateway availability closes both menus. Gateway loss also recovers input focus. Ctrl+1/Ctrl+2 switches Up next/History; do not claim arrow-key tab navigation was added to kit tabs.
 
 ### Lists and empty states
 
-Rows retain one-line titles, full-title or explanatory URL tooltips, mono positions/durations and always-visible actions (queue behavior is specified in Main player composition). Loading title… and Title unavailable remain factual and playable according to controller gates. Hover uses the native list-hover color. Queue/history scrolling, keyboard row navigation and accessible labels remain unchanged.
+Rows retain one-line titles, full-title or explanatory URL tooltips, mono positions/durations and always-visible action triggers (see Main player cohesion). Loading title… and Title unavailable remain factual and playable according to controller gates. Hover uses the native list-hover color. Queue/history scrolling, keyboard row navigation and accessible labels remain unchanged.
 
 Empty guidance is one short truthful line, left-aligned near the list top, never a restatement of the composer. Avoid decorative icons or a centered hero. Persistent History notices remain metadata-sized and clamp to two lines.
 
@@ -334,7 +345,7 @@ No new application animation, polling or frame-request loop belongs to this comp
 - **Do** preserve Signal Ledger colors, native controls and installed platform font resolution.
 - **Do** lead with the title and factual playback state, then transport and bounded volume.
 - **Do** retain one filled primary, visible small header actions and quiet visible secondary actions.
-- **Do** preserve the root inset, fixed controls, flexible lists and 36px row rhythm.
+- **Do** preserve the root inset, fixed controls, flexible lists and 44px row rhythm.
 - **Do** keep explicit state text, visible focus, accessible labels and full-text tooltips.
 - **Do** verify both native sizes, popovers, long text, loading, errors and disabled states against the final source.
 

@@ -151,7 +151,7 @@ fn native_player_redesign_evidence() {
         })).expect("native window");
         let executor = cx.background_executor().clone();
         cx.spawn(async move |cx| {
-            let mut cases = vec!["idle", "playing", "playing-empty", "focused", "unfocused", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "setup", "settings", "destination", "credentials", "help", "options-hover", "server-selector", "channel-selector", "selector-keyboard", "permission", "setup-help", "auth-error", "idle-queued", "long-title", "link-video", "link-playlist", "added", "reordered", "removed", "removed-keyboard", "settings-long", "onboarding-player", "destination-player", "settings-scroll", "confirmation", "help-bottom"];
+            let mut cases = vec!["idle", "playing", "playing-empty", "focused", "unfocused", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "setup", "settings", "destination", "credentials", "help", "options-hover", "server-selector", "channel-selector", "selector-keyboard", "permission", "setup-help", "auth-error", "idle-queued", "long-title", "link-video", "link-playlist", "added", "reordered", "removed", "removed-keyboard", "settings-long", "onboarding-player", "destination-player", "settings-scroll", "confirmation", "help-bottom", "idle-history", "playing-history", "queue-hover", "history-hover", "history-keyboard", "queue-menu", "history-menu", "focus-action-unfocused", "focus-action-hover", "focus-action-pressed", "focus-action-pointer", "focus-action-tab", "focus-action-activated", "focus-action-restored", "play-pointer", "play-keyboard", "focused-pointer", "focused-keyboard", "history-unicode"];
             if std::env::var_os("GRAJEK_CAPTURE_INTERACTIONS").is_some() {
                 cases.extend(["hover-input", "hover-button", "pressed-button", "keyboard-button", "keyboard-row"]);
             }
@@ -189,9 +189,10 @@ fn native_player_redesign_evidence() {
                         let mut snapshot = super::experience::configured();
                         if matches!(name, "destination" | "destination-player") { snapshot.setup.destination = None; snapshot.available = false; snapshot.setup.status = crate::setup::Status::NeedsDestination; }
                         snapshot
-                    } else if matches!(name, "idle" | "idle-queued") {
+                    } else if matches!(name, "idle" | "idle-queued" | "idle-history" | "play-pointer" | "play-keyboard") || name.starts_with("focus-action-") {
                         let mut snapshot = super::experience::configured();
                         if name == "idle-queued" { snapshot.queue = with_lists(Phase::Ready, 3, 0).queue; }
+                        if name == "idle-history" { snapshot.history = with_lists(Phase::Ready, 0, 12).history; }
                         snapshot
                     } else {
                         let phase = match name {
@@ -245,6 +246,7 @@ fn native_player_redesign_evidence() {
                     }
                     if name == "playing-empty" { snapshot.queue.clear(); }
                     if name == "long-title" { snapshot.track = playing(Phase::Playing, Some("Nils Frahm & Ólafur Arnalds — Collaborative Improvisation Sessions, Full Concert Recording (Live at the Funkhaus Berlin, 2019 — Remastered)"), 84).track; }
+                    if name == "history-unicode" { snapshot.history[0].title = Some("Żółć · 音楽を楽しむ · Привет · A long Unicode track title ".repeat(12)); }
                     if name == "full" { snapshot.queue = with_lists(Phase::Playing, 100, 0).queue; }
                     if name == "options" { snapshot.preferences.repeat = RepeatMode::Queue; }
                     let expected_phase = snapshot.phase;
@@ -255,13 +257,14 @@ fn native_player_redesign_evidence() {
                         app.credentials_open = matches!(name, "credentials" | "settings-scroll");
                         app.preferences_open = matches!(name, "settings-long" | "settings-scroll");
                         app.input.update(cx, |input, cx| input.set_value("", window, cx));
+                        app.pending = None;
                         app.added = None;
                         app.enqueue_pending = None;
                         app.local_hint = None;
                         app.settings_scroll.set_offset(gpui_kit::point(px(0.), px(0.)));
                         app.setup_help = matches!(name, "setup-help" | "settings-long" | "settings-scroll");
                         app.help.dismiss(cx);
-                        app.select_section(if name == "history" { Section::History } else { Section::Queue }, cx);
+                        app.select_section(if matches!(name, "history" | "idle-history" | "playing-history" | "history-hover" | "history-keyboard" | "history-menu" | "history-unicode") { Section::History } else { Section::Queue }, cx);
                         if matches!(name, "setup" | "setup-help" | "auth-error" | "credentials") {
                             window.focus(&app.token.read(cx).focus_handle(cx), cx);
                         } else if name == "focused" {
@@ -296,7 +299,7 @@ fn native_player_redesign_evidence() {
                         let ids: Vec<u64> = after_commands.queue.iter().map(|item| item.id).collect();
                         let mut acknowledged = after_commands.clone();
                         if name == "reordered" {
-                            cx.update_window(window, |_, window, cx| window.click(("queue-down", ids[0]), cx)).expect("move first row down");
+                            cx.update_window(window, |_, window, cx| { window.click(("queue-more", ids[0]), cx); window.render_frame(cx); window.click(("queue-down", ids[0]), cx); }).expect("move first row down");
                             executor.timer(Duration::from_millis(150)).await;
                             assert!(matches!(receiver.try_recv(), Ok(Command::Shift { id, up: false }) if id == ids[0]), "reordered: Shift intent sent");
                             acknowledged.queue.swap(0, 1);
@@ -306,14 +309,14 @@ fn native_player_redesign_evidence() {
                                 cx.update_window(window, |_, window, cx| {
                                     view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx));
                                     for _ in 0..40 {
-                                        if window.find(("queue-remove", ids[1])).focused() == Some(true) { break; }
+                                        if window.find(("queue-more", ids[1])).focused() == Some(true) { break; }
                                         window.press("tab", cx);
                                     }
-                                    assert_eq!(window.find(("queue-remove", ids[1])).focused(), Some(true), "keyboard focus reached Remove");
+                                    assert_eq!(window.find(("queue-more", ids[1])).focused(), Some(true), "keyboard focus reached Remove");
                                     window.press("delete", cx);
                                 }).expect("remove second row from the keyboard");
                             } else {
-                                cx.update_window(window, |_, window, cx| window.click(("queue-remove", ids[1]), cx)).expect("remove second row");
+                                cx.update_window(window, |_, window, cx| { window.click(("queue-more", ids[1]), cx); window.render_frame(cx); window.click(("queue-remove", ids[1]), cx); }).expect("remove second row");
                             }
                             executor.timer(Duration::from_millis(150)).await;
                             assert!(matches!(receiver.try_recv(), Ok(Command::Dequeue(id)) if id == ids[1]), "removed: Dequeue intent sent");
@@ -344,7 +347,7 @@ fn native_player_redesign_evidence() {
                             view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx));
                             let target: ElementId = if name == "keyboard-button" {
                                 "pause-resume".into()
-                            } else { ("queue-down", 10_u64).into() };
+                            } else { ("queue-more", 10_u64).into() };
                             for _ in 0..32 {
                                 if window.find(target.clone()).focused() == Some(true) { break; }
                                 window.press(if name == "keyboard-button" { "shift-tab" } else { "tab" }, cx);
@@ -374,6 +377,39 @@ fn native_player_redesign_evidence() {
                         cx.update_window(window, |_, window, cx| window.hover(if name == "help" { "title" } else { "continue-on-error" }, cx)).expect("hover native help");
                         executor.timer(Duration::from_millis(800)).await;
                     }
+                    if matches!(name, "queue-hover" | "history-hover" | "history-keyboard" | "queue-menu" | "history-menu") || name.starts_with("focus-action-") || matches!(name, "play-pointer" | "play-keyboard" | "focused-pointer" | "focused-keyboard") {
+                        cx.update_window(window, |_, window, cx| {
+                            if matches!(name, "queue-hover" | "history-hover") {
+                                window.hover(if name == "queue-hover" { ElementId::from(("queue-row", 10_u64)) } else { ElementId::from(("history-row", 0_usize)) }, cx);
+                            }
+                            if name == "focused-pointer" { window.click("url", cx); }
+                            if name == "focused-keyboard" { window.press("tab", cx); view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx)); }
+                            if name.starts_with("focus-action-") || matches!(name, "play-pointer" | "play-keyboard" | "history-keyboard") {
+                                let target: ElementId = if name == "history-keyboard" { ("history-play", 0_usize).into() } else if name.starts_with("play-") { "play".into() } else { "enqueue".into() };
+                                let navigated = !matches!(name, "focus-action-unfocused" | "focus-action-hover" | "focus-action-pressed");
+                                if navigated {
+                                    view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx));
+                                    for _ in 0..40 { if window.find(target.clone()).focused() == Some(true) { break; } window.press("tab", cx); }
+                                    assert_eq!(window.find(target.clone()).focused(), Some(true));
+                                }
+                                match name {
+                                    "focus-action-hover" => window.hover(target, cx),
+                                    "focus-action-pressed" => {
+                                        window.hover(target.clone(), cx);
+                                        window.dispatch_event(MouseDownEvent { button: MouseButton::Left, position: window.find(target).bounds().center(), ..Default::default() }.to_platform_input(), cx);
+                                    }
+                                    "focus-action-pointer" | "play-pointer" => window.click(target, cx),
+                                    "focus-action-activated" => window.press("space", cx),
+                                    "focus-action-restored" => { window.click("queue-options", cx); window.render_frame(cx); window.press("escape", cx); },
+                                    _ => {}
+                                }
+                            }
+                            if matches!(name, "queue-menu" | "history-menu") {
+                                window.click(if name == "queue-menu" { ElementId::from(("queue-more", 10_u64)) } else { ElementId::from(("history-more", 0_usize)) }, cx);
+                            }
+                        }).expect("cohesion pointer and keyboard matrix");
+                        executor.timer(Duration::from_millis(200)).await;
+                    }
                     // Settle X11's buffered presentation before reading native pixels.
                     for _ in 0..3 {
                         let (presented, frame) = tokio::sync::oneshot::channel();
@@ -400,7 +436,7 @@ fn native_player_redesign_evidence() {
                         let mut geometry = serde_json::Map::new();
                         let b = window.bounds();
                         geometry.insert("window-on-display".into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
-                        for id in ["player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination"] {
+                        for id in ["player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination", "audio-footer", "volume", "volume-percent", "queue-list", "history-list", "track-options-menu"] {
                             if let Some(element) = window.try_find(id) {
                                 let b = element.bounds();
                                 geometry.insert(id.into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
@@ -430,7 +466,7 @@ fn native_player_redesign_evidence() {
                     #[cfg(not(target_os = "linux"))]
                     cx.update_window(window, |_, window, _| window.render_to_image().expect("native pixels").save(&path).expect("save native image")).expect("capture window");
                     cx.update_window(window, |_, window, cx| {
-                        if name == "pressed-button" {
+                        if matches!(name, "pressed-button" | "focus-action-pressed") {
                             window.dispatch_event(MouseUpEvent {
                                 button: MouseButton::Left,
                                 position: gpui_kit::point(px(2.), px(2.)),
@@ -439,6 +475,7 @@ fn native_player_redesign_evidence() {
                         }
                         window.press("escape", cx);
                     }).expect("dismiss menus and release pointer");
+                    if name == "confirmation" { assert!(matches!(receiver.try_recv(), Ok(Command::ConfirmSetup(false))), "fixture confirmation cancellation"); }
                 }
             }
             while let Ok(command) = receiver.try_recv() {
@@ -508,6 +545,42 @@ fn native_player_redesign_evidence() {
             executor.timer(Duration::from_millis(100)).await;
             assert!(matches!(receiver.try_recv(), Ok(Command::ConfirmSetup(false))));
             std::fs::write(directory.join("selector-interactions.txt"), "Native keyboard server selection: Channels(guild 4), no destination/playback mutation.\nNative keyboard voice-channel selection: Select(guild 4, channel 6), no Play/Next/voice join.\nController confirmation focuses Stop and switch; Escape submits ConfirmSetup(false).\n").expect("selector interaction evidence");
+            let mut music = with_lists(Phase::Playing, 3, 3);
+            music.track = playing(Phase::Playing, Some("Native replay check"), 84).track;
+            music.transport_ack = cx.update_window(window, |_, _, cx| view.read(cx).transport_seq).expect("current transport serial");
+            cx.update_window(window, |_, _, cx| view.update(cx, |app, cx| { app.settings_open = false; app.select_section(Section::History, cx); })).expect("return to History");
+            snapshots.send_replace(music.clone());
+            executor.timer(Duration::from_millis(150)).await;
+            cx.update_window(window, |_, window, cx| window.click(("history-play", 0_usize), cx)).expect("native Replay click");
+            executor.timer(Duration::from_millis(100)).await;
+            let Command::Transport { id, command } = receiver.try_recv().expect("native Replay intent") else { panic!("expected replay transport"); };
+            assert!(matches!(*command, Command::Play(url) if url == music.history[0].url));
+            cx.update_window(window, |_, _, cx| assert_eq!(view.read(cx).state.track, music.track, "Replay cannot claim success before acknowledgment")).expect("confirmed track retained");
+            music.transport_ack = id;
+            snapshots.send_replace(music.clone());
+            executor.timer(Duration::from_millis(150)).await;
+            cx.update_window(window, |_, window, cx| {
+                view.update(cx, |app, cx| app.select_section(Section::Queue, cx));
+                window.render_frame(cx);
+                window.click(("queue-more", 11_u64), cx);
+                window.render_frame(cx);
+                window.click(("queue-up", 11_u64), cx);
+            }).expect("native reorder menu");
+            assert!(matches!(receiver.try_recv(), Ok(Command::Shift { id: 11, up: true })));
+            cx.update_window(window, |_, _, cx| assert_eq!(view.read(cx).state.queue[0].id, 10)).expect("queue waits for acknowledgment");
+            music.queue.swap(0, 1);
+            snapshots.send_replace(music);
+            executor.timer(Duration::from_millis(150)).await;
+            cx.update_window(window, |_, window, cx| {
+                assert_eq!(view.read(cx).state.queue[0].id, 11);
+                window.click("volume", cx);
+                window.press("home", cx);
+                assert_eq!(view.read(cx).volume_requests.borrow().percent, 0);
+                window.press("right", cx);
+                assert_eq!(view.read(cx).volume_requests.borrow().percent, 5);
+                assert!(view.read(cx).volume_requests.borrow().commit);
+            }).expect("native volume pointer and keyboard transition");
+            std::fs::write(directory.join("music-interactions.txt"), "Native Replay sends one URL-specific intent and retains the confirmed track while pending.\nNative row menu sends one Shift; only the acknowledged snapshot changes FIFO order.\nPointer volume focus followed by Home/Right submits committed 0/5 percent bot-volume requests.\n").expect("music interaction evidence");
             cx.update(|cx| cx.quit());
         }).detach();
     });
