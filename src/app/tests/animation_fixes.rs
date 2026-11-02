@@ -112,17 +112,17 @@ fn removal_edges_dispatch_outside_the_scrollbar_lane(cx: &mut TestAppContext) {
             let pointer = point(viewport.center().x, top + px(10.));
             for (delta, index) in [
                 (0., 0_usize),
-                (-720., 20),
+                (-880., 20),
                 (-10000., if section == Section::Queue { 99 } else { 49 }),
             ] {
                 wheel(cx, window, pointer, delta);
                 let id = if section == Section::Queue {
                     ElementId::from((
-                        "queue-remove",
+                        "queue-more",
                         10 + u64::try_from(index).expect("small index"),
                     ))
                 } else {
-                    ElementId::from(("history-remove", index))
+                    ElementId::from(("history-more", index))
                 };
                 let control = bounds(cx, window, id.clone());
                 // A pointer move reveals the active overlay before the actual down/up events.
@@ -133,6 +133,18 @@ fn removal_edges_dispatch_outside_the_scrollbar_lane(cx: &mut TestAppContext) {
                         cx,
                     );
                 });
+                click(
+                    cx,
+                    window,
+                    if section == Section::Queue {
+                        ElementId::from((
+                            "queue-remove",
+                            10 + u64::try_from(index).expect("small index"),
+                        ))
+                    } else {
+                        ElementId::from(("history-remove", index))
+                    },
+                );
                 let command = received.try_recv();
                 match section {
                     Section::Queue => {
@@ -313,7 +325,7 @@ fn offscreen_rows_do_not_participate_in_each_frame(cx: &mut TestAppContext) {
         act(cx, window, gpui_kit::test::TestWindowExt::render_frame);
         let (rows, _) = ROW_COST.with(std::cell::Cell::get);
         assert!(
-            (1..=8).contains(&rows),
+            (1..=10).contains(&rows),
             "{section:?}: steady frame constructed {rows} rows"
         );
     }
@@ -407,7 +419,11 @@ fn pause_then_play_accepts_one_intent_and_keeps_it_protected(cx: &mut TestAppCon
     }
 }
 
-fn focused(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) -> bool {
+pub(super) fn focused(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    id: impl Into<ElementId>,
+) -> bool {
     let id = id.into();
     let mut result = false;
     act(cx, window, |window, _| {
@@ -421,14 +437,15 @@ fn focused(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<Eleme
 #[gpui_kit::test]
 #[expect(
     clippy::expect_used,
-    reason = "fixed test indices and nonempty action list are asserted by the fixture"
+    clippy::too_many_lines,
+    reason = "full forward/reverse list traversal and menu activation share the same native focus fixture"
 )]
 fn every_row_action_remains_keyboard_accessible(cx: &mut TestAppContext) {
     for section in [Section::Queue, Section::History] {
         let (window, view, mut received, _states) = open(cx, long_lists(Phase::Ready, 12, 12));
         show(cx, &view, section);
         let first = if section == Section::Queue {
-            ElementId::from(("queue-down", 10_u64))
+            ElementId::from(("queue-more", 10_u64))
         } else {
             ElementId::from(("history-play", 0_usize))
         };
@@ -446,23 +463,17 @@ fn every_row_action_remains_keyboard_accessible(cx: &mut TestAppContext) {
         assert!(focused(cx, window, first));
         let mut order = Vec::new();
         for index in 0..12_usize {
-            for action in 0..3 {
-                if section == Section::Queue
-                    && ((index == 0 && action == 0) || (index == 11 && action == 1))
-                {
-                    continue;
-                }
-                order.push(match section {
-                    Section::Queue => ElementId::from((
-                        ["queue-up", "queue-down", "queue-remove"][action],
-                        10 + u64::try_from(index).expect("small index"),
-                    )),
-                    Section::History => ElementId::from((
-                        ["history-play", "history-queue", "history-remove"][action],
-                        index,
-                    )),
-                });
+            if section == Section::History {
+                order.push(ElementId::from(("history-play", index)));
             }
+            order.push(if section == Section::Queue {
+                ElementId::from((
+                    "queue-more",
+                    10 + u64::try_from(index).expect("small index"),
+                ))
+            } else {
+                ElementId::from(("history-more", index))
+            });
         }
         for (index, id) in order.iter().enumerate() {
             assert!(
@@ -471,7 +482,18 @@ fn every_row_action_remains_keyboard_accessible(cx: &mut TestAppContext) {
             );
             let rect = bounds(cx, window, id.clone());
             assert!(
-                rect.top() >= px(280.) && rect.bottom() <= px(544.),
+                rect.top()
+                    >= bounds(
+                        cx,
+                        window,
+                        if section == Section::Queue {
+                            "queue-list"
+                        } else {
+                            "history-list"
+                        }
+                    )
+                    .top()
+                    && rect.bottom() <= px(544.),
                 "keyboard focus must be on screen: {index} {id:?} {rect:?}"
             );
             if index + 1 < order.len() {
@@ -482,6 +504,23 @@ fn every_row_action_remains_keyboard_accessible(cx: &mut TestAppContext) {
                 });
             }
         }
+        act(cx, window, |window, cx| {
+            window.press("enter", cx);
+            window.simulate_next_frame(cx);
+            window.render_frame(cx);
+        });
+        // The last row's enabled operations remain reachable through native menu buttons.
+        let operations = if section == Section::Queue {
+            vec![("queue-up", 21_u64), ("queue-remove", 21)]
+        } else {
+            vec![("history-queue", 11_u64), ("history-remove", 11)]
+        };
+        for (position, id) in operations.iter().enumerate() {
+            assert!(focused(cx, window, *id));
+            if position + 1 < operations.len() {
+                act(cx, window, |window, cx| window.press("down", cx));
+            }
+        }
         act(cx, window, |window, cx| window.press("enter", cx));
         match section {
             Section::Queue => assert!(matches!(received.try_recv(), Ok(Command::Dequeue(21)))),
@@ -489,6 +528,10 @@ fn every_row_action_remains_keyboard_accessible(cx: &mut TestAppContext) {
                 matches!(received.try_recv(), Ok(Command::ForgetHistory(url)) if url == history_entry(11).url)
             ),
         }
+        act(cx, window, |window, cx| {
+            window.simulate_next_frame(cx);
+            window.render_frame(cx);
+        });
         // Wheel scrolling a focused row away must not break the next keyboard traversal.
         let last = bounds(cx, window, order.last().expect("nonempty actions").clone());
         wheel(cx, window, last.center(), 10000.);
@@ -555,6 +598,9 @@ fn focused_play_enter_and_history_play_work_during_resume(cx: &mut TestAppContex
     for history in [false, true] {
         let initial = long_lists(Phase::Paused, 5, 5);
         let (window, view, mut received, states) = open(cx, initial.clone());
+        act(cx, window, |window, cx| {
+            window.input("https://youtu.be/aqz-KE-bpKQ", cx);
+        });
         click(cx, window, "pause-resume");
         assert!(matches!(received.try_recv(), Ok(Command::Resume)));
         let id = if history {

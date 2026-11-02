@@ -24,7 +24,20 @@ use std::{borrow::Cow, time::Duration};
 use tokio::sync::{mpsc, watch};
 
 // Extend the default Lucide assets with the speaker and transport icons we use.
-gpui_kit::assets::icon_assets!(ControlIcons, [Volume2, VolumeX, Pause, SkipForward, Square]);
+gpui_kit::assets::icon_assets!(
+    ControlIcons,
+    [
+        Volume2,
+        VolumeX,
+        Pause,
+        SkipForward,
+        Square,
+        ListPlus,
+        CornerDownLeft,
+        Import,
+        Check
+    ]
+);
 
 struct AppAssets;
 

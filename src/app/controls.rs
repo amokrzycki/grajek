@@ -1,16 +1,28 @@
 use gpui_kit::assets::IconName as SpeakerIcon;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, Sizable,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Disableable, Icon, Sizable, button::ButtonVariants, popover::Popover,
     slider::Slider,
 };
 use gpui_kit::{
-    Context, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Styled,
-    TestSupportExt, Window, div, prelude::FluentBuilder, px,
+    Context, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
+    StatefulInteractiveElement, Styled, TestSupportExt, Window, div, prelude::FluentBuilder, px,
 };
+
+use super::help::HelpExt;
 
 use super::{Pending, PlayerApp};
 use crate::player::{Command, ImportStatus, Phase, RepeatMode, VolumeRequest, percent_from};
+use crate::style::space;
+
+gpui_kit::actions!(player_menu, [Activate]);
+
+pub(super) fn init(cx: &mut gpui_kit::App) {
+    // Popover's Enter binding otherwise shadows the native button activation.
+    cx.bind_keys([
+        gpui_kit::KeyBinding::new("enter", Activate, Some("PlayerMenuControl")),
+        gpui_kit::KeyBinding::new("space", Activate, Some("PlayerMenuControl")),
+    ]);
+}
 
 /// Volume change per arrow key; Page Up/Down move twice as far.
 const VOLUME_STEP: f32 = 5.0;
@@ -30,11 +42,20 @@ impl PlayerApp {
         }
         self.transport_seq = id;
         self.pending = Some(pending);
+        // Any other command retires the confirmed-add line.
+        self.added = None;
         true
     }
 
     pub(super) fn play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let url = self.input_text(cx);
+        if url.trim().is_empty() {
+            self.local_hint = Some("Paste a YouTube link to play.");
+            window.focus(&self.input.read(cx).focus_handle(cx), cx);
+            cx.notify();
+            return;
+        }
+        self.local_hint = None;
         self.play_url(url, window, cx);
     }
 
@@ -43,7 +64,7 @@ impl PlayerApp {
             return;
         }
         if self.send_transport(Command::Play(url), Pending::Play) {
-            // ponytail: always focuses input for next URL entry, unlike rescue_focus pattern in next/leave_voice/stop
+            // Keep typing ready for the next link; native buttons also preserve input focus.
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
             cx.notify();
         }
@@ -71,13 +92,14 @@ impl PlayerApp {
     }
 
     pub(super) fn leave_button(&self, cx: &Context<Self>) -> impl IntoElement {
-        Button::new("leave-voice")
+        self.button("leave-voice")
             .label("Leave voice")
             .accessibility_label("Leave voice")
+            .ghost()
             .small()
             .flex_none()
             .disabled(matches!(self.pending, Some(Pending::Leave)) || !self.state.can_leave_voice())
-            .tooltip("Stop playback and leave Discord voice. Keeps the queue; Play URL or Play Queue reconnects.")
+            .help("Stop playback and leave Discord voice. Keeps the queue; Play now or Play Queue reconnects.", &self.help)
             .on_click(cx.listener(|this, _, window, cx| this.leave_voice(window, cx)))
     }
 
@@ -202,72 +224,148 @@ impl PlayerApp {
         div()
             .flex()
             .flex_none()
-            .gap_2()
+            .gap(space::GROUP)
             .track_focus(&self.controls_focus)
             .tab_stop(false)
             .child(
-                Button::new("pause-resume")
-                    .when(resume, ButtonVariants::primary)
+                self.button("pause-resume")
+                    .when(toggle_enabled, ButtonVariants::primary)
                     .icon(if resume {
                         SpeakerIcon::Play
                     } else {
                         SpeakerIcon::Pause
                     })
                     .label(if resume { "Resume" } else { "Pause" })
-                    .flex_1()
+                    .w(px(96.))
                     .disabled(!toggle_enabled)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx))),
             )
             .child(
-                Button::new("next")
-                    .icon(SpeakerIcon::SkipForward)
-                    .label(self.state.next_label())
-                    .w(px(116.))
-                    .tooltip(if self.state.queue.is_empty() {
-                        "Nothing is queued"
-                    } else if self.state.next_label() == "Play Queue" {
-                        "Start the first pending track"
-                    } else {
-                        "Skip to the next queued track; bypass repeat"
+                self.button("next")
+                    .when(self.state.next_label() == "Next", |button| {
+                        button.icon(SpeakerIcon::SkipForward)
                     })
+                    .label(self.state.next_label())
+                    .w(px(112.))
+                    .help(
+                        if self.state.queue.is_empty() {
+                            "Nothing is queued"
+                        } else if self.state.next_label() == "Play Queue" {
+                            "Start the first pending track"
+                        } else {
+                            "Skip to the next queued track; bypass repeat"
+                        },
+                        &self.help,
+                    )
                     .disabled(!next_enabled)
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),
             )
             .child(
-                Button::new("stop")
+                self.button("stop")
                     .ghost()
-                    .label("Stop")
-                    .w(px(64.))
+                    .icon(SpeakerIcon::Square)
+                    .accessibility_label("Stop")
+                    .help("Stop playback; keep the queue", &self.help)
                     .disabled(!self.controls_enabled()[2])
                     .on_click(cx.listener(|this, _, window, cx| this.stop(window, cx))),
             )
     }
 
+    pub(super) fn play_queue_button(&self, cx: &Context<Self>) -> impl IntoElement {
+        self.button("next")
+            .primary()
+            .label("Play Queue")
+            .icon(SpeakerIcon::Play)
+            .disabled(!self.controls_enabled()[1])
+            .help("Start the first pending track", &self.help)
+            .on_click(cx.listener(|this, _, window, cx| this.next(window, cx)))
+    }
+
     pub(super) fn repeat_button(&self, cx: &Context<Self>) -> impl IntoElement {
-        Button::new("repeat")
+        self.button("repeat")
+            .key_context("PlayerMenuControl")
+            .on_action(cx.listener(|this, _: &Activate, _, _| {
+                if this.state.available {
+                    this.send(Command::Repeat(this.state.preferences.repeat.next()));
+                }
+            }))
             .label(self.state.preferences.repeat.label())
+            .child(div().flex_1())
             .accessibility_label(self.state.preferences.repeat.label())
-            .when(self.state.preferences.repeat != RepeatMode::Off, ButtonVariants::primary)
+            .ghost()
             .small()
-            .h(px(28.))
-            .w(px(104.))
+            .w_full()
             .disabled(!self.state.available)
-            .tooltip("Change repeat: Off → Repeat Track → Repeat Queue. Successful natural completion repeats; Next and Stop bypass repeat.")
             .on_click(cx.listener(|this, _, _, _| {
                 this.send(Command::Repeat(this.state.preferences.repeat.next()));
             }))
     }
 
     pub(super) fn remember_button(&self, cx: &Context<Self>) -> impl IntoElement {
-        Button::new("remember-queue")
-            .label(if self.state.preferences.remember_queue { "Remember queue: On" } else { "Remember queue: Off" })
-            .ghost()
-            .xsmall()
-            .disabled(!self.state.available)
-            .tooltip("Save pending entries across restarts without starting playback. Turning off removes saved entries and keeps this session’s queue.")
-            .on_click(cx.listener(|this, _, _, _| {
-                this.send(Command::RememberQueue(!this.state.preferences.remember_queue));
+        self.button("remember-queue")
+            .key_context("PlayerMenuControl")
+            .on_action(cx.listener(|this, _: &Activate, _, _| {
+                if this.state.available {
+                    this.send(Command::RememberQueue(
+                        !this.state.preferences.remember_queue,
+                    ));
+                }
             }))
+            .label(if self.state.preferences.remember_queue {
+                "Remember queue: On"
+            } else {
+                "Remember queue: Off"
+            })
+            .child(div().flex_1())
+            .ghost()
+            .small()
+            .w_full()
+            .disabled(!self.state.available)
+            .on_click(cx.listener(|this, _, _, _| {
+                this.send(Command::RememberQueue(
+                    !this.state.preferences.remember_queue,
+                ));
+            }))
+    }
+
+    pub(super) fn queue_options(&self, cx: &Context<Self>) -> impl IntoElement {
+        let repeat = self.state.preferences.repeat;
+        Popover::new("queue-options-popover")
+            .open(self.queue_options_open)
+            .on_open_change(cx.listener(|this, open, _, cx| { this.queue_options_open = *open; if *open { this.row_menu = None; } this.help.dismiss(cx); cx.notify(); }))
+            .anchor(gpui_kit::Anchor::BottomLeft)
+            .trigger(self.button("queue-options")
+                .label("Playback")
+                .ghost().small().dropdown_caret(true)
+                .when(repeat != RepeatMode::Off, |button| button.text_color(cx.theme().primary))
+
+                .accessibility_label(format!("Queue options. {}. Remember queue, continue on error, clear queue", repeat.label())))
+            .child(div().id("queue-options-menu").on_key_down(Self::menu_key).flex().flex_col().w(px(300.)).max_h(px(392.)).overflow_y_scroll().gap_1()
+                .child(self.repeat_button(cx))
+                .child(menu_detail("After a track finishes. Next and Stop never repeat.", cx))
+                .child(self.remember_button(cx))
+                .child(menu_detail("Restore pending tracks on launch. Turning off erases only the saved queue.", cx))
+                .child(self.button("continue-on-error")
+                    .key_context("PlayerMenuControl")
+                    .on_action(cx.listener(|this, _: &Activate, _, _| { if this.state.available { this.send(Command::ContinueOnError(!this.state.preferences.continue_on_error)); } }))
+                    .label(if self.state.preferences.continue_on_error { "Continue on error: On" } else { "Continue on error: Off" })
+                    .child(div().flex_1())
+                    .ghost().small().w_full().disabled(!self.state.available)
+
+                    .on_click(cx.listener(|this, _, _, _| {
+                        this.send(Command::ContinueOnError(!this.state.preferences.continue_on_error));
+                    })))
+                .child(menu_detail("Skip unplayable queued tracks. Stop after 3 in a row.", cx))
+                .child(div().mt_2().pt_2().border_t_1().border_color(crate::style::separator())
+                    .child(self.button("queue-clear")
+                        .key_context("PlayerMenuControl")
+                        .on_action(cx.listener(|this, _: &Activate, _, _| { if this.state.controller_ready && (!this.state.queue.is_empty() || this.state.import == ImportStatus::Importing) { this.send(Command::ClearQueue); } })).label("Clear queue").child(div().flex_1()).ghost().small().w_full()
+                        .disabled(!self.state.controller_ready || (self.state.queue.is_empty() && self.state.import != ImportStatus::Importing))
+
+                        .on_click(cx.listener(|this, _, _, _| { this.send(Command::ClearQueue); }))))
+                .child(menu_detail("Keeps the current track; cancels playlist imports.", cx))
+                .child(div().pt_2().px_2().text_xs().text_color(cx.theme().muted_foreground)
+                    .child("Preferences save automatically.")).test_support())
     }
 
     fn import_playlist(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -284,30 +382,88 @@ impl PlayerApp {
             Command::ImportPlaylist(self.input_text(cx))
         };
         if self.send(command) {
+            self.retired_import = None;
             self.import_pending = true;
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
             cx.notify();
         }
     }
 
-    pub(super) fn import_button(&self, cx: &Context<Self>) -> impl IntoElement {
+    /// Import playlist, or Cancel import while one runs. A playlist link in the field gives it
+    /// the accent; otherwise it stays a quiet action beside Add to queue.
+    pub(super) fn import_button(
+        &self,
+        playlist_link: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let running = self.state.import == ImportStatus::Importing;
-        div().flex_none().track_focus(&self.import_focus).tab_stop(false).child(
-            Button::new("import-playlist")
-                .label(if running { "Cancel Import" } else { "Import Playlist" })
-                .accessibility_label(if running { "Cancel Import" } else { "Import Playlist" })
-                .small().w(px(102.)).h(px(28.))
-                .disabled(self.import_pending || (!running && !self.state.can_import()))
-                .tooltip(if running { "Cancel without adding any tracks" } else { "Ready to import a public YouTube playlist. Checks the first 100 entries; queue limit 100. Never starts playback." })
-                .on_click(cx.listener(|this, _, window, cx| this.import_playlist(window, cx))),
-        )
+        let label = if running {
+            "Cancel import"
+        } else {
+            "Import playlist"
+        };
+        div()
+            .flex_none()
+            .track_focus(&self.import_focus)
+            .tab_stop(false)
+            .child(
+                self.button("import-playlist")
+                    .key_context("PlayerMenuControl")
+                    .on_action(cx.listener(|this, _: &Activate, window, cx| {
+                        this.import_playlist(window, cx);
+                    }))
+                    .icon(if running {
+                        SpeakerIcon::Close
+                    } else {
+                        SpeakerIcon::Import
+                    })
+                    .label(label)
+                    .accessibility_label(label)
+                    .help(
+                        if running {
+                            "Stop the playlist import; tracks already found stay queued."
+                        } else {
+                            "Add the playlist in the link to the queue, up to 100 tracks. Never interrupts playback."
+                        },
+                        &self.help,
+                    )
+                    .ghost()
+                    .small()
+                    .when(playlist_link && !running, |button| {
+                        button.text_color(cx.theme().primary)
+                    })
+                    .disabled(self.import_pending || (!running && !self.state.can_import()))
+                    .on_click(cx.listener(|this, _, window, cx| this.import_playlist(window, cx))),
+            )
+    }
+
+    pub(super) fn audio_footer(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .id("audio-footer")
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_between()
+            .gap(space::GROUP)
+            .mt(space::GROUP)
+            .pt(space::TIGHT)
+            .border_t_1()
+            .border_color(crate::style::separator())
+            .child(self.queue_options(cx))
+            .child(
+                div()
+                    .w(px(220.))
+                    .flex_none()
+                    .child(self.volume_row(window, cx)),
+            )
+            .test_support()
     }
 
     pub(super) fn volume_row(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let available = self.state.available;
         let percent = percent_from(self.slider_value(cx)).unwrap_or(self.state.volume);
-        let focused = self.volume_focus.is_focused(window);
+        let focused = self.focus.keyboard && self.volume_focus.is_focused(window);
         let speaker = if percent == 0 {
             SpeakerIcon::VolumeX
         } else {
@@ -319,15 +475,18 @@ impl PlayerApp {
             .flex()
             .flex_none()
             .items_center()
-            .gap_2()
+            .gap(space::TIGHT)
             .child(
                 Icon::new(speaker)
                     .small()
                     .text_color(theme.muted_foreground),
             )
+            .child(div().text_xs().text_color(theme.muted_foreground).child("Bot volume"))
             .child(
                 div()
                     .id("volume")
+                    .role(gpui_kit::Role::Group)
+                    .aria_label("Bot volume. Arrow keys: 5 percent; Page Up/Down: 10 percent; Home: mute; End: full volume.")
                     .flex_1()
                     .min_w_0()
                     .px_1()
@@ -343,12 +502,13 @@ impl PlayerApp {
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         this.volume_key(event.keystroke.key.as_str(), window, cx);
                     }))
-                    .child(Slider::new(&self.volume).disabled(!available)),
+                    .child(Slider::new(&self.volume).disabled(!available))
+                    .test_support(),
             )
             .child(
                 div()
                     .id("volume-percent")
-                    .w(px(48.))
+                    .w(px(40.))
                     .flex_none()
                     .text_right()
                     .text_sm()
@@ -363,4 +523,14 @@ impl PlayerApp {
                     .test_support(),
             )
     }
+}
+
+fn menu_detail(text: &'static str, cx: &Context<PlayerApp>) -> impl IntoElement {
+    div()
+        .px_2()
+        .pb_1()
+        .text_xs()
+        .line_height(px(16.))
+        .text_color(cx.theme().muted_foreground)
+        .child(text)
 }

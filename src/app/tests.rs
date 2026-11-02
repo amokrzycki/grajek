@@ -9,6 +9,9 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 pub(in crate::app) mod animation_fixes;
+mod cohesion;
+mod composition;
+mod experience;
 mod native_ui;
 mod seek;
 
@@ -125,11 +128,59 @@ fn open(cx: &mut TestAppContext, initial: State) -> Harness {
     open_full(cx, initial).0
 }
 
+// Secondary actions are reached through the same native disclosure as production.
+fn reveal_action(cx: &mut TestAppContext, window: AnyWindowHandle, id: &ElementId) -> ElementId {
+    if let ElementId::NamedInteger(name, key) = id {
+        let trigger = match name.as_ref() {
+            "queue-up" | "queue-down" | "queue-remove" => "queue-more",
+            "history-queue" | "history-remove" => "history-more",
+            _ => return id.clone(),
+        };
+        if !present(cx, window, id.clone()) {
+            act(cx, window, |window, cx| window.press("escape", cx));
+            act(cx, window, |window, cx| {
+                window.render_frame(cx);
+                window.click((trigger, *key), cx);
+            });
+        }
+        return id.clone();
+    }
+    let menu = match id {
+        ElementId::Name(name)
+            if matches!(
+                name.as_ref(),
+                "repeat" | "remember-queue" | "continue-on-error" | "queue-clear"
+            ) =>
+        {
+            Some("queue-options")
+        }
+        _ => None,
+    };
+    if let Some(menu) = menu {
+        if !present(cx, window, id.clone()) {
+            act(cx, window, |window, cx| {
+                window.press("escape", cx);
+                window.render_frame(cx);
+                window.click(menu, cx);
+                window.render_frame(cx);
+            });
+        }
+    } else if present(cx, window, "repeat") || present(cx, window, "import-playlist") {
+        act(cx, window, |window, cx| {
+            window.press("escape", cx);
+            window.render_frame(cx);
+        });
+    }
+    id.clone()
+}
+
 #[expect(
     clippy::expect_used,
     reason = "GPUI's test macro requires a unit-returning callback; window setup failures must fail the test"
 )]
 fn click(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) {
+    let id = id.into();
+    let id = reveal_action(cx, window, &id);
     cx.update_window(window, |_, window, cx| window.click(id, cx))
         .expect("test window should dispatch the click");
 }
@@ -143,6 +194,8 @@ fn button(
     window: AnyWindowHandle,
     id: impl Into<ElementId>,
 ) -> (String, bool) {
+    let id = id.into();
+    let id = reveal_action(cx, window, &id);
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         let snapshot = window.find(id);
@@ -260,8 +313,10 @@ fn failed_pause_never_leaves_a_false_paused_state(cx: &mut TestAppContext) {
         assert!(app.state.visible_track().is_none());
         assert!(app.pending.is_none());
     });
-    assert!(button(cx, window, "pause-resume").1, "no track to pause");
-    click(cx, window, "pause-resume");
+    assert!(
+        !present(cx, window, "pause-resume"),
+        "no inactive transport without a track"
+    );
     assert!(received.try_recv().is_err());
 }
 
@@ -367,8 +422,8 @@ fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut Te
         window.input("https://youtu.be/aqz-KE-bpKQ", cx);
         window.press("enter", cx);
         window.click("play", cx);
-        window.click("pause-resume", cx);
-        window.click("stop", cx);
+        assert!(window.try_find("pause-resume").is_none());
+        assert!(window.try_find("stop").is_none());
     })
     .expect("test window should accept input and disabled actions");
     assert!(received.try_recv().is_err());
@@ -505,8 +560,7 @@ fn add_to_queue_button_and_ctrl_enter_do_not_play(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn next_follows_the_queue_and_ignores_rapid_clicks(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, with_lists(Phase::Ready, 0, 0));
-    assert!(button(cx, window, "next").1, "nothing queued");
-    click(cx, window, "next");
+    assert!(!present(cx, window, "next"), "nothing queued");
     assert!(received.try_recv().is_err());
     states.send_replace(with_lists(Phase::Ready, 2, 0));
     cx.run_until_parked();
@@ -536,7 +590,10 @@ fn tabs_switch_between_queue_and_history(cx: &mut TestAppContext) {
     let (window, view, _received, states) = open(cx, with_lists(Phase::Ready, 2, 3));
     assert!(present(cx, window, ("queue-row", 10_u64)));
     assert!(!present(cx, window, ("history-row", 0_usize)));
-    assert!(bounds(cx, window, "queue-count").size.width > px(0.));
+    assert!(
+        !present(cx, window, "queue-count"),
+        "count lives only in Up next tab"
+    );
     act(cx, window, |window, cx| {
         window.within("sections").click(1_usize, cx);
     });
@@ -690,7 +747,7 @@ fn long_lists_scroll_inside_the_window(cx: &mut TestAppContext) {
     cx.update_window(window, |_, window, cx| {
         window.scroll(
             ("queue-row", 10_u64),
-            ScrollDelta::Pixels(point(px(0.), px(-4000.))),
+            ScrollDelta::Pixels(point(px(0.), px(-10000.))),
             cx,
         );
     })
@@ -702,14 +759,15 @@ fn long_lists_scroll_inside_the_window(cx: &mut TestAppContext) {
     cx.update_window(window, |_, window, cx| {
         window.scroll(
             ("history-row", 0_usize),
-            ScrollDelta::Pixels(point(px(0.), px(-4000.))),
+            ScrollDelta::Pixels(point(px(0.), px(-10000.))),
             cx,
         );
     })
     .expect("test window should scroll");
     assert!(bounds(cx, window, ("history-row", 49_usize)).origin.y < px(560.));
     // The controls above the lists never move.
-    assert!(button(cx, window, "pause-resume").1);
+    assert!(!present(cx, window, "pause-resume"));
+    assert!(present(cx, window, "next"));
 }
 
 #[gpui_kit::test]
@@ -733,7 +791,7 @@ fn long_titles_and_errors_keep_the_layout(cx: &mut TestAppContext) {
         "error is clamped to a few lines"
     );
     assert!(error.size.width <= window_width);
-    for id in ["pause-resume", "next", "stop", "play", "enqueue"] {
+    for id in ["next", "play", "enqueue"] {
         let button = bounds(cx, window, id);
         assert!(
             button.bottom() < px(560.) && button.right() <= window_width,
@@ -757,10 +815,12 @@ fn long_titles_and_errors_keep_the_layout(cx: &mut TestAppContext) {
 fn focus_leaves_a_control_that_turns_off(cx: &mut TestAppContext) {
     let (window, view, _received, states) = open(cx, playing(Phase::Playing, Some("Song"), 3));
     let on_stop = |cx: &mut TestAppContext| {
-        cx.update_window(window, |_, window, _| window.find("stop").focused())
-            .ok()
-            .flatten()
-            .unwrap_or(false)
+        cx.update_window(window, |_, window, _| {
+            window.try_find("stop").and_then(|button| button.focused())
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(false)
     };
     for _ in 0..12 {
         if on_stop(cx) {
@@ -787,10 +847,12 @@ fn focus_leaves_a_control_that_turns_off(cx: &mut TestAppContext) {
 fn stopping_from_the_keyboard_returns_focus_to_the_input(cx: &mut TestAppContext) {
     let (window, view, mut received, _states) = open(cx, playing(Phase::Playing, Some("Song"), 3));
     let on_stop = |cx: &mut TestAppContext| {
-        cx.update_window(window, |_, window, _| window.find("stop").focused())
-            .ok()
-            .flatten()
-            .unwrap_or(false)
+        cx.update_window(window, |_, window, _| {
+            window.try_find("stop").and_then(|button| button.focused())
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(false)
     };
     for _ in 0..12 {
         if on_stop(cx) {
@@ -825,9 +887,12 @@ fn the_url_input_has_focus_and_keeps_it(cx: &mut TestAppContext) {
         .unwrap_or(false)
     };
     assert!(focused(cx), "the input starts focused");
+    act(cx, window, |window, cx| {
+        window.input("https://youtu.be/aqz-KE-bpKQ", cx);
+    });
     click(cx, window, "enqueue");
     assert!(received.try_recv().is_ok());
-    click(cx, window, "next");
+    click(cx, window, "enqueue");
     assert!(focused(cx), "buttons do not steal typing focus");
 }
 
@@ -954,7 +1019,7 @@ fn the_slider_is_inert_without_discord(cx: &mut TestAppContext) {
         cx,
         State {
             available: false,
-            ..state(Phase::Error)
+            ..playing(Phase::Paused, Some("Disconnected track"), 2)
         },
     );
     let slider = slider_id(cx, &view);
@@ -994,17 +1059,18 @@ fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
                 "play",
                 "enqueue",
                 "import-playlist",
+                "queue-options",
                 "pause-resume",
                 "next",
                 "stop",
                 "volume-percent",
-                "repeat",
-                "remember-queue",
-                "continue-on-error",
-                "queue-clear",
                 "leave-voice",
                 "voice-status",
             ] {
+                if !present(cx, window, id) {
+                    assert!(matches!(id, "pause-resume" | "stop" | "leave-voice"));
+                    continue;
+                }
                 let control = bounds(cx, window, id);
                 assert!(
                     control.right() <= px(width) && control.bottom() < px(height),
@@ -1082,7 +1148,11 @@ fn queue_preferences_follow_snapshots_and_work_from_keyboard(cx: &mut TestAppCon
             act(cx, window, |window, cx| window.press("tab", cx));
         }
         act(cx, window, |window, cx| window.press("enter", cx));
-        assert!(matches!(received.try_recv(), Ok(Command::Repeat(next)) if next == mode.next()));
+        let sent = received.try_recv();
+        assert!(
+            matches!(sent, Ok(Command::Repeat(next)) if next == mode.next()),
+            "repeat {mode:?}: command was not the next repeat mode"
+        );
         assert_eq!(
             button(cx, window, "repeat").0,
             mode.label(),
@@ -1109,13 +1179,16 @@ fn queue_preferences_follow_snapshots_and_work_from_keyboard(cx: &mut TestAppCon
         Ok(Command::RememberQueue(false))
     ));
     show(cx, &view, Section::History);
+    assert!(!present(cx, window, "remember-queue"));
+    click(cx, window, "queue-options");
     assert!(present(cx, window, "remember-queue"));
     states.send_replace(State {
         available: false,
         ..state(Phase::Error)
     });
     cx.run_until_parked();
-    for id in ["repeat", "remember-queue", "next"] {
+    assert!(!present(cx, window, "next"));
+    for id in ["repeat", "remember-queue"] {
         assert!(button(cx, window, id).1);
         click(cx, window, id);
     }
@@ -1172,6 +1245,7 @@ fn restored_lists_are_read_only_after_startup_failure_but_editable_after_gateway
 fn keyboard_can_leave_a_preference_disabled_by_gateway_loss(cx: &mut TestAppContext) {
     for id in ["repeat", "remember-queue"] {
         let (window, view, _received, states) = open(cx, state(Phase::Ready));
+        click(cx, window, "queue-options");
         for _ in 0..20 {
             if cx
                 .update_window(window, |_, window, _| window.find(id).focused())
@@ -1194,7 +1268,7 @@ fn keyboard_can_leave_a_preference_disabled_by_gateway_loss(cx: &mut TestAppCont
             ..state(Phase::Error)
         });
         cx.run_until_parked();
-        for _ in 0..3 {
+        for _ in 0..8 {
             act(cx, window, |window, cx| window.press("tab", cx));
             if cx
                 .update_window(window, |_, window, cx| {
@@ -1280,8 +1354,7 @@ fn leave_voice_is_native_keyboard_accessible_and_waits_for_controller(cx: &mut T
             ..initial.clone()
         });
         cx.run_until_parked();
-        assert!(button(cx, window, "leave-voice").1);
-        click(cx, window, "leave-voice");
+        assert!(!present(cx, window, "leave-voice"));
         assert!(received.try_recv().is_err());
     }
 }
@@ -1302,15 +1375,9 @@ fn queue_metadata_states_and_unicode_keep_row_actions_visible(cx: &mut TestAppCo
                 let ((window, _, _, _), _) = open_at(cx, initial, width, height);
                 let row = bounds(cx, window, ("queue-row", 10_u64));
                 let title = bounds(cx, window, ("queue-title", 10_u64));
-                let up = bounds(cx, window, ("queue-up", 10_u64));
-                let down = bounds(cx, window, ("queue-down", 10_u64));
-                let remove = bounds(cx, window, ("queue-remove", 10_u64));
-                assert!(
-                    title.right() <= up.left()
-                        && up.right() <= down.left()
-                        && down.right() <= remove.left()
-                );
-                assert!(remove.right() <= row.right() && row.right() <= px(width));
+                let more = bounds(cx, window, ("queue-more", 10_u64));
+                assert!(title.right() <= more.left());
+                assert!(more.right() <= row.right() && row.right() <= px(width));
                 assert!(title.size.width > px(100.));
                 assert!(button(cx, window, ("queue-up", 10_u64)).1);
                 assert!(button(cx, window, ("queue-down", 12_u64)).1);
@@ -1351,7 +1418,7 @@ fn playlist_import_is_explicit_and_cancellation_recovers_focus(cx: &mut TestAppC
     assert!(received.try_recv().is_err());
     assert_eq!(
         button(cx, window, "import-playlist"),
-        ("Import Playlist".into(), true)
+        ("Import playlist".into(), true)
     );
     states.send_replace(State {
         import: ImportStatus::Importing,
@@ -1360,7 +1427,7 @@ fn playlist_import_is_explicit_and_cancellation_recovers_focus(cx: &mut TestAppC
     cx.run_until_parked();
     assert_eq!(
         button(cx, window, "import-playlist"),
-        ("Cancel Import".into(), false)
+        ("Cancel import".into(), false)
     );
     assert!(!button(cx, window, "pause-resume").1);
     assert!(
@@ -1435,8 +1502,13 @@ fn import_feedback_and_actions_fit_both_native_sizes(cx: &mut TestAppContext) {
             initial.preferences.repeat = crate::player::RepeatMode::Queue;
             let ((window, view, _, _), _) = open_at(cx, initial, width, height);
             let right = bounds(cx, window, "url").right();
+            let play = bounds(cx, window, "play");
+            assert!(
+                play.right() <= right && play.left() > bounds(cx, window, "url").left(),
+                "{width}: Play now sits inside the link frame"
+            );
             let mut edge = px(0.);
-            for id in ["repeat", "play", "enqueue", "import-playlist"] {
+            for id in ["enqueue", "import-playlist"] {
                 let button = bounds(cx, window, id);
                 assert!(
                     button.left() >= edge && button.right() <= right,
@@ -1447,7 +1519,7 @@ fn import_feedback_and_actions_fit_both_native_sizes(cx: &mut TestAppContext) {
             let status = cx
                 .update_window(window, |_, window, _| {
                     window
-                        .find("import-status")
+                        .find("link-status")
                         .label()
                         .unwrap_or_default()
                         .to_owned()
@@ -1520,4 +1592,171 @@ fn first_run_token_controls_fit_minimum_size_and_clear_secret_after_submit(
         matches!(received.try_recv(), Ok(Command::Setup(crate::setup::Request::Authenticate { token, remember: false })) if token == "test-bot-secret")
     );
     cx.update(|cx| assert_eq!(view.read(cx).token.read(cx).value().as_ref(), ""));
+}
+
+#[gpui_kit::test]
+fn secondary_actions_are_disclosed_and_activate_from_the_keyboard(cx: &mut TestAppContext) {
+    let (window, view, mut received, _) = open(cx, state(Phase::Ready));
+    for id in [
+        "repeat",
+        "remember-queue",
+        "continue-on-error",
+        "queue-clear",
+        "queue-count",
+    ] {
+        assert!(
+            !present(cx, window, id),
+            "{id} must not clutter the default surface"
+        );
+    }
+    act(cx, window, |window, cx| {
+        window.click("url", cx);
+        window.input(
+            "https://youtube.com/watch?v=aaaaaaaaaaa&list=PL_test123",
+            cx,
+        );
+    });
+    assert!(received.try_recv().is_err());
+    // Exercise native trigger activation instead of the disclosure-aware helpers.
+    for _ in 0..20 {
+        if animation_fixes::focused(cx, window, "queue-options") {
+            break;
+        }
+        act(cx, window, |window, cx| window.press("tab", cx));
+    }
+    assert!(animation_fixes::focused(cx, window, "queue-options"));
+    act(cx, window, |window, cx| window.press("enter", cx));
+    assert!(present(cx, window, "repeat"));
+    for _ in 0..8 {
+        if animation_fixes::focused(cx, window, "repeat") {
+            break;
+        }
+        act(cx, window, |window, cx| window.press("tab", cx));
+    }
+    assert!(animation_fixes::focused(cx, window, "repeat"));
+    act(cx, window, |window, cx| window.press("space", cx));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::Repeat(crate::player::RepeatMode::Track))
+    ));
+    act(cx, window, |window, cx| window.press("escape", cx));
+    assert!(!present(cx, window, "repeat"));
+    assert!(
+        animation_fixes::focused(cx, window, "queue-options"),
+        "Escape returns to the menu trigger"
+    );
+    // Import playlist is a visible action; pasting never starts it, Space/Enter does.
+    for _ in 0..20 {
+        if animation_fixes::focused(cx, window, "import-playlist") {
+            break;
+        }
+        act(cx, window, |window, cx| window.press("shift-tab", cx));
+    }
+    assert!(animation_fixes::focused(cx, window, "import-playlist"));
+    act(cx, window, |window, cx| window.press("space", cx));
+    assert!(
+        matches!(received.try_recv(), Ok(Command::ImportPlaylist(url)) if url.contains("list="))
+    );
+    cx.update(|cx| {
+        assert_eq!(
+            view.read(cx).state.import,
+            crate::player::ImportStatus::Ready
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn full_queue_and_long_discord_context_fit_with_real_transport(cx: &mut TestAppContext) {
+    for (width, height) in [(420., 480.), (520., 560.)] {
+        let mut snapshot = playing(
+            Phase::Paused,
+            Some(&"Żółć an unbroken title ".repeat(30)),
+            84,
+        );
+        snapshot.voice_connected = true;
+        snapshot.queue = with_lists(Phase::Paused, 100, 3).queue;
+        snapshot.history = with_lists(Phase::Paused, 0, 3).history;
+        snapshot.import = crate::player::ImportStatus::Importing;
+        snapshot.error = Some("A failed seek with a long diagnosis and recovery. ".repeat(10));
+        snapshot.preferences.repeat = crate::player::RepeatMode::Queue;
+        snapshot.setup.destination = Some(crate::setup::Destination {
+            bot: serenity::all::UserId::new(1),
+            guild: serenity::all::GuildId::new(2),
+            channel: serenity::all::ChannelId::new(3),
+            guild_name: "A very long server name ".repeat(30),
+            channel_name: "音楽チャンネル".repeat(30),
+        });
+        let ((window, view, _, _), _) = open_at(cx, snapshot, width, height);
+        for id in [
+            "title",
+            "voice-status",
+            "voice-destination",
+            "leave-voice",
+            "settings",
+            "pause-resume",
+            "next",
+            "stop",
+            "volume-percent",
+            "import-playlist",
+            "queue-options",
+            "import-playlist",
+        ] {
+            let rect = bounds(cx, window, id);
+            assert!(
+                rect.left() >= px(0.) && rect.right() <= px(width),
+                "{width}: {id} fits horizontally"
+            );
+        }
+        assert!(
+            !button(cx, window, "enqueue").1,
+            "enqueue keeps its controller-validated semantics at capacity"
+        );
+        for section in [Section::Queue, Section::History] {
+            show(cx, &view, section);
+            let id = if section == Section::Queue {
+                ElementId::from(("queue-row", 11_u64))
+            } else {
+                ElementId::from(("history-row", 1_usize))
+            };
+            let second = bounds(cx, window, id);
+            assert!(
+                second.bottom() <= px(height - 16.),
+                "{width} {section:?}: two rows remain visible: {second:?}"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn no_track_headline_follows_the_actual_phase(cx: &mut TestAppContext) {
+    // A ready bot needs no headline: the composer leads. Only setup and transitions speak.
+    for (phase, available, expected) in [
+        (Phase::Ready, true, None),
+        (Phase::Initializing, false, Some("Starting Grajek…")),
+        (Phase::Connecting, true, Some("Joining voice…")),
+        (Phase::Resolving, true, Some("Preparing your track…")),
+        (Phase::Stopping, true, Some("Stopping playback…")),
+        (Phase::Disconnecting, false, Some("Leaving voice…")),
+        (Phase::Error, true, None),
+        (Phase::Error, false, Some("Connect your Discord bot")),
+    ] {
+        let (window, _, _, _) = open(
+            cx,
+            State {
+                available,
+                ..state(phase)
+            },
+        );
+        let mut actual = None;
+        act(cx, window, |window, _| {
+            actual = window
+                .try_find("title")
+                .map(|title| title.label().unwrap_or_default().to_owned());
+        });
+        assert_eq!(
+            actual.as_deref(),
+            expected,
+            "{phase:?} available={available}"
+        );
+    }
 }

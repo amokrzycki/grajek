@@ -2,7 +2,6 @@ use gpui_kit::component::{
     ActiveTheme,
     slider::{Slider, SliderEvent},
 };
-use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AccessibleAction, App, Context, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
     StatefulInteractiveElement, Styled, TestSupportExt, Window, div,
@@ -166,13 +165,20 @@ impl PlayerApp {
         }
     }
 
-    pub(super) fn progress_row(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn progress_row(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<impl IntoElement> {
         let theme = cx.theme();
         let visible = self
             .state
             .visible_track()
             .and_then(|track| track.duration)
             .is_some_and(|duration| !duration.is_zero());
+        if !visible {
+            return None;
+        }
         let enabled = self.state.can_seek();
         let focus = self.progress_focus.clone().tab_stop(enabled);
         let status = self.progress_status();
@@ -180,8 +186,8 @@ impl PlayerApp {
             "Playback position {}. {status} Left/Right: 5 seconds; Page Up/Down: 10 seconds; Home: start; End: one second before end.",
             clock(self.state.position)
         );
-        div().flex_none().when(visible, |row| {
-            row.flex().items_center().gap_2().child(
+        Some(
+            div().flex_1().min_w_0().flex().items_center().child(
                 div()
                     .id("seek-slider")
                     .flex_1()
@@ -189,11 +195,13 @@ impl PlayerApp {
                     .px_1()
                     .rounded(theme.radius)
                     .border_1()
-                    .border_color(if self.progress_focus.is_focused(window) {
-                        theme.ring
-                    } else {
-                        theme.transparent
-                    })
+                    .border_color(
+                        if self.focus.keyboard && self.progress_focus.is_focused(window) {
+                            theme.ring
+                        } else {
+                            theme.transparent
+                        },
+                    )
                     .track_focus(&self.progress_focus)
                     .role(gpui_kit::Role::Slider)
                     .aria_label(label)
@@ -250,7 +258,7 @@ impl PlayerApp {
                             .child(Slider::new(&self.progress).disabled(!enabled)),
                     )
                     .test_support(),
-            )
-        })
+            ),
+        )
     }
 }
