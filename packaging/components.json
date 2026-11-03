@@ -1,0 +1,33 @@
+{
+  "yt-dlp": {
+    "version": "2026.10.26",
+    "ejs": "0.8.0",
+    "windows": {
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_win.zip",
+      "sha256": "fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419",
+      "size": 23885596,
+      "unpacked_size": 41340247
+    },
+    "linux": {
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux.zip",
+      "sha256": "f34053415136e55073dd64ba5326d161ecc23ce0e98c081d8752867b37809450",
+      "size": 41236547,
+      "unpacked_size": 98866816
+    }
+  },
+  "deno": {
+    "version": "2.9.8",
+    "windows": {
+      "url": "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip",
+      "sha256": "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf",
+      "size": 42917472,
+      "unpacked_size": 98081568
+    },
+    "linux": {
+      "url": "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-unknown-linux-gnu.zip",
+      "sha256": "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609",
+      "size": 41963064,
+      "unpacked_size": 96055992
+    }
+  }
+}
