@@ -98,6 +98,13 @@ pub(crate) fn tool_command(tool: Tool) -> Command {
 }
 
 pub async fn check_tools() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    let execution = components::execution::acquire()
+        .await
+        .map_err(|_| tools().failure())?;
+    #[cfg(target_os = "linux")]
+    let tools = execution.tools.clone();
+    #[cfg(target_os = "windows")]
     let tools = tools();
     for tool in [Tool::YtDlp, Tool::Deno] {
         let output = timeout(
@@ -117,6 +124,8 @@ pub async fn check_tools() -> Result<()> {
             tools.failure()
         );
     }
+    #[cfg(target_os = "linux")]
+    drop(execution);
     Ok(())
 }
 
@@ -139,6 +148,13 @@ fn supported_deno(output: &str) -> bool {
 
 /// Extracts display metadata only: no format selection, stream access or decoding.
 pub async fn title(url: String) -> Result<Option<String>> {
+    #[cfg(target_os = "linux")]
+    let execution = components::execution::acquire()
+        .await
+        .map_err(|_| tools().failure())?;
+    #[cfg(target_os = "linux")]
+    let tools = execution.tools.clone();
+    #[cfg(target_os = "windows")]
     let tools = tools();
     let output = tools
         .command(Tool::YtDlp)
@@ -149,6 +165,8 @@ pub async fn title(url: String) -> Result<Option<String>> {
         .output()
         .await
         .map_err(|_| tools.failure())?;
+    #[cfg(target_os = "linux")]
+    drop(execution);
     ensure!(output.status.success(), "yt-dlp title extraction failed");
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     Ok(TrackInfo::from_ytdlp(
@@ -181,9 +199,16 @@ pub(super) async fn resolve_format(
     url: String,
     format: &str,
 ) -> Result<Resolved> {
+    #[cfg(target_os = "linux")]
+    let execution = components::execution::acquire()
+        .await
+        .map_err(|_| tools().failure())?;
     let deadline = Instant::now() + Duration::from_secs(60);
+    #[cfg(target_os = "linux")]
+    let tools = execution.tools.clone();
+    #[cfg(target_os = "windows")]
     let tools = tools();
-    timeout_at(deadline, async {
+    let result = timeout_at(deadline, async {
         // Songbird's query() does not kill yt-dlp on cancellation; own only that subprocess.
         let output = tools
             .command(Tool::YtDlp)
@@ -268,7 +293,10 @@ pub(super) async fn resolve_format(
         })
     })
     .await
-    .context("Audio resolution timed out. Check the network and yt-dlp/EJS installation.")?
+    .context("Audio resolution timed out. Check the network and yt-dlp/EJS installation.")?;
+    #[cfg(target_os = "linux")]
+    drop(execution);
+    result
 }
 
 struct ResolutionGuard(Option<SourceControl>);

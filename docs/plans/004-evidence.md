@@ -1,7 +1,7 @@
 # 004 — Dowody F0 (2026-11-03)
 
-Status: **F0_LINUX_MEASURED — F1/F2/F3_IMPLEMENTED — PENDING_PACKAGING_VALIDATION — PENDING_NATIVE**.
-F4 nie zakończono. Nie jest to akceptacja Windows ani wydania.
+Status: **F0–F4_IMPLEMENTED — LOCAL_CHECKS_PASS — PENDING_CI — PENDING_NATIVE**.
+Nie jest to akceptacja Windows, desktopu, dźwięku ani publicznego wydania.
 
 ## Baza i rozbieżności przed edycją
 
@@ -307,8 +307,8 @@ Kontrole Rust dla F3: `cargo fmt --all -- --check` PASS;
 `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` PASS;
 `cargo test --locked --workspace --all-features` poza sandboxem PASS:
 **317 passed, 0 failed, 6 ignored**, grajek-smtc/doc-tests po 0.
-Walidacja rzeczywistego pakietu Ubuntu 22.04
-jest w toku; nie jest jeszcze oznaczona jako PASS.
+Walidacja rzeczywistego pakietu Ubuntu 22.04 zakończyła się powodzeniem;
+wynik końcowej paczki po poprawce recenzji jest w sekcji F4 poniżej.
 
 ## F2 — Setup Windows (implementacja, PENDING_NATIVE)
 
@@ -332,3 +332,126 @@ w Inno 6.7.1 nadal wymaga natywnej kontroli F0-WIN-INNO.
   PASS, w tym typowanie testu czasu życia mutexu. To **cross-check** bez
   linkowania i uruchamiania, nie dowód CRT, Setup ani zachowania Windows.
 - ISCC, dumpbin, instalacja/deinstalacja, testy mutexu i F5: **PENDING_NATIVE**.
+
+## F4 — workflow, dokumentacja i końcowa walidacja
+
+Wspólny `package.yml` służy CI dla zmian packaging/Cargo/.cargo/workflow oraz
+release. Buduje natywnie Linux/Windows, sprawdza przypięte narzędzia, generuje
+licencje, buduje Setup/AppImage i przejściowe ZIP/tar.gz. Przygotowano natywne
+kontrole dumpbin, ISCC i instalatory z dwoma błędnymi SHA. Release rozwiązuje
+istniejący tag do SHA, weryfikuje komplet SHA256SUMS i tworzy wyłącznie draft.
+**Nie uruchomiono workflow_dispatch**, nie utworzono tagu, release, PR ani push.
+Próba tych workflow na GitHubie pozostaje **PENDING_CI** zgodnie z zakresem pracy.
+
+README opisuje oba sposoby instalacji, tryby narzędzi, zgody, aktualizację,
+naprawę, odinstalowanie i zachowane dane. packaging/README zawiera procedurę
+pinów/GPG, budowania oraz generowania notek. D5/D7 są zamknięte decyzjami
+właściciela; żadne decyzje projektowe nie czekają już na odpowiedź.
+
+### Wyniki końcowe
+
+| Kontrola | Wynik |
+|---|---|
+| `cargo fmt --all -- --check` | PASS |
+| `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `cargo test --locked --workspace --all-features` poza sandboxem | **319 passed, 0 failed, 6 ignored**; SMTC/doc-tests po 0 |
+| `python3 -I packaging/test-components.py` | **4 passed** |
+| actionlint 1.7.12, wszystkie 3 workflow, `-shellcheck=` | PASS; opcjonalny ShellCheck nie był uruchamiany |
+| `bash -n packaging/linux/build-appimage.sh` | PASS; skrypt również wykonano przy rzeczywistym pakowaniu |
+| PowerShell 7.6.9 Linux, Parser.ParseFile dla 3 skryptów .ps1 | PASS; wyłącznie AST/składnia, bez wykonania komend Windows |
+| cargo-about 0.9.3, graf Linux i Windows, --locked --all-features | PASS; pełne notki wygenerowane |
+| SMTC `cargo check --locked -p grajek-smtc --all-targets --all-features --target x86_64-pc-windows-msvc` | PASS; bez linkowania/uruchamiania Windows |
+| Build release w kontenerze Ubuntu 22.04 | PASS; pierwszy pełny build 9m04s, końcowy rebuild po poprawkach 29.35s |
+| AppImage, wypakowanie, 5 ELF-ów, GLIBC ≤2.35, RPATH | PASS |
+| `ldd` w osobnym czystym ubuntu:22.04, bez sieci | PASS względem listy wykluczeń; tylko hostowy libxcb.so.1 nieobecny |
+| Lokalny SHA256SUMS dla AppImage, `sha256sum --check` | PASS; nie jest to sprawdzenie nieutworzonych assetów Windows |
+
+Końcowy AppImage (bez yt-dlp/Deno):
+
+```text
+/tmp/grajek-linux-2204-8c5d6scm/out/Grajek-0.6.0-x86_64.AppImage
+27728376 bytes
+SHA-256 0eca960c1ea2a9995c70a0249e1d1c1338408de84df3032e8dc844592fe050a5
+```
+
+Źródła w builderze były kopią roboczych źródeł 0.6.0 po poprawce recenzji,
+bez .git, .env i target z hosta. Builder nie miał socketu Dockera hosta.
+Artefakt jest lokalny; nie został wysłany do żadnego wydania.
+Logi: `/tmp/grajek-linux-final-build.log`, `/tmp/grajek-appimage-final-package.log`,
+`/tmp/grajek-appdir-final-validation.log`, `/tmp/grajek-f4-test-final.log`,
+`/tmp/grajek-f4-clippy-final.log`. Pomiary narzędzi F0 nadal są w osobnych
+katalogach `/tmp/grajek-f0-8kb9vuKT`.
+
+Listę bibliotek hosta porównano z
+https://raw.githubusercontent.com/AppImage/pkg2appimage/master/excludelist
+w dniu pomiaru (SHA-256 pliku:
+`50db0f894f34b169c47a5cbc0c17dbab61e9edebca5bc8269a1e6ac1bf4bdad9`).
+Cztery dołączane biblioteki nie są na upstreamowej liście.
+Vulkan i libwayland-egl są jawnymi wyjątkami hostowymi planu. Usunięto zbędne
+wyjątki Xau/Xdmcp/bsd/md; każdy nierozwiązany import spoza pozostałej listy
+przerywa kontrolę, podobnie jak błąd dowolnego wywołania ldd.
+
+### Recenzja i poprawki regresji
+
+Jedna świeża recenzja całej gałęzi znalazła **1 P2**: blokada ekstraktorów
+działała tylko wewnątrz procesu. Publikacja mogła usunąć `_internal` używane
+przez drugą instancję. Naprawiono w jednej turze: współdzielona blokada pliku
+chroni managed subprocessy; publikacja i odzyskiwanie wymagają wyłącznej.
+Pod lokalną blokadą procesową publikacja utrzymuje też blokadę zasobów i
+instalatora aż do przełączenia resolvera. Wersje markera są odczytywane pod
+blokadą, więc zmiana przez drugą instancję nie wywołuje fałszywej naprawy.
+Oczekiwanie można anulować, nie blokując wątku UI.
+
+Testy RED→GREEN obejmują własny proces i oddzielny `flock --shared`.
+Oczekiwane błędy RED, usunięte przez poprawki:
+
+```text
+Published while an extractor was still running
+Replaced another process's active tools
+test_ejs_version_must_match_the_library_token_exactly: AssertionError: True is not false
+```
+
+W ostatnim przypadku kontrola EJS akceptowała 0.8.01 jako prefiks 0.8.0;
+teraz porównuje cały token biblioteki z właściwej linii debug. Sprawdzono też
+końcowy parser z prawdziwym przypiętym yt-dlp offline: PASS 0.8.0.
+Recenzent nie zgłosił innych konkretnych błędów. Poprawki zweryfikowano testami,
+bez zlecania drugiej recenzji. Minory odroczone: brak.
+
+### Decyzje techniczne wykonawcy i ich granice
+
+1. Katalog narzędzi przekazuje main do resolvera: korzysta z istniejącego store,
+   bez uzależniania samodzielnego seek-spike od całej aplikacji. Błędny katalog
+   uniemożliwiłby odnalezienie managed tools; main zachowuje ścieżki z planu.
+2. Odzyskiwanie tools.old i bezpieczne blokady File/stdlib uzupełniają dwa rename.
+   Chronią poprzedni komplet i dwie instancje; koszt to odroczenie podmiany
+   podczas aktywnego ekstraktora. Cancel przerywa oczekiwanie.
+3. zip 8.6.0 korzysta tylko z backendu DEFLATE, bez zbędnego zopfli. Zmiana
+   metody kompresji przez upstream wymaga zmiany backendu i ponownych testów;
+   dotychczasowe przypięte ZIP-y są obsługiwane, bez cichego pomijania błędów.
+   Listing czterech rzeczywistych ZIP-ów potwierdził metody 0 (stored) i 8 (DEFLATE).
+4. Build i kontrola kontenerowa są osobnymi krokami. Automatyczny review odrzucił
+   montowanie socketu Docker (zbyt szerokie uprawnienia hosta). Bezpieczniejszy
+   wariant wykonał build bez socketu, a osobny ldd uruchomiono z hosta. Żadna
+   bramka testowa nie została przez to pominięta.
+
+### Pozostałe bramki
+
+- **PENDING_NATIVE F0-WIN-CRT / F0-WIN-INNO:** native build/link, dumpbin,
+  działanie mutexu, ISCC, dobre i złe SHA, cleanup, offline/ponów/anuluj,
+  zgodność notki is7z oraz zachowanie danych.
+- **PENDING_NATIVE F5:** Windows 10/11, Ubuntu GNOME Wayland/X11, KDE
+  Wayland/X11/XWayland, tray, MPRIS/SMTC i rzeczywisty odsłuch Discorda.
+- **PENDING_CI:** uruchomienie przygotowanych workflow, pełny komplet assetów
+  i release SHA256SUMS; nie wykonano z powodu zakazu push/tag/release w tym zadaniu.
+- Przed publikacją zachować dostępność źródeł i materiału do ponownego linkowania
+  części LGPL statycznego type2-runtime; pochodzenie tekstów i źródeł zapisano
+  w packaging/linux/runtime-licenses/SOURCES.md. Sam smoke test czystej instalacji
+  nie dowodzi zachowania starego zestawu po nieudanej aktualizacji Windows.
+- Guard AppMutex pojawia się dopiero w 0.6.0. Bazowy portable 0.5.0 nie może
+  zostać wykryty przez nieistniejący w nim mutex: trzeba go zamknąć ręcznie.
+  Test blokady N-1 wymaga poprzedniego buildu z guardem; migracja z 0.5.0 jest
+  osobnym scenariuszem. Nie zastąpiono D3 enumeracją procesów ani kodem Pascal.
+
+Nie zmieniono vendor/gpui-pre-linux, src/window.rs, build.rs, windows.rc ani
+Makefile. Główna crate nadal ma `unsafe_code = "forbid"`. Wszystkie scenariusze
+ręczne pozostają niezaznaczone w osobnej checkliście.

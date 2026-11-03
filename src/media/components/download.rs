@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result, ensure};
 use sha2::{Digest as _, Sha256};
 use tokio::{io::AsyncWriteExt as _, sync::watch, task::JoinHandle};
 
-use super::{Artifact, Mode, Pins, Tools};
+use super::{Artifact, Mode, Pins, Tools, execution};
 use crate::media::Tool;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -34,6 +34,13 @@ pub(crate) struct Download {
     _task: JoinHandle<()>,
 }
 
+#[must_use = "Hold the publication guards until the resolver has been activated"]
+struct Publication {
+    _installation: File,
+    _resources: File,
+    _process: tokio::sync::RwLockWriteGuard<'static, ()>,
+}
+
 impl Download {
     pub fn cancel(&self) {
         self.cancel.send_replace(true);
@@ -55,17 +62,18 @@ pub(crate) fn start(runtime: &tokio::runtime::Handle, directory: PathBuf) -> Res
     let (progress, updates) = watch::channel(Progress::Ready);
     let (cancel, cancelled) = watch::channel(false);
     let task = runtime.spawn(async move {
-        let result = install_with(
+        let status = match install_with(
             &directory,
             &pins,
             client,
             progress.clone(),
             cancelled.clone(),
         )
-        .await;
-        let status = match result {
-            Ok(()) => {
+        .await
+        {
+            Ok(publication) => {
                 super::refresh(directory);
+                drop(publication);
                 Progress::Complete
             }
             Err(_) if *cancelled.borrow() || cancelled.has_changed().is_err() => {
@@ -129,6 +137,10 @@ pub(crate) fn recover(directory: &Path) -> Result<()> {
         return Ok(());
     }
     let _lock = lock(directory)?;
+    let resources = execution::open_lock(directory)?;
+    resources
+        .try_lock()
+        .context("Playback components are in use by another instance. Recovery deferred.")?;
     recover_locked(directory)
 }
 
@@ -265,13 +277,22 @@ async fn install_with(
     client: reqwest::Client,
     progress: watch::Sender<Progress>,
     mut cancel: watch::Receiver<bool>,
-) -> Result<()> {
+) -> Result<Publication> {
     ensure!(
         directory.is_absolute(),
         "Playback components require an absolute directory."
     );
-    let _lock = lock(directory)?;
-    recover_locked(directory)?;
+    let installation = lock(directory)?;
+    if directory.with_extension("old").try_exists()? {
+        check_cancel(&cancel)?;
+        let _resources = tokio::select! {
+            _ = cancel.changed() => anyhow::bail!("Download cancelled."),
+            file = execution::lock(directory, false) => file?,
+        };
+        recover_locked(directory)?;
+    } else {
+        remove(&directory.with_extension("partial"))?;
+    }
     let partial = directory.with_extension("partial");
     std::fs::create_dir(&partial)?;
     let result = async {
@@ -297,15 +318,29 @@ async fn install_with(
                 "Downloaded playback components couldn't run or have an unexpected version. Check system compatibility.");
         }
         check_cancel(&cancel)?;
+        // Block new process snapshots until publication and resolver activation are both finished.
+        let publication = tokio::select! {
+            _ = cancel.changed() => anyhow::bail!("Download cancelled."),
+            guard = super::EXECUTIONS.write() => guard,
+        };
+        let resources = tokio::select! {
+            _ = cancel.changed() => anyhow::bail!("Download cancelled."),
+            file = execution::lock(directory, false) => file?,
+        };
+        check_cancel(&cancel)?;
         std::fs::write(partial.join("components.json"), serde_json::to_vec(&pins.versions())?)?;
         // No await/cancellation point between the two renames; startup restores tools.old after a crash.
         publish(&partial, directory)?;
-        Ok(())
+        Ok((publication, resources))
     }.await;
     if result.is_err() {
         remove(&partial)?;
     }
-    result
+    result.map(|(process, resources)| Publication {
+        _installation: installation,
+        _resources: resources,
+        _process: process,
+    })
 }
 
 #[cfg(test)]

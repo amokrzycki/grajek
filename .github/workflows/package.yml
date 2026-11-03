@@ -1,0 +1,145 @@
+name: Package distribution
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x64
+            components: linux
+            target: x86_64-unknown-linux-gnu
+            binary: grajek
+          - os: windows-2022
+            platform: windows-x64
+            components: windows
+            target: x86_64-pc-windows-msvc
+            binary: grajek.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: clippy, rustfmt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+      - name: Configure MSVC and Windows SDK
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Linux build and packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake pkg-config libopus-dev dbus-daemon \
+            libfontconfig1-dev libfreetype6-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcb1-dev \
+            libssl-dev libzstd-dev libvulkan-dev patchelf
+      - name: Read package version
+        shell: bash
+        env:
+          GRAJEK_PLATFORM: ${{ matrix.platform }}
+        run: |
+          version=$(python3 -I -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          echo "GRAJEK_VERSION=$version" >> "$GITHUB_ENV"
+          echo "GRAJEK_PACKAGE=grajek-$version-$GRAJEK_PLATFORM" >> "$GITHUB_ENV"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check lints
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Run headless tests
+        run: cargo test --locked --workspace --all-features
+      - name: Test packaging verification
+        run: python3 -I packaging/test-components.py
+      - name: Verify pinned Linux components
+        if: runner.os == 'Linux'
+        run: |
+          python3 -I packaging/check-components.py --platform linux \
+            --directory "$RUNNER_TEMP/grajek-components"
+      - name: Verify pinned Windows components
+        if: runner.os == 'Windows'
+        run: |
+          python3 -I packaging/check-components.py --platform windows --directory "$env:RUNNER_TEMP\grajek-components" --iscc-defines "$env:RUNNER_TEMP\grajek-components\iscc-defines.txt"
+      - name: Build native Linux release
+        if: runner.os == 'Linux'
+        run: cargo build --locked --release
+      - name: Build native Windows release and record linker output
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --locked --release 2>&1 | Tee-Object "$env:RUNNER_TEMP\grajek-build.log"
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+      - name: Check Windows CRT imports
+        if: runner.os == 'Windows'
+        run: |
+          ./packaging/windows/check-crt.ps1 -Grajek target/release/grajek.exe -ToolsDirectory "$env:RUNNER_TEMP\grajek-components" -BuildLog "$env:RUNNER_TEMP\grajek-build.log"
+      - name: Install cargo-about
+        run: cargo install cargo-about --version 0.9.3 --features cli --locked
+      - name: Generate Rust license notices
+        env:
+          GRAJEK_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          cargo about generate --locked --all-features --target "$GRAJEK_TARGET" \
+            -c packaging/about.toml packaging/about.hbs -o "$RUNNER_TEMP/Grajek-THIRD-PARTY.txt"
+      - name: Stage transition portable archive
+        shell: bash
+        env:
+          GRAJEK_BINARY: ${{ matrix.binary }}
+        run: |
+          mkdir -p "package/$GRAJEK_PACKAGE/licenses" dist
+          cp "target/release/$GRAJEK_BINARY" README.md LICENSE .env.example "package/$GRAJEK_PACKAGE/"
+          cp "$RUNNER_TEMP/Grajek-THIRD-PARTY.txt" "package/$GRAJEK_PACKAGE/licenses/"
+          cp vendor/gpui-pre-linux/LICENSE-APACHE "package/$GRAJEK_PACKAGE/licenses/gpui-LICENSE-APACHE.txt"
+      - name: Package Linux portable archive and AppImage
+        if: runner.os == 'Linux'
+        run: |
+          cp Makefile "package/$GRAJEK_PACKAGE/"
+          mkdir -p "package/$GRAJEK_PACKAGE/assets"
+          cp -R assets/linux assets/brand "package/$GRAJEK_PACKAGE/assets/"
+          tar -czf "dist/$GRAJEK_PACKAGE.tar.gz" -C package "$GRAJEK_PACKAGE"
+          bash packaging/linux/build-appimage.sh target/release/grajek "$RUNNER_TEMP/Grajek-THIRD-PARTY.txt" dist
+          extracted=$(mktemp -d "$RUNNER_TEMP/grajek-extracted-XXXXXXXX")
+          appimage="$PWD/dist/Grajek-$GRAJEK_VERSION-x86_64.AppImage"
+          (cd "$extracted" && "$appimage" --appimage-extract > /dev/null)
+          python3 -I packaging/linux/check-appdir.py "$extracted/squashfs-root"
+      - name: Package Windows portable archive
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python3 -I -m zipfile --create "dist/$GRAJEK_PACKAGE.zip" "package/$GRAJEK_PACKAGE"
+      - name: Build Windows Setup and negative hash fixtures
+        if: runner.os == 'Windows'
+        run: |
+          $common = @{ StageDirectory = "$env:RUNNER_TEMP\grajek-stage"; ToolsDirectory = "$env:RUNNER_TEMP\grajek-components"; Notices = "$env:RUNNER_TEMP\Grajek-THIRD-PARTY.txt"; Version = $env:GRAJEK_VERSION }
+          ./packaging/windows/build-installer.ps1 @common -OutputDirectory dist
+          ./packaging/windows/build-installer.ps1 @common -OutputDirectory "$env:RUNNER_TEMP\grajek-bad-yt" -BadYtDlpHash
+          ./packaging/windows/build-installer.ps1 @common -OutputDirectory "$env:RUNNER_TEMP\grajek-bad-deno" -BadDenoHash
+      - name: Smoke test Setup, bad hashes and uninstall
+        if: runner.os == 'Windows'
+        run: |
+          $name = "Grajek-Setup-$env:GRAJEK_VERSION.exe"
+          ./packaging/windows/test-installer.ps1 -Setup "dist\$name" -BadYtDlpSetup "$env:RUNNER_TEMP\grajek-bad-yt\$name" -BadDenoSetup "$env:RUNNER_TEMP\grajek-bad-deno\$name"
+      - name: Save unsigned distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error

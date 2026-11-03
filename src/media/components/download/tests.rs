@@ -108,7 +108,7 @@ async fn verified_archives_publish_a_complete_pair_and_marker() -> Result<()> {
     let pins = pins_for(&server.url, &bytes)?;
     let (progress, rx) = watch::channel(Progress::Ready);
     let (_cancel, cancelled) = watch::channel(false);
-    tokio::time::timeout(
+    let _publication = tokio::time::timeout(
         Duration::from_secs(10),
         install_with(
             &dir.tools(),
@@ -335,5 +335,115 @@ fn symlink_entries_are_skipped_and_cannot_redirect_later_files() -> Result<()> {
     extract(&file, &dir.tools(), size, &cancelled)?;
     assert_eq!(std::fs::read(dir.tools().join("link/safe"))?, b"inside");
     assert!(!dir.0.join("outside").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_waits_for_running_extractors_and_can_be_cancelled_while_waiting() -> Result<()>
+{
+    let dir = Fixture::new()?;
+    old_install(&dir)?;
+    let bytes = archive()?;
+    let server = server(bytes.clone(), false).await?;
+    let pins = pins_for(&server.url, &bytes)?;
+    let (progress, mut rx) = watch::channel(Progress::Ready);
+    let (cancel, cancelled) = watch::channel(false);
+    let execution = super::super::EXECUTIONS.read().await;
+    let directory = dir.tools();
+    let mut task = tokio::spawn(async move {
+        install_with(
+            &directory,
+            &pins,
+            reqwest::Client::new(),
+            progress,
+            cancelled,
+        )
+        .await
+    });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        rx.wait_for(|p| *p == Progress::Checking),
+    )
+    .await??;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut task)
+            .await
+            .is_err(),
+        "Published while an extractor was still running"
+    );
+    assert_eq!(
+        std::fs::read(dir.tools().join("components.json"))?,
+        b"previous marker"
+    );
+    cancel.send_replace(true);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await??
+            .is_err()
+    );
+    drop(execution);
+    assert_old_preserved(&dir)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_waits_for_a_managed_extractor_in_another_process() -> Result<()> {
+    let dir = Fixture::new()?;
+    old_install(&dir)?;
+    let mut reader = tokio::process::Command::new("flock")
+        .args(["--no-fork", "--shared"])
+        .arg(dir.tools().with_extension("execution.lock"))
+        .args(["sh", "-c", "printf ready; read release"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut ready = [0; 5];
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        reader
+            .stdout
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("no lock-reader stdout"))?
+            .read_exact(&mut ready),
+    )
+    .await??;
+    assert_eq!(&ready, b"ready");
+    let bytes = archive()?;
+    let server = server(bytes.clone(), false).await?;
+    let pins = pins_for(&server.url, &bytes)?;
+    let (progress, mut rx) = watch::channel(Progress::Ready);
+    let (_cancel, cancelled) = watch::channel(false);
+    let directory = dir.tools();
+    let mut task = tokio::spawn(async move {
+        install_with(
+            &directory,
+            &pins,
+            reqwest::Client::new(),
+            progress,
+            cancelled,
+        )
+        .await
+    });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        rx.wait_for(|p| *p == Progress::Checking),
+    )
+    .await??;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut task)
+            .await
+            .is_err(),
+        "Replaced another process's active tools"
+    );
+    reader
+        .stdin
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("no lock-reader stdin"))?
+        .write_all(b"release\n")
+        .await?;
+    assert!(reader.wait().await?.success());
+    let _publication = tokio::time::timeout(Duration::from_secs(5), task).await???;
+    assert!(dir.tools().join("yt-dlp/yt-dlp_linux").is_file());
     Ok(())
 }

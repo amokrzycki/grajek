@@ -6,7 +6,6 @@ from pathlib import Path
 
 HOST_LIBRARIES = {"libc.so.6", "libm.so.6", "libgcc_s.so.1", "libpthread.so.0", "libdl.so.2",
                   "librt.so.1", "ld-linux-x86-64.so.2", "libxcb.so.1", "libX11.so.6",
-                  "libXau.so.6", "libXdmcp.so.6", "libbsd.so.0", "libmd.so.0",
                   "libwayland-client.so.0", "libwayland-egl.so.1", "libEGL.so.1", "libvulkan.so.1"}
 LIBRARIES = {"libopus.so.0", "libxkbcommon.so.0", "libxkbcommon-x11.so.0", "libxcb-xkb.so.1"}
 
@@ -19,7 +18,7 @@ def main():
         raise SystemExit("AppRun must be a direct symlink to usr/bin/grajek")
     elfs = []
     for path in root.rglob("*"):
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             continue
         if path.name in {"yt-dlp", "yt-dlp_linux", "yt-dlp.exe", "deno", "deno.exe", "components.json"}:
             raise SystemExit(f"Playback component must not be bundled: {path}")
@@ -43,7 +42,7 @@ def main():
         print("ELF GLIBC <= 2.35 and RPATH passed; container ldd still required")
         return
     result = subprocess.run(["docker", "run", "--rm", "--network", "none", "-v", f"{root}:/app:ro", "ubuntu:22.04",
-                             "sh", "-c", 'for file in /app/usr/bin/grajek /app/usr/lib/*.so*; do echo "$file"; ldd "$file"; done'],
+                             "sh", "-c", 'for file in /app/usr/bin/grajek /app/usr/lib/*.so*; do echo "$file"; ldd "$file" || exit $?; done'],
                             text=True, capture_output=True)
     print(result.stdout)
     if result.returncode or re.search(r"version .*not found", result.stdout + result.stderr):

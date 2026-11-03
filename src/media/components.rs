@@ -1,16 +1,20 @@
 use std::{
     ffi::{OsStr, OsString},
     fmt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{OnceLock, RwLock},
 };
 
 use super::Tool;
 
 static TOOLS: OnceLock<RwLock<Tools>> = OnceLock::new();
+#[cfg(target_os = "linux")]
+pub(crate) static EXECUTIONS: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
 #[cfg(target_os = "linux")]
 pub(crate) mod download;
+#[cfg(target_os = "linux")]
+pub(crate) mod execution;
 
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -82,6 +86,12 @@ impl Versions {
     }
 }
 
+fn installed_versions(directory: &Path) -> Option<Versions> {
+    serde_json::from_slice::<Versions>(&std::fs::read(directory.join("components.json")).ok()?)
+        .ok()
+        .filter(Versions::valid)
+}
+
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Need {
@@ -126,11 +136,7 @@ impl Tools {
         let directory = directory.filter(|dir| {
             !force_system && dir.join("components.json").try_exists().unwrap_or(true)
         });
-        let versions = directory.as_ref().and_then(|dir| {
-            serde_json::from_slice::<Versions>(&std::fs::read(dir.join("components.json")).ok()?)
-                .ok()
-                .filter(Versions::valid)
-        });
+        let versions = directory.as_deref().and_then(installed_versions);
         Self {
             mode: if directory.is_some() {
                 Mode::Managed
@@ -233,6 +239,23 @@ impl Tools {
         )
     }
 
+    #[cfg(target_os = "windows")]
+    pub(crate) fn startup_notice(&self) -> Option<String> {
+        let missing = if self.mode == Mode::Managed {
+            self.versions.is_none()
+                || [Tool::YtDlp, Tool::Deno]
+                    .into_iter()
+                    .any(|tool| !self.path(tool).is_file())
+        } else {
+            std::env::var_os("PATH").is_none_or(|path| {
+                [Tool::YtDlp, Tool::Deno].into_iter().any(|tool| {
+                    !std::env::split_paths(&path).any(|dir| dir.join(tool.filename()).is_file())
+                })
+            })
+        };
+        missing.then(|| self.failure().to_string())
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn need(&self) -> Option<Need> {
         self.need_on(std::env::var_os("PATH").as_deref())
@@ -301,6 +324,9 @@ fn refresh(directory: PathBuf) {
         std::env::var_os("GRAJEK_TOOLS").as_deref() == Some(OsStr::new("system")),
         Some(directory),
     );
+    if let Some(v) = &selection.versions {
+        tracing::info!(mode = ?selection.mode, yt_dlp = %v.ytdlp, ejs = %v.ejs, deno = %v.deno, "Playback components selected after download");
+    }
     if let Some(lock) = TOOLS.get() {
         *lock
             .write()

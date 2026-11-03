@@ -10,11 +10,93 @@ to start a single audio stream.
 - Stop playback or leave voice without closing the window.
 - Use Linux MPRIS or Windows system media controls for the bot's Discord playback.
 
-Version 0.5.0 adds in-app bot setup, server/channel discovery and native tray controls.
-See [release evidence and limitations](docs/releases/v0.5.0.md). Native Windows
-execution and live Discord acceptance must not be inferred from cross-builds.
+Version 0.6.0 adds per-user Windows Setup and a Linux AppImage with optional,
+private playback-component downloads. Native acceptance is still pending; see
+[distribution evidence](docs/plans/004-evidence.md) and the
+[manual checklist](docs/plans/004-native-checklist.md).
 
-## Requirements
+## Install
+
+The 0.6.0 packaging workflow produces these files; this implementation does not
+itself publish a release. Download packages from this repository's Releases page
+when a release has passed native acceptance, and check its `SHA256SUMS`.
+
+### Windows x64
+
+Run `Grajek-Setup-0.6.0.exe` on Windows 10 22H2 or Windows 11. Setup runs for the
+current user without administrator permissions, offers Polish and English,
+and installs into `%LOCALAPPDATA%\Programs\Grajek` by default. It explains and
+downloads pinned yt-dlp (including EJS) and Deno from their authors' official
+GitHub releases, verifies SHA-256, and keeps them in its private `tools` folder.
+Internet access is required during installation. PATH stays unchanged.
+
+The build is unsigned. SmartScreen may show a warning: verify the source and
+checksum before using **More info → Run anyway** for a copy you trust.
+Static CRT builds and installation without VC++ redist require the outstanding
+clean-Windows checks; cross-compilation does not establish that they work.
+
+Quit Grajek from the tray before updating or uninstalling. Setup detects running
+mutex-aware instances (0.6.0+), including a hidden window. Older portable builds
+must be quit manually. Re-running Setup repairs missing or damaged
+components. Uninstall removes the program and downloaded tools; settings, queue,
+history and `.env` remain in `%LOCALAPPDATA%\Grajek`, and the bot token remains in
+Windows Credential Manager. An `.env` you added to the installation folder is kept.
+
+### Linux x86_64
+
+```sh
+chmod +x Grajek-0.6.0-x86_64.AppImage
+./Grajek-0.6.0-x86_64.AppImage
+```
+
+Requirements: glibc **2.35+**, a Wayland or X11 session, a Vulkan driver, host
+`libxcb.so.1` and XKB data (`/usr/share/X11/xkb`). The AppImage bundles the four
+libraries listed in the [packaging guide](packaging/README.md), including Opus.
+Its static runtime needs working FUSE and `fusermount`/`fusermount3`, without
+requiring libfuse2. If FUSE is unavailable:
+
+```sh
+./Grajek-0.6.0-x86_64.AppImage --appimage-extract-and-run
+```
+
+The AppImage contains no yt-dlp or Deno. With working system tools on PATH, it
+uses those. Otherwise **Playback components needed** lists the tools, versions,
+sources, licenses and download size. Choose **Download** to fetch verified
+upstream files, or **Not now / Later** to defer. Downloads run in the background;
+you can cancel or retry. Tools live in `$XDG_DATA_HOME/grajek/tools` (normally
+`~/.local/share/grajek/tools`), with upstream executable name `yt-dlp_linux`.
+Neither PATH nor system packages are changed. GitHub access is required for the
+first download and any requested update; playback itself still needs the network.
+
+Settings shows the selected mode and versions, with Download, Re-download or
+Update. A newer AppImage can offer newer pinned components; Later keeps the
+installed versions. Updates always require a click. A failed download keeps the
+previous complete set. Pinned versions are yt-dlp **2026.10.26**, EJS **0.8.0**,
+Deno **2.9.8**; downloaded Deno requires glibc 2.27, below the app's 2.35 floor.
+
+On KDE Wayland, an AppImage without desktop integration (for example Gear Lever
+or AppImageLauncher) may have a generic window icon. Its tray icon is embedded.
+To remove it, delete the AppImage; separately remove `grajek/tools` only if you
+also want to delete its private playback tools. Other data and credentials stay.
+
+### Playback-tool modes
+
+An existing `tools/components.json` selects the managed pair. Missing or damaged
+managed files cause a repair prompt, with no silent fallback to system tools.
+`GRAJEK_TOOLS=system` forces both tools from PATH; on Windows it can be set in
+`%LOCALAPPDATA%\Grajek\.env`. Remove the override and restart to use managed tools.
+System mode retains `--remote-components ejs:npm`; managed mode uses the embedded
+EJS and an absolute Deno path without remote components. Both disable plugins.
+
+If YouTube changes its challenges, managed playback may require a new Grajek
+release. Advanced users can temporarily use updated system tools and the override.
+Portable ZIP/tar.gz archives remain for the 0.6.0 transition release and need the
+source-mode prerequisites below. `cargo run` and `make install` create no tool
+marker. When no managed marker exists, tools on PATH retain system mode.
+
+## Build from source
+
+### Linux prerequisites
 
 The documented desktop setup is Linux x86_64 on CachyOS / Arch. You need a
 Wayland or X11 graphical session with working Vulkan GPU drivers, Rust stable
@@ -54,15 +136,16 @@ Studio 2022 C++ Build Tools with a Windows 10/11 SDK. Install CMake on `PATH`;
 libopus is built from the locked crate's bundled source. GPUI uses Direct3D 11,
 DirectWrite and DirectComposition; use current graphics drivers with Direct3D
 feature level 10.1 or better. The import table includes Windows' ICU library
-(`icuuc.dll`, present from Windows 10 version 1703) and `VCRUNTIME140.dll`.
-Portable users need Microsoft's [x64 Visual C++ v14 runtime](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
-if it is not already installed. Debug GUI builds may use the optional Windows
+(`icuuc.dll`, present from Windows 10 version 1703). MSVC builds now request
+static CRT through `.cargo/config.toml`; verify imports with `dumpbin /dependents`
+on native Windows before treating the package as independent of VC++ redist. Debug GUI builds may use the optional Windows
 Graphics Tools debug layer when available. Release builds need SDK `fxc.exe`
 (the pinned GPUI build script searches the SDK; `GPUI_FXC_PATH` can override it).
 
 Install `yt-dlp.exe` and `deno.exe` on your user `PATH`, with Deno 2.3 or newer
 and compatible EJS scripts. Reopen your terminal/Explorer session after changing
-`PATH`. Grajek invokes the executables directly and does not install them.
+`PATH`. Source/portable mode invokes the executables directly; Setup downloads
+its private pair instead.
 `--remote-components ejs:npm` allows yt-dlp to retrieve compatible challenge
 scripts if local EJS scripts are missing; it does not install executables.
 FFmpeg is unnecessary for the supported streams.
@@ -78,8 +161,7 @@ cargo build --locked --release
 ```
 
 The portable executable is `target\release\grajek.exe`. No administrator
-permissions are needed to run it. An unsigned cross-compiled release candidate is produced in this workspace's
-`target/dist` when available; native Windows acceptance remains pending. Debug
+permissions are needed to run it. Native Windows acceptance remains pending. Debug
 builds use source-tree shaders and are not portable distributions.
 
 ### Linux desktop installation and application icons
@@ -305,7 +387,7 @@ unwritable storage also produces a warning; playback can continue without saving
 | Missing configuration or rejected token | Replace placeholders with a bot token and numeric IDs, invite the bot to the server and restart.                                                                                                                                                                                                              |
 | Cannot join voice                       | Check server/channel IDs, permissions and overrides, channel capacity and outbound voice UDP access.                                                                                                                                                                                                          |
 | Playing but no audible output           | Check server mute, Grajek's volume and your Discord volume for the bot. Playing confirms track progress, not what a listener hears.                                                                                                                                                                           |
-| YouTube extraction or challenge failure | Update `yt-dlp`, `deno` and `yt-dlp-ejs` together.                                                                                                                                                                                                                                                            |
+| YouTube extraction or challenge failure | Managed mode: update Grajek. System mode: update `yt-dlp`, `deno` and `yt-dlp-ejs` together.                                                                                                                                                                                                                                                            |
 | No window                               | On Windows check graphics drivers/Direct3D support and use a native release build. On Linux use a graphical session and a working Vulkan driver. For X11/XWayland, try `env -u WAYLAND_DISPLAY cargo run`. An unreachable Wayland socket does not automatically fall back to X11. Leave `ZED_HEADLESS` unset. |
 | Playback stops after a disconnect       | Connectivity recovery does not restart interrupted audio. Once the gateway is ready, use Play URL or Play Queue. Fatal configuration/gateway startup failures require a restart.                                                                                                                              |
 
@@ -351,18 +433,17 @@ contract, and [DESIGN.md](DESIGN.md) for the native interface design.
 
 ## Releases
 
-Push a tag matching the version in `Cargo.toml` (for example, `v0.5.0`) to run
-[Release](.github/workflows/release.yml), or run it manually with an existing tag.
-The workflow checks formatting, lints and tests on Linux and Windows, builds the
-tagged commit, then creates a **draft** GitHub release with generated notes,
-a Linux x64 `.tar.gz`, a Windows x64 `.zip` and `SHA256SUMS`. Review the draft
-and publish it manually. An existing release is never overwritten.
+[Release](.github/workflows/release.yml) accepts an existing tag matching
+`Cargo.toml` (for example `v0.6.0`), resolves its commit, and calls the same
+[packaging workflow](.github/workflows/package.yml) used by packaging-related PRs.
+It builds on Ubuntu 22.04 and Windows 2022, checks tools and licenses, packages
+Setup/AppImage and transition ZIP/tar.gz archives, verifies `SHA256SUMS`, and
+creates a **draft**. Native tests in the [checklist](docs/plans/004-native-checklist.md)
+remain mandatory before a human publishes it. CI smoke tests are not desktop or
+Discord audio acceptance. An existing release is never overwritten.
 
-Extract the Linux archive and run `./grajek`, or install its desktop entry and
-icons with `make install BINARY=grajek` from the extracted directory. On Windows,
-extract the ZIP and run `grajek.exe`. Archives include the README, license and
-optional `.env.example`; playback tools and system libraries listed above remain
-external prerequisites. Windows binaries are unsigned.
+See [packaging/README.md](packaging/README.md) for local builds, pin updates,
+license generation, and the distinction between automated and native checks.
 
 ## License
 

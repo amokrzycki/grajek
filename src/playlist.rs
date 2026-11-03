@@ -90,6 +90,10 @@ fn args() -> [&'static str; 18] {
 
 pub async fn extract(url: String) -> Result<Playlist, Error> {
     let url = playlist_url(&url).map_err(|_| Error::InvalidUrl)?;
+    #[cfg(target_os = "linux")]
+    let _execution = crate::media::components::execution::acquire()
+        .await
+        .map_err(|_| Error::MissingComponents)?;
     let child = crate::media::tool_command(crate::media::Tool::YtDlp)
         .args(args())
         .arg(url)

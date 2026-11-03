@@ -4,7 +4,7 @@ Stan początkowy 2026-11-03: **żaden punkt poniżej nie jest zaliczony**.
 Pomiary Linux F0 są w `004-evidence.md`. Cross-build i runner CI nie zamykają
 tej checklisty. Po każdym teście zapisać datę, commit, OS, wersje, komendy,
 wynik i lokalizację logów/zrzutów. Dowody akceptacji wydania docelowo trafiają
-do `docs/releases/v0.6.0.md` (nazwa do dostosowania po decyzji D7).
+do `docs/releases/v0.6.0.md` (D7: 0.6.0, instalator PL/EN).
 
 ## F0-WIN-CRT — natywny build i zależności
 
@@ -127,6 +127,8 @@ Brak GPU/Discorda oznacza PENDING, nie PASS.
 - [ ] SMTC: tytuł, klawisze Play/Pause/Next, timeline, brak timeline dla live.
 - [ ] Aktualizacja N-1 ukrytego w tray: AppMutex blokuje Setup; po Quit aktualizacja
   działa, nowe wersje tools, zachowana kolejka, historia, ustawienia i token.
+  Dla blokady mutexu N-1 musi już zawierać guard (0.6.0+). Bazowe 0.5.0 go nie
+  tworzy; migrację z takiego portable sprawdzić osobno po ręcznym Quit.
 - [ ] Usunięte deno.exe → komunikat naprawy; ponowny Setup naprawia narzędzia.
 - [ ] Deinstalacja podczas działania aplikacji blokowana mutexem. Po Quit usuwa
   app/tools/skróty; zachowuje dane, .env użytkownika i Credential Manager.
@@ -157,6 +159,10 @@ Brak GPU/Discorda oznacza PENDING, nie PASS.
 - [ ] Zanotować ikonę KDE Wayland bez integracji desktopowej (znane ograniczenie).
 
 ## Reguła publikacji
+
+- [ ] Przed publiczną dystrybucją zapewnić dostęp do odpowiadających źródeł
+  i materiału do ponownego linkowania części LGPL statycznego type2-runtime;
+  sprawdzić zapis źródeł/notek w packaging/linux/runtime-licenses/SOURCES.md.
 
 Wszystkie powyższe wyniki pozostają **PENDING_NATIVE** do wykonania na tych
 systemach. F5 nie jest częścią lokalnej automatycznej walidacji. W tej pracy

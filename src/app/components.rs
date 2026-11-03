@@ -185,6 +185,9 @@ impl PlayerApp {
         if let Some(v) = components::tools().versions {
             panel = panel.child(format!("Installed: yt-dlp {}, EJS {}, Deno {}. You can keep these versions by choosing Later.", v.ytdlp, v.ejs, v.deno));
         }
+        if std::env::var_os("GRAJEK_TOOLS").as_deref() == Some(std::ffi::OsStr::new("system")) {
+            panel = panel.child("GRAJEK_TOOLS=system is set. Remove it and restart Grajek to use downloaded components.");
+        }
         let status = match &self.components.progress {
             Progress::Ready if busy => "Starting download…".into(),
             Progress::Ready => "An internet connection is required. Nothing is downloaded until you choose Download.".into(),

@@ -39,6 +39,7 @@ for package in libopus0 libxkbcommon0 libxkbcommon-x11-0 libxcb-xkb1; do
   cp "/usr/share/doc/$package/copyright" "$licenses/$package-copyright.txt"
 done
 cp "$root/packaging/linux/type2-runtime-LICENSE.txt" "$licenses/"
+cp -R "$root/packaging/linux/runtime-licenses" "$licenses/"
 python3 -I "$root/packaging/linux/check-appdir.py" "$appdir" --elf-only
 python3 -I "$root/packaging/check-components.py" --platform build-tools --directory "$work/build-tools"
 version=$(python3 -I -c 'import re,sys; print(re.search(r"^version\s*=\s*\"([^\"]+)\"", open(sys.argv[1]).read(), re.M)[1])' "$root/Cargo.toml")

@@ -95,6 +95,13 @@ def glibc_versions(directory):
     return maximum
 
 
+def has_ejs(output, version):
+    prefix = "[debug] Optional libraries: "
+    return any(token.strip() == f"yt_dlp_ejs-{version}"
+               for line in output.splitlines() if line.startswith(prefix)
+               for token in line[len(prefix):].split(","))
+
+
 def check_components(manifest, platform, directory, defines):
     if (platform == "windows") != (sys.platform == "win32"):
         raise ValueError("Run component executables on their native platform")
@@ -120,7 +127,7 @@ def check_components(manifest, platform, directory, defines):
     fixture = directory / "ejs-probe.json"
     fixture.write_text(json.dumps({"id": "ejs-probe", "title": "EJS offline probe", "url": "https://example.invalid/probe.mp3", "ext": "mp3", "extractor": "generic", "extractor_key": "Generic", "webpage_url": "https://example.invalid/probe.mp3"}))
     result = run([executables["yt-dlp"], "--ignore-config", "--no-plugin-dirs", "--no-js-runtimes", "-v", "--simulate", "--load-info-json", fixture], directory)
-    if f"yt_dlp_ejs-{manifest['yt-dlp']['ejs']}" not in result.stderr:
+    if not has_ejs(result.stderr, manifest["yt-dlp"]["ejs"]):
         raise ValueError("Pinned yt-dlp-ejs library was not reported by the offline probe")
     print(f"yt-dlp-ejs {manifest['yt-dlp']['ejs']}: offline probe verified")
     (directory / "components.json").write_text(json.dumps({"yt-dlp": manifest["yt-dlp"]["version"], "yt-dlp-ejs": manifest["yt-dlp"]["ejs"], "deno": manifest["deno"]["version"]}) + "\n")

@@ -10,6 +10,11 @@ api = runpy.run_path(str(Path(__file__).with_name("check-components.py")))
 
 
 class ComponentsTests(unittest.TestCase):
+    def test_ejs_version_must_match_the_library_token_exactly(self):
+        self.assertTrue(api["has_ejs"]("[debug] Optional libraries: certifi-1, yt_dlp_ejs-0.8.0\n", "0.8.0"))
+        self.assertFalse(api["has_ejs"]("[debug] Optional libraries: yt_dlp_ejs-0.8.01\n", "0.8.0"))
+        self.assertFalse(api["has_ejs"]("unrelated diagnostic: yt_dlp_ejs-0.8.0\n", "0.8.0"))
+
     def test_hash_and_size_are_both_required(self):
         with tempfile.TemporaryDirectory() as name:
             path = Path(name) / "artifact"
