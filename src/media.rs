@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use songbird::input::{
     AudioStream, AudioStreamError, Input, LiveInput, YoutubeDl, metadata::YoutubeDlOutput,
 };
-use std::{process::Stdio, time::Duration};
+use std::{ffi::OsString, process::Stdio, time::Duration};
 use tokio::{
     process::Command,
     time::{Instant, timeout, timeout_at},
@@ -10,11 +10,39 @@ use tokio::{
 
 #[path = "media/availability.rs"]
 mod availability;
+pub(crate) mod components;
 #[path = "media/range.rs"]
 mod range;
 pub(crate) use range::SourceControl;
 
 const MAX_TITLE_CHARS: usize = 200;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tool {
+    YtDlp,
+    Deno,
+}
+impl Tool {
+    fn name(self) -> &'static str {
+        match self {
+            Self::YtDlp => "yt-dlp",
+            Self::Deno => "deno",
+        }
+    }
+    fn filename(self) -> &'static str {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::YtDlp => "yt-dlp_linux",
+            #[cfg(target_os = "linux")]
+            Self::Deno => "deno",
+            #[cfg(target_os = "windows")]
+            Self::YtDlp => "yt-dlp.exe",
+            #[cfg(target_os = "windows")]
+            Self::Deno => "deno.exe",
+        }
+    }
+}
+use components::{Mode, Tools, tools};
 
 /// What yt-dlp reported about a track, taken from the same extraction as the stream.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -58,66 +86,45 @@ pub struct Resolved {
 
 pub const FORMAT: &str = "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=m4a]/bestaudio";
 
-fn extraction_args() -> Vec<&'static str> {
-    vec![
-        "--ignore-config",
-        "--no-playlist",
-        "--js-runtimes",
-        "deno",
-        "--remote-components",
-        "ejs:npm",
-        "--socket-timeout",
-        "15",
-        "--retries",
-        "0",
-        "--extractor-retries",
-        "0",
-    ]
-}
-
-pub fn ytdlp_args() -> Vec<&'static str> {
-    let mut args = extraction_args();
-    args.extend(["-f", FORMAT, "-j"]);
+fn ytdlp_args(tools: &Tools, format: &str) -> Vec<OsString> {
+    let mut args = tools.extraction_args();
+    args.extend(["-f", format, "-j"].map(Into::into));
     args
 }
 
 /// Avoid console flashes when a Windows GUI app invokes the extractor tools.
-pub(crate) fn tool_command(tool: &str) -> Command {
-    #[cfg(windows)]
-    let mut command = Command::new(tool);
-    #[cfg(not(windows))]
-    let command = Command::new(tool);
-    #[cfg(windows)]
-    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    command
+pub(crate) fn tool_command(tool: Tool) -> Command {
+    tools().command(tool)
 }
 
 pub async fn check_tools() -> Result<()> {
-    for tool in ["yt-dlp", "deno"] {
+    let tools = tools();
+    for tool in [Tool::YtDlp, Tool::Deno] {
         let output = timeout(
             Duration::from_secs(5),
-            tool_command(tool)
+            tools
+                .command(tool)
                 .arg("--version")
                 .kill_on_drop(true)
                 .output(),
         )
         .await
-        .with_context(|| format!("{tool} version check timed out."))?
-        .with_context(|| format!("Install {tool} and put it on PATH."))?;
+        .map_err(|_| tools.failure())?
+        .map_err(|_| tools.failure())?;
+        ensure!(output.status.success(), tools.failure());
         ensure!(
-            output.status.success(),
-            "Cannot run {tool}. Check its installation."
+            tools.valid_version(tool, &String::from_utf8_lossy(&output.stdout)),
+            tools.failure()
         );
-        if tool == "deno" {
-            let version = String::from_utf8_lossy(&output.stdout);
-            ensure!(supported_deno(&version), "Deno 2.3 or newer is required.");
-        }
     }
     Ok(())
 }
 
 fn supported_deno(output: &str) -> bool {
-    let Some(version) = output.split_whitespace().nth(1) else {
+    let Some(version) = output
+        .strip_prefix("deno ")
+        .and_then(|s| s.split_whitespace().next())
+    else {
         return false;
     };
     let mut parts = version.split('.');
@@ -132,14 +139,16 @@ fn supported_deno(output: &str) -> bool {
 
 /// Extracts display metadata only: no format selection, stream access or decoding.
 pub async fn title(url: String) -> Result<Option<String>> {
-    let output = tool_command("yt-dlp")
-        .args(title_args())
+    let tools = tools();
+    let output = tools
+        .command(Tool::YtDlp)
+        .args(title_args(&tools))
         .arg(url)
         .stdin(Stdio::null())
         .kill_on_drop(true)
         .output()
         .await
-        .context("Could not start yt-dlp.")?;
+        .map_err(|_| tools.failure())?;
     ensure!(output.status.success(), "yt-dlp title extraction failed");
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     Ok(TrackInfo::from_ytdlp(
@@ -149,13 +158,16 @@ pub async fn title(url: String) -> Result<Option<String>> {
     .title)
 }
 
-fn title_args() -> Vec<&'static str> {
-    let mut args = extraction_args();
-    args.extend([
-        "--skip-download",
-        "--ignore-no-formats-error",
-        "--dump-single-json",
-    ]);
+fn title_args(tools: &Tools) -> Vec<OsString> {
+    let mut args = tools.extraction_args();
+    args.extend(
+        [
+            "--skip-download",
+            "--ignore-no-formats-error",
+            "--dump-single-json",
+        ]
+        .map(Into::into),
+    );
     args
 }
 
@@ -170,20 +182,18 @@ pub(super) async fn resolve_format(
     format: &str,
 ) -> Result<Resolved> {
     let deadline = Instant::now() + Duration::from_secs(60);
+    let tools = tools();
     timeout_at(deadline, async {
         // Songbird's query() does not kill yt-dlp on cancellation; own only that subprocess.
-        let output = tool_command("yt-dlp")
-            .args(
-                ytdlp_args()
-                    .into_iter()
-                    .map(|arg| if arg == FORMAT { format } else { arg }),
-            )
+        let output = tools
+            .command(Tool::YtDlp)
+            .args(ytdlp_args(&tools, format))
             .arg(&url)
             .stdin(Stdio::null())
             .kill_on_drop(true)
             .output()
             .await
-            .context("Could not start yt-dlp. Check PATH.")?;
+            .map_err(|_| tools.failure())?;
         let description = stream_description(&output)?;
         availability::wait_for_stream(&description, deadline).await?;
         let live = description
@@ -305,6 +315,10 @@ fn stream_error(error: AudioStreamError) -> AudioStreamError {
 }
 
 pub fn user_error(error: &anyhow::Error) -> String {
+    user_error_for(error, tools().mode)
+}
+
+fn user_error_for(error: &anyhow::Error, mode: Mode) -> String {
     let detail = format!("{error:#}");
     let lower = detail.to_lowercase();
     if lower.contains("timed out") {
@@ -319,9 +333,17 @@ pub fn user_error(error: &anyhow::Error) -> String {
     {
         "YouTube restricted this video. Try a public video that permits playback.".into()
     } else if lower.contains("ejs") || lower.contains("challenge") || lower.contains("javascript") {
-        "YouTube challenge failed. Update yt-dlp, Deno and EJS; check the logs.".into()
+        if mode == Mode::Managed {
+            "YouTube challenge failed. Update Grajek to the latest version; check the logs.".into()
+        } else {
+            "YouTube challenge failed. Update yt-dlp, Deno and EJS; check the logs.".into()
+        }
     } else if lower.contains("yt-dlp extraction failed") {
-        "YouTube extraction failed. Check the logs and update yt-dlp.".into()
+        if mode == Mode::Managed {
+            "YouTube extraction failed. Check for a newer Grajek release; check the logs.".into()
+        } else {
+            "YouTube extraction failed. Check the logs and update yt-dlp.".into()
+        }
     } else {
         error.to_string()
     }
@@ -336,7 +358,7 @@ mod tests {
 
     #[test]
     fn title_extraction_is_metadata_only() {
-        let args = super::title_args();
+        let args = super::title_args(&super::tools());
         for arg in [
             "--ignore-config",
             "--no-playlist",
@@ -345,10 +367,14 @@ mod tests {
             "--dump-single-json",
             "--retries",
         ] {
-            assert!(args.contains(&arg));
+            assert!(args.iter().any(|value| value == arg));
         }
-        assert!(!args.contains(&"-f"));
-        assert!(super::ytdlp_args().contains(&super::FORMAT));
+        assert!(!args.iter().any(|value| value == "-f"));
+        assert!(
+            super::ytdlp_args(&super::tools(), super::FORMAT)
+                .iter()
+                .any(|value| value == super::FORMAT)
+        );
     }
 
     #[test]

@@ -64,6 +64,13 @@ fn main() -> Result<()> {
         )
         .init();
     let config = config::Config::load();
+    #[cfg(target_os = "linux")]
+    let tools_dir = store::app_data_dir().map(|dir| dir.join("tools"));
+    #[cfg(target_os = "windows")]
+    let tools_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("tools")));
+    media::components::initialize(tools_dir);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

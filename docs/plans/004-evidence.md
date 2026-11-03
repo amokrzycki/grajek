@@ -1,7 +1,7 @@
 # 004 — Dowody F0 (2026-11-03)
 
-Status: **F0_LINUX_MEASURED — DESIGN_DECISION_REQUIRED — PENDING_NATIVE**.
-F1–F4 nie rozpoczęto. Nie jest to akceptacja Windows ani wydania.
+Status: **F0_LINUX_MEASURED — F1_IMPLEMENTED — PENDING_NATIVE**.
+F2–F4 nie rozpoczęto. Nie jest to akceptacja Windows ani wydania.
 
 ## Baza i rozbieżności przed edycją
 
@@ -109,7 +109,8 @@ rozpakowaniem; przywrócono bity wykonywalności z external_attr.
 **Rozbieżność blokująca dalszy projekt:** plik w ZIP-ie Linux to
 `yt-dlp_linux`, a nie `yt-dlp`. Windows ma oczekiwane `yt-dlp.exe`.
 Bez zmiany nazwy po ekstrakcji lub zmiany resolvera ścieżka z p. 5 i 6.2
-planu nie zadziała. Nie wybrano samodzielnie wariantu; pytanie do właściciela.
+planu nie zadziała. **Decyzja właściciela po F0:** zachować nazwę upstream
+`tools/yt-dlp/yt-dlp_linux`, bez zmiany nazwy przy rozpakowaniu.
 
 Druga rozbieżność: `yt-dlp -v --version` zwraca wyłącznie `2026.10.26`,
 bez listy bibliotek. Kontrola EJS z p. 9 wymaga innego wywołania.
@@ -242,6 +243,31 @@ Nie uruchamiano sześciu testów ignored. Żaden z wyników nie potwierdza Windo
   z działającym odtwarzaniem i odsłuchem na drugim kliencie.
 
 Procedury oraz niezaznaczona checklista: `004-native-checklist.md`.
-Najpierw rozstrzygnąć obie rozbieżności F0; dopiero po zgodzie przejść do F1.
+Nazwa pliku została rozstrzygnięta; decyzja o zamienniku kontroli EJS pozostaje
+otwarta przed implementacją skryptu kontrolnego paczek.
 Nie zmieniono vendor/gpui-pre-linux ani zakazu unsafe w głównej crate.
 Nie wykonano push, tagowania, wydania, PR ani uruchomienia release workflow.
+
+## F1 — resolver
+
+Dodano wybór kompletnego zestawu System/Managed po dotenv, marker wersji,
+typowane błędy brakujących składników, wspólną fabrykę poleceń i argumenty
+z jawną ścieżką Deno w trybie Managed. System zachowuje ejs:npm (D4).
+Oba tryby wyłączają pluginy. Brak/nieczytelny marker wersji nie powoduje
+przełączenia uszkodzonego zestawu zarządzanego na PATH.
+
+Każda ekstrakcja zachowuje własny snapshot ścieżek i argumentów. Inicjalizacja
+przyjmuje katalog od main, więc samodzielny seek-spike nadal importuje media
+bez zależności od całej warstwy store. Pełne kontrole wersji pozostają przed Play.
+Zmiana ścieżki yt-dlp w playlistach nie dodaje runtime JS.
+
+Testy RED→GREEN: marker wybiera Managed również przy brakujących plikach;
+system odrzuca pustą wersję yt-dlp i wyjście innego programu zamiast Deno.
+Testy obejmują override, uszkodzony marker, ścieżki Linux/Windows, argumenty,
+wersje z zainstalowanego markera (starsze piny nadal dozwolone) i typ błędu.
+
+- `cargo fmt --all -- --check`: PASS.
+- `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`: PASS.
+- `cargo test --locked --workspace --all-features` poza sandboxem: PASS,
+  **305 passed, 0 failed, 6 ignored**; grajek-smtc/doc-tests po 0.
+- Windows CI/native, cargo run na prawdziwym desktopie i Discord: niewykonane.
