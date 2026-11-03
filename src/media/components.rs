@@ -9,6 +9,54 @@ use super::Tool;
 
 static TOOLS: OnceLock<RwLock<Tools>> = OnceLock::new();
 
+#[cfg(target_os = "linux")]
+pub(crate) mod download;
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct Artifact {
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+    pub unpacked_size: u64,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct Pin {
+    pub version: String,
+    #[serde(default)]
+    pub ejs: String,
+    #[cfg(target_os = "linux")]
+    pub linux: Artifact,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct Pins {
+    #[serde(rename = "yt-dlp")]
+    pub ytdlp: Pin,
+    pub deno: Pin,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn pins() -> anyhow::Result<Pins> {
+    Ok(serde_json::from_str(include_str!(
+        "../../packaging/components.json"
+    ))?)
+}
+
+#[cfg(target_os = "linux")]
+impl Pins {
+    pub fn versions(&self) -> Versions {
+        Versions {
+            ytdlp: self.ytdlp.version.clone(),
+            ejs: self.ytdlp.ejs.clone(),
+            deno: self.deno.version.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Versions {
     #[serde(rename = "yt-dlp")]
@@ -16,6 +64,30 @@ pub(crate) struct Versions {
     #[serde(rename = "yt-dlp-ejs")]
     pub ejs: String,
     pub deno: String,
+}
+
+fn version_parts(version: &str) -> Option<Vec<u64>> {
+    version
+        .split('.')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()
+}
+
+impl Versions {
+    fn valid(&self) -> bool {
+        [&self.ytdlp, &self.ejs, &self.deno]
+            .into_iter()
+            .all(|version| version_parts(version).is_some())
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Need {
+    Missing,
+    Repair,
+    Update,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,6 +129,7 @@ impl Tools {
         let versions = directory.as_ref().and_then(|dir| {
             serde_json::from_slice::<Versions>(&std::fs::read(dir.join("components.json")).ok()?)
                 .ok()
+                .filter(Versions::valid)
         });
         Self {
             mode: if directory.is_some() {
@@ -115,7 +188,7 @@ impl Tools {
         args
     }
 
-    pub(super) fn failure(&self) -> MissingComponents {
+    pub(crate) fn failure(&self) -> MissingComponents {
         MissingComponents {
             managed: self.mode == Mode::Managed,
         }
@@ -144,6 +217,61 @@ impl Tools {
                 && (tool != Tool::Deno || super::supported_deno(output))
         })
     }
+
+    pub(crate) fn description(&self) -> String {
+        self.versions.as_ref().map_or_else(
+            || match self.mode {
+                Mode::System => "Playback components: system PATH".into(),
+                Mode::Managed => "Playback components: Grajek-managed — needs repair".into(),
+            },
+            |v| {
+                format!(
+                    "Playback components: Grajek-managed — yt-dlp {}, Deno {}",
+                    v.ytdlp, v.deno
+                )
+            },
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn need(&self) -> Option<Need> {
+        self.need_on(std::env::var_os("PATH").as_deref())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn need_on(&self, path: Option<&OsStr>) -> Option<Need> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let executable = |path: &std::path::Path| {
+            std::fs::metadata(path)
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        };
+        if self.mode == Mode::System {
+            let available = path.is_some_and(|path| {
+                [Tool::YtDlp, Tool::Deno].into_iter().all(|tool| {
+                    std::env::split_paths(path).any(|dir| executable(&dir.join(tool.name())))
+                })
+            });
+            return (!available).then_some(Need::Missing);
+        }
+        let Some(versions) = &self.versions else {
+            return Some(Need::Repair);
+        };
+        if [Tool::YtDlp, Tool::Deno]
+            .into_iter()
+            .any(|tool| !executable(&self.path(tool)))
+        {
+            return Some(Need::Repair);
+        }
+        let expected = pins().ok()?.versions();
+        [
+            (&versions.ytdlp, &expected.ytdlp),
+            (&versions.ejs, &expected.ejs),
+            (&versions.deno, &expected.deno),
+        ]
+        .into_iter()
+        .any(|(installed, pinned)| version_parts(installed) < version_parts(pinned))
+        .then_some(Need::Update)
+    }
 }
 
 pub(crate) fn initialize(directory: Option<PathBuf>) {
@@ -165,6 +293,19 @@ pub(crate) fn tools() -> Tools {
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
+}
+
+#[cfg(target_os = "linux")]
+fn refresh(directory: PathBuf) {
+    let selection = Tools::select(
+        std::env::var_os("GRAJEK_TOOLS").as_deref() == Some(OsStr::new("system")),
+        Some(directory),
+    );
+    if let Some(lock) = TOOLS.get() {
+        *lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = selection;
+    }
 }
 
 #[cfg(test)]
@@ -312,5 +453,36 @@ mod tests {
         assert!(!system.valid_version(Tool::Deno, "other 2.9.8"));
         assert!(system.valid_version(Tool::YtDlp, "2026.10.26\n"));
         assert!(system.valid_version(Tool::Deno, "deno 2.9.8 (stable)"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cheap_startup_checks_find_missing_and_outdated_components_without_processes() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = Fixture::new()?;
+        let system = Tools::select(true, None);
+        assert_eq!(system.need_on(Some(dir.0.as_os_str())), Some(Need::Missing));
+        for name in ["yt-dlp", "deno"] {
+            std::fs::write(dir.0.join(name), "not a runnable program")?;
+            std::fs::set_permissions(dir.0.join(name), std::fs::Permissions::from_mode(0o755))?;
+        }
+        assert_eq!(system.need_on(Some(dir.0.as_os_str())), None);
+        std::fs::write(
+            dir.0.join("components.json"),
+            r#"{"yt-dlp":"2025.01.01","yt-dlp-ejs":"0.8.0","deno":"2.9.8"}"#,
+        )?;
+        let managed = Tools::select(false, Some(dir.0.clone()));
+        assert_eq!(managed.need_on(None), Some(Need::Repair));
+        for (folder, name) in [("yt-dlp", "yt-dlp_linux"), ("deno", "deno")] {
+            std::fs::remove_file(dir.0.join(folder))?;
+            std::fs::create_dir(dir.0.join(folder))?;
+            std::fs::write(dir.0.join(folder).join(name), "not a runnable program")?;
+            std::fs::set_permissions(
+                dir.0.join(folder).join(name),
+                std::fs::Permissions::from_mode(0o755),
+            )?;
+        }
+        assert_eq!(managed.need_on(None), Some(Need::Update));
+        Ok(())
     }
 }

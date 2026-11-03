@@ -1,7 +1,7 @@
 # 004 — Dowody F0 (2026-11-03)
 
-Status: **F0_LINUX_MEASURED — F1_IMPLEMENTED — PENDING_NATIVE**.
-F2–F4 nie rozpoczęto. Nie jest to akceptacja Windows ani wydania.
+Status: **F0_LINUX_MEASURED — F1/F3_IMPLEMENTED — PENDING_PACKAGING_VALIDATION — PENDING_NATIVE**.
+F2 i F4 nie rozpoczęto. Nie jest to akceptacja Windows ani wydania.
 
 ## Baza i rozbieżności przed edycją
 
@@ -123,7 +123,8 @@ zamiennik offline: `--ignore-config --no-plugin-dirs --no-js-runtimes -v
 ```
 
 Kod **0**, `yt_dlp_ejs-0.8.0` w Optional libraries, bez pobierania mediów.
-To propozycja zastąpienia kontroli z p. 9, nie wprowadzona zmiana skryptu CI.
+**Decyzja właściciela:** użyć tej kontroli offline. Wprowadzono ją do
+`packaging/check-components.py`; nie uruchamia ekstrakcji YouTube w CI.
 Próby pomocnicze z pustym batch-file i pustą playlistą nie nadają się do
 kontroli: pierwsza zwraca `You must provide at least one URL.` (kod 2), druga
 `yt_dlp.utils.EntryNotInPlaylist: There are no entries` (kod 1).
@@ -243,8 +244,9 @@ Nie uruchamiano sześciu testów ignored. Żaden z wyników nie potwierdza Windo
   z działającym odtwarzaniem i odsłuchem na drugim kliencie.
 
 Procedury oraz niezaznaczona checklista: `004-native-checklist.md`.
-Nazwa pliku została rozstrzygnięta; decyzja o zamienniku kontroli EJS pozostaje
-otwarta przed implementacją skryptu kontrolnego paczek.
+Obie rozbieżności F0 zostały rozstrzygnięte przez właściciela.
+**D7:** wersja 0.6.0, instalator PL i EN. **D5:** zachować portable ZIP/tar.gz
+przez wydanie przejściowe obok Setup i AppImage.
 Nie zmieniono vendor/gpui-pre-linux ani zakazu unsafe w głównej crate.
 Nie wykonano push, tagowania, wydania, PR ani uruchomienia release workflow.
 
@@ -271,3 +273,39 @@ wersje z zainstalowanego markera (starsze piny nadal dozwolone) i typ błędu.
 - `cargo test --locked --workspace --all-features` poza sandboxem: PASS,
   **305 passed, 0 failed, 6 ignored**; grajek-smtc/doc-tests po 0.
 - Windows CI/native, cargo run na prawdziwym desktopie i Discord: niewykonane.
+
+## F3 — pobieranie Linux i AppImage
+
+Dodano pobieranie strumieniowe HTTPS z limitami rozmiaru, SHA-256, bezpiecznym
+ZIP (odrzucanie traversal, pomijanie symlinków, bity wykonywalności), kontrolą
+wersji i markerem publikowanym na końcu. Plik blokady zapobiega konfliktom
+dwóch instancji. Restart odzyskuje tools.old po przerwaniu między rename.
+Resolver zmienia komplet dopiero po powodzeniu, respektując GRAJEK_TOOLS=system.
+
+UI wymaga kliknięcia przed pobraniem; pokazuje źródła, licencje, wersje, rozmiar,
+postęp, Retry i Cancel. Można wrócić do kolejki podczas pobierania. Not now
+nie wraca przy każdym snapshotcie; nowa próba Play/importu ponownie otwiera
+prompt przez typowany sygnał kontrolera. Settings pokazuje wybrany tryb.
+
+Testy obejmują: poprawny komplet, zły SHA, przerwaną sieć, Cancel w połowie,
+traversal, nadmierny rozmiar, symlinki, blokadę, odzyskiwanie tools.old,
+kontrolę startową bez procesów, odroczenie promptu i zachowanie odtwarzania
+podczas nieudanego importu. Nowe zależności Linux-only: sha2 0.10.9, zip 8.6.0
+z samym backendem DEFLATE (bez zopfli). Wersja aplikacji: 0.6.0 (D7).
+
+Skrypt check-components: trzy testy stdlib PASS; pełne rzeczywiste pobranie
+Linux do `/tmp/grajek-check-components-zVtNz5uV` PASS: SHA, oba rozmiary,
+wersje, EJS offline 0.8.0, maks. GLIBC yt-dlp 2.17 i Deno 2.27.
+
+Build AppImage przypina również appimagetool 1.9.1 i type2-runtime 20251108
+w tym samym components.json. Skrypt odrzuca ELF > GLIBC 2.35, sprawdza RPATH
+oraz brak narzędzi w wypakowanym AppDir. Pełny check-appdir bez --elf-only
+uruchamia dodatkowo ldd w czystym ubuntu:22.04. Ta kontrola jest osobnym
+krokiem, żeby builder kontenerowy nie potrzebował socketu Dockera hosta.
+
+Kontrole Rust dla F3: `cargo fmt --all -- --check` PASS;
+`cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` PASS;
+`cargo test --locked --workspace --all-features` poza sandboxem PASS:
+**317 passed, 0 failed, 6 ignored**, grajek-smtc/doc-tests po 0.
+Walidacja rzeczywistego pakietu Ubuntu 22.04
+jest w toku; nie jest jeszcze oznaczona jako PASS.
