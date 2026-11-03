@@ -1,7 +1,7 @@
 # 004 — Dowody F0 (2026-11-03)
 
-Status: **F0_LINUX_MEASURED — F1/F3_IMPLEMENTED — PENDING_PACKAGING_VALIDATION — PENDING_NATIVE**.
-F2 i F4 nie rozpoczęto. Nie jest to akceptacja Windows ani wydania.
+Status: **F0_LINUX_MEASURED — F1/F2/F3_IMPLEMENTED — PENDING_PACKAGING_VALIDATION — PENDING_NATIVE**.
+F4 nie zakończono. Nie jest to akceptacja Windows ani wydania.
 
 ## Baza i rozbieżności przed edycją
 
@@ -309,3 +309,26 @@ Kontrole Rust dla F3: `cargo fmt --all -- --check` PASS;
 **317 passed, 0 failed, 6 ignored**, grajek-smtc/doc-tests po 0.
 Walidacja rzeczywistego pakietu Ubuntu 22.04
 jest w toku; nie jest jeszcze oznaczona jako PASS.
+
+## F2 — Setup Windows (implementacja, PENDING_NATIVE)
+
+Dodano per-user Setup PL/EN z niezmiennym AppId, bez UAC i bez zmian PATH.
+Piny i teksty zgody generuje check-components; pliki narzędzi pobiera sam
+Setup z Hash i extractarchive, marker instaluje na końcu. AppMutex wskazuje
+`Local\org.grajek.desktop`; guard w grajek-smtc utrzymuje go także w tray.
+FFI jest wyłącznie w tej crate, główna crate nadal ma unsafe_code=forbid.
+Statyczny CRT jest w osobnym `.cargo/config.toml` dla targetu MSVC.
+
+Przygotowano skrypty budowania, dumpbin oraz natywnego smoke testu Setup:
+dwa złe skróty, poprawna instalacja, wersje narzędzi, deinstalacja i zachowany
+state.json. Nie uruchamiano ich na Linux przez Wine ani inną symulację.
+Notki 7-Zip/LGPL pobrano z oficjalnych stron; zgodność z faktycznym is7z.dll
+w Inno 6.7.1 nadal wymaga natywnej kontroli F0-WIN-INNO.
+
+- fmt, clippy z wymaganymi flagami: PASS.
+- `cargo test --locked --workspace --all-features` poza sandboxem: PASS,
+  **317 passed, 0 failed, 6 ignored** (test mutexu Windows tu nie działa).
+- `cargo check --locked -p grajek-smtc --all-targets --all-features --target x86_64-pc-windows-msvc`:
+  PASS, w tym typowanie testu czasu życia mutexu. To **cross-check** bez
+  linkowania i uruchamiania, nie dowód CRT, Setup ani zachowania Windows.
+- ISCC, dumpbin, instalacja/deinstalacja, testy mutexu i F5: **PENDING_NATIVE**.

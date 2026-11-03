@@ -64,6 +64,9 @@ fn main() -> Result<()> {
         )
         .init();
     let config = config::Config::load();
+    #[cfg(target_os = "windows")]
+    let _app_mutex =
+        grajek_smtc::hold_app_mutex().context("Could not create the Grajek installer mutex.")?;
     #[cfg(target_os = "linux")]
     let tools_dir = store::app_data_dir().map(|dir| dir.join("tools"));
     #[cfg(target_os = "linux")]

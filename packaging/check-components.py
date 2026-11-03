@@ -124,6 +124,14 @@ def check_components(manifest, platform, directory, defines):
         raise ValueError("Pinned yt-dlp-ejs library was not reported by the offline probe")
     print(f"yt-dlp-ejs {manifest['yt-dlp']['ejs']}: offline probe verified")
     (directory / "components.json").write_text(json.dumps({"yt-dlp": manifest["yt-dlp"]["version"], "yt-dlp-ejs": manifest["yt-dlp"]["ejs"], "deno": manifest["deno"]["version"]}) + "\n")
+    if platform == "windows":
+        values = {"ytdlp_version": manifest["yt-dlp"]["version"], "ejs_version": manifest["yt-dlp"]["ejs"],
+                  "deno_version": manifest["deno"]["version"], "ytdlp_size": manifest["yt-dlp"]["windows"]["size"],
+                  "deno_size": manifest["deno"]["windows"]["size"], "ytdlp_url": manifest["yt-dlp"]["windows"]["url"],
+                  "deno_url": manifest["deno"]["windows"]["url"]}
+        for language in ("en", "pl"):
+            template = ROOT / f"packaging/windows/components-{language}.txt"
+            (directory / template.name).write_text(template.read_text(encoding="utf-8").format(**values), encoding="utf-8-sig")
     if defines:
         if platform != "windows":
             raise ValueError("ISCC defines require Windows artifacts")
