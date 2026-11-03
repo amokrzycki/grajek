@@ -385,7 +385,22 @@ impl PlayerApp {
         if configured {
             panel = panel.child(self.destination_settings(window, cx));
         }
-        panel.child(self.preferences_settings(cx))
+        panel = panel.child(self.preferences_settings(cx)).child(
+            div()
+                .id("playback-components")
+                .test_support()
+                .text_xs()
+                .child(crate::media::components::tools().description()),
+        );
+        #[cfg(target_os = "linux")]
+        {
+            panel = panel.child(
+                self.button("manage-components")
+                    .label(self.components_action())
+                    .on_click(cx.listener(|this, _, _, cx| this.open_components(cx))),
+            );
+        }
+        panel
     }
 
     fn setup_status(&self) -> &'static str {

@@ -3568,7 +3568,7 @@ checksum = "4b0d73e1bc02eef886a5947f41b8512708792e9e5d3053d181843311a487f96f"
 
 [[package]]
 name = "grajek"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "dotenvy",
@@ -3583,6 +3583,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serenity",
+ "sha2 0.10.9",
  "songbird",
  "symphonia",
  "tokio",
@@ -3591,6 +3592,7 @@ dependencies = [
  "tray-icon",
  "url",
  "zbus 5.19.0",
+ "zip",
 ]
 
 [[package]]
@@ -9287,6 +9289,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-path"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
+
+[[package]]
 name = "typemap_rev"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11191,6 +11199,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.8",
+]
+
+[[package]]
+name = "zip"
+version = "8.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
 ]
 
 [[package]]

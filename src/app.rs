@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod components;
 pub(super) mod composer;
 mod controls;
 mod focus;
@@ -50,6 +52,8 @@ enum Pending {
     reason = "Independent UI focus, pending-operation and panel flags are not a single state machine"
 )]
 pub struct PlayerApp {
+    #[cfg(target_os = "linux")]
+    components: components::Panel,
     help: help::Help,
     focus: focus::FocusPresentation,
     row_menu: Option<lists::TrackTarget>,
@@ -217,6 +221,8 @@ impl PlayerApp {
         });
         let transport_seq = state.transport_ack;
         let mut app = Self {
+            #[cfg(target_os = "linux")]
+            components: components::Panel::new(cx),
             help,
             focus: focus::FocusPresentation::from_window(window),
             row_menu: None,
@@ -273,6 +279,10 @@ impl PlayerApp {
     }
 
     fn accept_state(&mut self, state: State, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        if state.components_request != self.state.components_request {
+            self.open_components(cx);
+        }
         if self.setup_starting && state.controller_ready && !state.setup_busy {
             if state.setup.destination.is_some() {
                 self.settings_open = false;
@@ -848,6 +858,10 @@ impl PlayerApp {
 impl Render for PlayerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.focus = focus::FocusPresentation::from_window(window);
+        #[cfg(target_os = "linux")]
+        if self.components.open {
+            return self.components_surface(window, cx);
+        }
         self.help.enable(
             !self.settings_open && !self.queue_options_open && self.row_menu.is_none(),
             cx,

@@ -19,6 +19,8 @@ use windows::{
 
 mod interop;
 mod menu_theme;
+mod mutex;
+pub use mutex::{AppMutexGuard, hold_app_mutex};
 
 /// Changes visibility of the existing window, called only on its owning thread.
 pub fn set_window_visible(window: &impl HasWindowHandle, visible: bool) -> Result<()> {

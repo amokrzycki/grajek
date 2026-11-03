@@ -1,0 +1,13 @@
+Grajek — third-party Rust licenses
+
+{{#each licenses}}
+================================================================================
+{{name}} ({{id}})
+Used by:
+{{#each used_by}}
+  {{crate.name}} {{crate.version}} {{crate.repository}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}
