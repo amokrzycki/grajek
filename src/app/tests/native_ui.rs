@@ -1,6 +1,12 @@
 //! Opt-in offline native window: no Discord, configuration, network, or persisted files.
 use super::*;
-use crate::media::{Tool, components::{status::{ComponentReport, ComponentState}, download::Progress}};
+use crate::media::{
+    Tool,
+    components::{
+        download::Progress,
+        status::{ComponentReport, ComponentState},
+    },
+};
 use gpui_kit::{TitlebarOptions, application};
 
 #[test]
