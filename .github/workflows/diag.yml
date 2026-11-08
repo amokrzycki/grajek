@@ -2,6 +2,8 @@ name: Diag
 
 on:
   workflow_dispatch:
+  push:
+    paths: ['.github/workflows/diag.yml']
 
 jobs:
   inno:
