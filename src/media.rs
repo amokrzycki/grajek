@@ -101,28 +101,19 @@ fn ytdlp_args(tools: &Tools, format: &str) -> Vec<OsString> {
 }
 
 pub async fn check_tools() -> Result<()> {
-    let execution = components::execution::acquire()
+    let execution = timeout(Duration::from_secs(5), components::execution::acquire())
         .await
+        .map_err(|_| tools().failure())?
         .map_err(|_| tools().failure())?;
-    let tools = execution.tools.clone();
-    for tool in [Tool::YtDlp, Tool::Deno] {
-        let output = timeout(
-            Duration::from_secs(5),
-            tools
-                .command(tool)
-                .arg("--version")
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .map_err(|_| tools.failure())?
-        .map_err(|_| tools.failure())?;
-        ensure!(output.status.success(), tools.failure());
-        ensure!(
-            tools.valid_version(tool, &String::from_utf8_lossy(&output.stdout)),
-            tools.failure()
-        );
-    }
+    ensure!(
+        execution
+            .tools
+            .probe()
+            .await
+            .iter()
+            .all(|report| report.state == components::status::ComponentState::Ready),
+        execution.tools.failure()
+    );
     drop(execution);
     Ok(())
 }

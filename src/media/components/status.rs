@@ -61,23 +61,26 @@ impl Tools {
     }
 
     pub async fn check(&self) -> Vec<ComponentReport> {
-        let mut reports = self.inspect();
-        let guards = tokio::time::timeout(Duration::from_secs(5), async {
-            let process = super::EXECUTIONS.read().await;
-            let resources = if let Some(directory) = &self.directory {
-                Some(super::execution::lock(directory, true).await?)
-            } else {
-                None
-            };
-            Ok::<_, anyhow::Error>((process, resources))
-        })
-        .await;
-        let Ok(Ok((_process, _resources))) = guards else {
+        let Ok(Ok(execution)) = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::execution::acquire_tools(self.clone()),
+        )
+        .await
+        else {
+            let mut reports = self.inspect();
             for report in &mut reports {
                 report.state = ComponentState::NeedsRepair("Components are busy or couldn't be locked. Try checking again after other Grajek instances finish.".into());
             }
             return reports;
         };
+        let reports = execution.tools.probe().await;
+        drop(execution);
+        reports
+    }
+
+    /// The caller holds execution guards, or owns an unpublished staging directory.
+    pub(crate) async fn probe(&self) -> Vec<ComponentReport> {
+        let mut reports = self.inspect();
         for report in &mut reports {
             if report.state != ComponentState::Missing {
                 let mut command = self.command(report.tool);

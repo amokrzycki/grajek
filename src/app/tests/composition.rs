@@ -77,6 +77,45 @@ fn links_are_recognized_locally() {
 }
 
 #[gpui_kit::test]
+fn enqueue_result_releases_a_repeated_refusal(cx: &mut TestAppContext) {
+    let initial = with_lists(Phase::Ready, 100, 0);
+    let (window, view, mut received, states) = open(cx, initial.clone());
+    type_link(cx, window, VIDEO);
+    let mut refused = initial;
+    refused.error = Some("The queue is full (100 tracks).".into());
+    for request_id in 1..=2 {
+        act(cx, window, |window, cx| window.press("ctrl-enter", cx));
+        assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+        refused.enqueue_result = Some(crate::player::EnqueueResult {
+            request_id,
+            item_id: None,
+        });
+        states.send_replace(refused.clone());
+        settle(cx, window);
+        cx.update(|cx| assert!(view.read(cx).enqueue_pending.is_none()));
+    }
+}
+
+#[gpui_kit::test]
+fn enqueue_result_survives_consumption_before_the_ui_reads_it(cx: &mut TestAppContext) {
+    let initial = with_lists(Phase::Playing, 1, 0);
+    let (window, view, mut received, states) = open(cx, initial.clone());
+    type_link(cx, window, VIDEO);
+    act(cx, window, |window, cx| window.press("ctrl-enter", cx));
+    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    let mut consumed = initial;
+    consumed.queue.clear();
+    consumed.enqueue_result = Some(crate::player::EnqueueResult {
+        request_id: 1,
+        item_id: Some(99),
+    });
+    states.send_replace(consumed);
+    settle(cx, window);
+    assert_eq!(input(cx, &view), "");
+    cx.update(|cx| assert!(view.read(cx).enqueue_pending.is_none()));
+}
+
+#[gpui_kit::test]
 fn pasting_a_link_only_describes_it(cx: &mut TestAppContext) {
     let (window, view, mut received, _) = open(cx, state(Phase::Ready));
     assert_eq!(status(cx, window), "");
@@ -180,6 +219,10 @@ fn a_confirmed_add_clears_the_field_and_is_acknowledged(cx: &mut TestAppContext)
         "an unrelated snapshot is not an acknowledgement"
     );
     let mut acknowledged = initial;
+    acknowledged.enqueue_result = Some(crate::player::EnqueueResult {
+        request_id: 1,
+        item_id: Some(99),
+    });
     acknowledged.queue.push(QueueItem {
         id: 99,
         url: CANONICAL.into(),
@@ -209,6 +252,10 @@ fn a_refused_add_keeps_the_text_and_can_be_retried(cx: &mut TestAppContext) {
     assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
     states.send_replace(State {
         error: Some("Could not add that link.".into()),
+        enqueue_result: Some(crate::player::EnqueueResult {
+            request_id: 1,
+            item_id: None,
+        }),
         ..initial
     });
     settle(cx, window);
@@ -234,6 +281,10 @@ fn text_typed_after_submitting_survives_the_acknowledgement(cx: &mut TestAppCont
     assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
     act(cx, window, |window, cx| window.input("&t=30", cx));
     let mut acknowledged = initial;
+    acknowledged.enqueue_result = Some(crate::player::EnqueueResult {
+        request_id: 1,
+        item_id: Some(99),
+    });
     acknowledged.queue.push(QueueItem {
         id: 99,
         url: CANONICAL.into(),
@@ -412,6 +463,10 @@ fn another_command_retires_the_added_line(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
     let mut acknowledged = initial;
+    acknowledged.enqueue_result = Some(crate::player::EnqueueResult {
+        request_id: 1,
+        item_id: Some(99),
+    });
     acknowledged.queue.push(QueueItem {
         id: 99,
         url: CANONICAL.into(),
@@ -438,7 +493,7 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
     let mut other = initial;
     other.queue.push(QueueItem {
         id: 50,
-        url: "https://www.youtube.com/watch?v=bbbbbbbbbbb".into(),
+        url: CANONICAL.into(),
         title: Some("Someone else".into()),
         title_unavailable: false,
     });
@@ -453,6 +508,10 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
     cx.update(|cx| assert!(view.read(cx).added.is_none()));
     // Then the controller refuses the Enqueue: the text must still be there.
     other.error = Some("Could not add that link.".into());
+    other.enqueue_result = Some(crate::player::EnqueueResult {
+        request_id: 1,
+        item_id: None,
+    });
     states.send_replace(other.clone());
     settle(cx, window);
     assert_eq!(input(cx, &view), VIDEO);
@@ -464,6 +523,10 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
         url: CANONICAL.into(),
         title: Some("Aqua".into()),
         title_unavailable: false,
+    });
+    other.enqueue_result = Some(crate::player::EnqueueResult {
+        request_id: 2,
+        item_id: Some(51),
     });
     states.send_replace(other);
     settle(cx, window);

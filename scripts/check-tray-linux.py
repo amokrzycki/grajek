@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Native KDE test: python3 scripts/check-tray-linux.py [wayland|x11].
 
-Requires a running Plasma session, python-dbus and PyGObject. Uses only its own
-Grajek process and temporary state; no owner credential is read. Build first.
+Requires a running Plasma session, python-dbus, PyGObject and (X11) xdotool and
+xprop. Uses only its own Grajek process and temporary state; no owner credential
+is read. Build first.
 """
 import json
 import os
@@ -100,6 +101,36 @@ def hidden(pid):
     return not windows or windows[0]['hidden']
 
 
+def x11_state(xid):
+    # KWin's scripting wrapper can lag or briefly describe a superseded window;
+    # WM_STATE and _NET_WM_STATE are the client's actual iconified state.
+    return subprocess.check_output(
+        ['xprop', '-id', xid, '-notype', 'WM_STATE', '_NET_WM_STATE'], text=True)
+
+
+def settle(pid):
+    """Wait until one visible KWin window identity persists.
+
+    Tray actions are queued on the GPUI thread, so visible() can still describe
+    the frame before a queued Hide/Show pair runs. Minimizing during that window
+    is undone by the late remap: KWin then reports a new internalId with
+    minimized=false. Require a stable identity rather than a single visible poll.
+    """
+    last = {'id': None, 'since': 0.0}
+
+    def check():
+        windows = window_state(pid)
+        now = time.monotonic()
+        if (len(windows) == 1 and not windows[0]['minimized']
+                and not windows[0]['hidden'] and windows[0]['caption'] == 'Grajek'
+                and windows[0]['id'] == last['id']):
+            return now - last['since'] >= 0.4
+        last['id'] = windows[0]['id'] if len(windows) == 1 else None
+        last['since'] = now
+        return False
+    wait_for(check, 'Window did not settle after the tray burst')
+
+
 def run_case(close_to_tray):
     with tempfile.TemporaryDirectory(prefix='grajek-native-') as temp:
         root = Path(temp)
@@ -127,13 +158,15 @@ def run_case(close_to_tray):
                 menu = dbus.Interface(bus.get_object(service, '/Menu'), 'com.canonical.dbusmenu')
                 def choose(item):
                     menu.Event(dbus.Int32(item), 'clicked', dbus.Int32(0, variant_level=1), dbus.UInt32(0))
-                def show():
-                    choose(1)
-                    windows = wait_for(lambda: visible(process.pid), 'Show left window minimized/hidden or lost its title')
+                def shown():
+                    wait_for(lambda: visible(process.pid), 'Show left window minimized/hidden or lost its title')
                     if MODE == 'x11':
                         xids = subprocess.check_output(['xdotool', 'search', '--pid', str(process.pid), '--name', 'Grajek']).split()
                         assert xids == original_xids and len(xids) == 1, 'Native X window replaced/duplicated'
                     assert len(tray_services(process.pid)) == 1, 'Duplicate tray registration'
+                def show():
+                    choose(1)
+                    shown()
                 for _ in range(3):
                     choose(2)
                     wait_for(lambda: hidden(process.pid), 'Hide did not unmap the window')
@@ -145,9 +178,24 @@ def run_case(close_to_tray):
                 # Burst requests exercise configure ordering without waiting between actions.
                 for item in (1, 1, 2, 1, 1, 2, 1):
                     choose(item)
-                show()
+                # The burst is asynchronous: its final Show may still be queued
+                # while the window is visible from an earlier request.
+                settle(process.pid)
+                shown()
                 window_state(process.pid, 'windows.forEach(w => w.minimized = true);')
-                wait_for(lambda: window_state(process.pid)[0]['minimized'], 'Minimize did not take effect')
+
+                def minimized():
+                    windows = window_state(process.pid)
+                    if len(windows) != 1 or not windows[0]['minimized']:
+                        return False
+                    if MODE == 'x11':
+                        state = x11_state(original_xids[0].decode())
+                        return 'Iconic' in state and '_NET_WM_STATE_HIDDEN' in state
+                    return True
+                wait_for(minimized, 'Minimize did not take effect')
+                if MODE == 'x11':
+                    xids = subprocess.check_output(['xdotool', 'search', '--pid', str(process.pid), '--name', 'Grajek']).split()
+                    assert xids == original_xids and len(xids) == 1, 'Minimize remapped the native X window'
                 show()
                 # Icon activation uses the same restore path as menu Show.
                 choose(2)

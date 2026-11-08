@@ -9,8 +9,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::{config::Config, discord::Health, live::Live, media::Resolved, store};
 use controller::Controller;
 pub use state::{
-    Command, ImportStatus, Phase, Preferences, RepeatMode, SeekStatus, State, VolumeRequest,
-    percent_from, seek_target, volume_factor,
+    Command, EnqueueResult, ImportStatus, Phase, Preferences, RepeatMode, SeekStatus, State,
+    VolumeRequest, percent_from, seek_target, volume_factor,
 };
 
 /// How a track ended, as reported by its own event mailbox.
@@ -37,6 +37,7 @@ pub trait Backend: Send + Sync + 'static {
     fn ready(&self) -> bool;
     fn health(&self) -> watch::Receiver<Health>;
     fn clear_error(&self);
+    fn check_tools(&self) -> impl Future<Output = Result<()>> + Send;
     /// Joins voice, then extracts the audio. `connected` fires once voice is ready.
     fn prepare(
         &self,
@@ -85,7 +86,9 @@ pub async fn run(
     let saver = loaded.path.map(|path| store::spawn_saver(path, snapshots));
     let destination = loaded.saved.destination.clone();
     let notice = config.warning.clone().or(loaded.warning);
-    let mut controller = Controller::new(backend, loaded.saved, notice, states, persist);
+    let saver_status = saver.as_ref().map(|saver| saver.status.clone());
+    let mut controller =
+        Controller::new(backend, loaded.saved, notice, states, persist, saver_status);
     controller
         .configure(crate::setup::Request::Restore {
             config,
@@ -95,6 +98,6 @@ pub async fn run(
     controller.run(commands, volume, shutdown).await;
     // The controller (and its snapshot sender) is gone; wait for the final write.
     if let Some(saver) = saver {
-        let _ = saver.await;
+        let _ = saver.task.await;
     }
 }

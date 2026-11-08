@@ -313,8 +313,11 @@ impl Backend for Live {
         result
     }
 
+    async fn check_tools(&self) -> Result<()> {
+        media::check_tools().await
+    }
+
     async fn prepare(&self, url: String, connected: oneshot::Sender<()>) -> Result<Resolved> {
-        media::check_tools().await?;
         self.connect().await?;
         let _ = connected.send(());
         media::resolve(self.http.clone(), url).await

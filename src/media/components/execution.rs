@@ -41,7 +41,18 @@ pub(super) async fn lock(directory: &Path, shared: bool) -> Result<File> {
 
 pub(crate) async fn acquire() -> Result<Execution> {
     let process = EXECUTIONS.read().await;
-    let mut tools = tools();
+    acquire_locked(tools(), process).await
+}
+
+pub(super) async fn acquire_tools(tools: Tools) -> Result<Execution> {
+    let process = EXECUTIONS.read().await;
+    acquire_locked(tools, process).await
+}
+
+async fn acquire_locked(
+    mut tools: Tools,
+    process: tokio::sync::RwLockReadGuard<'static, ()>,
+) -> Result<Execution> {
     let resources = if let Some(directory) = &tools.directory {
         let file = lock(directory, true).await?;
         // Another instance may have updated the same directory while this instance was idle.

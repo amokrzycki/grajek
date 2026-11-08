@@ -318,7 +318,7 @@ async fn install_with(
         let tools = Tools { mode: Mode::Managed, directory: Some(partial.clone()), versions: Some(pins.versions()) };
         let reports = tokio::select! {
             _ = cancel.changed() => anyhow::bail!("Download cancelled."),
-            reports = tools.check() => reports,
+            reports = tools.probe() => reports,
         };
         for report in reports {
             ensure!(report.state == super::status::ComponentState::Ready,

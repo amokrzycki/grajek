@@ -1,4 +1,15 @@
 use super::*;
+
+#[gpui_kit::test]
+fn save_failure_notice_is_visible_on_the_playing_queue(cx: &mut TestAppContext) {
+    let initial = State {
+        notice: Some("Could not save history and settings; changes may be lost.".into()),
+        ..playing(Phase::Playing, Some("Current track"), 10)
+    };
+    let (window, _, _, _) = open(cx, initial);
+    assert!(present(cx, window, "notice"));
+    assert!(present(cx, window, "pause-resume"));
+}
 use crate::setup::{Channel, Destination, Server, Status};
 use serenity::all::{ChannelId, GuildId, UserId};
 

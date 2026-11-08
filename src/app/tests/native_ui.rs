@@ -238,7 +238,10 @@ fn native_player_redesign_evidence() {
                     }
                     if name == "permission" { snapshot.setup.channels[2].name = "Private listening room · 夜の音楽 · A very long unavailable channel name".into(); }
                     if name == "confirmation" { snapshot.confirm_setup = true; snapshot.phase = Phase::Paused; snapshot.track = playing(Phase::Paused, Some("Nils Frahm — Says"), 84).track; snapshot.voice_connected = true; }
-                    if name == "help-bottom" { snapshot.queue[if width < 500. { 3 } else { 4 }].title = Some("A longer title near the window boundary · Żółć · 音楽を楽しむ · Привет".into()); }
+                    // ROW_HEIGHT is 44px and the compact 420x480 queue viewport is
+                    // 136px, so only three rows fit; the bottom boundary row is the
+                    // third (id 12), not the fourth (id 13, clipped by the list).
+                    if name == "help-bottom" { snapshot.queue[if width < 500. { 2 } else { 4 }].title = Some("A longer title near the window boundary · Żółć · 音楽を楽しむ · Привет".into()); }
                     if name == "importing" {
                         snapshot.import = ImportStatus::Importing;
                         snapshot.error = Some("Offline fixture: the previous seek failed. Playback remains paused. Try a different position.".into());
@@ -314,9 +317,11 @@ fn native_player_redesign_evidence() {
                         }).expect("type a link");
                         if name == "added" {
                             executor.timer(Duration::from_millis(150)).await;
-                            assert!(matches!(receiver.try_recv(), Ok(Command::Enqueue(url)) if url == link), "added: Enqueue intent sent");
+                            let Command::EnqueueRequest { id: request_id, value } = receiver.try_recv().expect("enqueue intent") else { panic!("expected enqueue request"); };
+                            assert_eq!(value, link);
                             let mut acknowledged = after_commands.clone();
                             let id = acknowledged.queue.iter().map(|item| item.id).max().unwrap_or(0) + 1;
+                            acknowledged.enqueue_result = Some(crate::player::EnqueueResult { request_id, item_id: Some(id) });
                             acknowledged.queue.push(crate::queue::QueueItem { id, url: link.into(), title: Some("Aqua Mundi — Live from the Funkhaus (acknowledged by the controller)".into()), title_unavailable: false });
                             expected_count = acknowledged.queue.len();
                             snapshots.send_replace(acknowledged);
@@ -398,7 +403,7 @@ fn native_player_redesign_evidence() {
                         }).expect("scroll longer settings");
                     }
                     if name == "help-bottom" {
-                        cx.update_window(window, |_, window, cx| window.hover(("queue-title", if width < 500. { 13_u64 } else { 14_u64 }), cx)).expect("hover boundary help");
+                        cx.update_window(window, |_, window, cx| window.hover(("queue-title", if width < 500. { 12_u64 } else { 14_u64 }), cx)).expect("hover boundary help");
                         executor.timer(Duration::from_millis(800)).await;
                     }
                     if matches!(name, "help" | "options-hover") {
@@ -554,7 +559,7 @@ fn native_player_redesign_evidence() {
                 window.input("https://youtu.be/aqz-KE-bpKQ", cx);
                 window.press("ctrl-enter", cx);
             }).expect("native input and shortcut");
-            assert!(matches!(receiver.try_recv(), Ok(Command::Enqueue(url)) if url == "https://youtu.be/aqz-KE-bpKQ"));
+            assert!(matches!(receiver.try_recv(), Ok(Command::EnqueueRequest { value, .. }) if value == "https://youtu.be/aqz-KE-bpKQ"));
             std::fs::write(directory.join("interactions.txt"), "Native Pause: one intent; confirmed Playing retained while pending.\nAcknowledged Paused snapshot: Resume rendered and enabled.\nNative typing + Ctrl+Enter: Enqueue submitted with unchanged URL.\n").expect("interaction evidence");
             // Follow the real selector event/focus path, then acknowledge only controller snapshots.
             let mut destination = super::experience::configured();

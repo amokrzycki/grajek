@@ -55,6 +55,7 @@ impl TestCommands {
                 self.acknowledged.set(id);
                 Ok(*command)
             }
+            Command::EnqueueRequest { value, .. } => Ok(Command::Enqueue(value)),
             command => Ok(command),
         }
     }

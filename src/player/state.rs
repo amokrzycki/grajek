@@ -136,6 +136,13 @@ impl ImportStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnqueueResult {
+    pub request_id: u64,
+    /// None means the controller rejected the request; success remains visible after consumption.
+    pub item_id: Option<u64>,
+}
+
 /// A snapshot of everything the window shows. The controller owns the truth; the GUI
 /// only renders these and sends [`Command`]s and [`VolumeRequest`]s.
 #[derive(Clone, Debug)]
@@ -150,6 +157,7 @@ pub struct State {
     pub confirm_setup: bool,
     /// Last UI transport request accepted by the controller; unrelated snapshots retain it.
     pub transport_ack: u64,
+    pub enqueue_result: Option<EnqueueResult>,
     pub phase: Phase,
     pub error: Option<String>,
     /// Monotonic request to show the playback-components prompt; ordinary snapshots retain it.
@@ -187,6 +195,7 @@ impl Default for State {
             setup_busy: false,
             confirm_setup: false,
             transport_ack: 0,
+            enqueue_result: None,
             phase: Phase::Initializing,
             error: None,
             components_request: 0,
@@ -303,6 +312,10 @@ pub enum Command {
     /// Plays now, replacing the current track. The pending queue is untouched.
     Play(String),
     Enqueue(String),
+    EnqueueRequest {
+        id: u64,
+        value: String,
+    },
     ImportPlaylist(String),
     CancelImport,
     Next,

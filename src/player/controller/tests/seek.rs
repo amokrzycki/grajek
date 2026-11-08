@@ -145,7 +145,12 @@ async fn seek_failure_keeps_position_queue_and_failure_budget() -> Result<()> {
     current.position = Duration::from_secs(10);
     controller.track = Some(current);
     controller.failures = 2;
-    controller.queued_track = true;
+    controller
+        .track
+        .as_mut()
+        .context("no track")?
+        .request
+        .origin = Origin::Queue;
     controller.enqueue(B);
     controller.emit(controller.track.as_ref().context("no track")?.state(None));
     let gate = track.seek_gate();
@@ -432,7 +437,12 @@ async fn failed_range_end_never_repeats_or_rotates_and_only_opt_in_recovery_adva
             current.confirmed = true;
             current.recorded = true;
             controller.track = Some(current);
-            controller.queued_track = true;
+            controller
+                .track
+                .as_mut()
+                .context("no track")?
+                .request
+                .origin = Origin::Queue;
             controller.enqueue(B);
             let source = crate::media::SourceControl::default();
             source.record_failure();

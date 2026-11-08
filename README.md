@@ -277,6 +277,9 @@ The Queue tab holds up to 100 pending entries in insertion order. With repeat
 off, a track's natural completion starts the first pending entry. An empty queue
 returns the player to Ready.
 
+Playback-tool checks run before pending entries are removed. Missing tools leave
+the queue intact and open component recovery. Stop can cancel these checks.
+
 | Control                   | Behavior                                                                                                                                               |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Play URL / Enter          | Replaces the playing or paused track immediately and keeps the queue. Invalid input leaves playback intact.                                            |
@@ -382,6 +385,10 @@ queue. Restoration never starts playback or joins voice. The active track is not
 saved; an abrupt exit can restore an older snapshot or lose recent queue changes.
 
 Grajek writes through a temporary file and replaces the saved state atomically.
+Each writer owns a separate temporary file, so concurrent instances cannot write
+through each other's published file. The last successful replacement wins;
+instances do not merge their histories or queues. Runtime save failures show a
+warning in the player; a successful later save clears that warning.
 If it can set aside a malformed file, it renames it to
 `state.json.corrupt-<unix time>` and starts empty with a warning. If it cannot
 preserve the file, it leaves it intact and disables saving. Unavailable or

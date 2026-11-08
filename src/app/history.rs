@@ -133,22 +133,12 @@ impl PlayerApp {
     }
 
     pub(super) fn history_list(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
         let count = self.state.history.len();
         div()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
-            .children(self.state.notice.clone().map(|notice| {
-                div()
-                    .id("notice")
-                    .text_xs()
-                    .text_color(theme.yellow)
-                    .line_clamp(2)
-                    .child(notice)
-                    .test_support()
-            }))
             .child(if count == 0 {
                 Self::empty(
                     "history-empty",

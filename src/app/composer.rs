@@ -63,8 +63,7 @@ impl LinkKind {
 /// A submitted Add to queue that the controller has not answered yet.
 pub(super) struct PendingEnqueue {
     text: String,
-    known: Vec<u64>,
-    error: Option<String>,
+    id: u64,
 }
 
 pub(super) enum Resolution {
@@ -91,34 +90,26 @@ impl PlayerApp {
         {
             return;
         }
-        if self.send(Command::Enqueue(text.clone())) {
+        let id = self.enqueue_seq + 1;
+        if self.send(Command::EnqueueRequest {
+            id,
+            value: text.clone(),
+        }) {
+            self.enqueue_seq = id;
             self.added = None;
             self.local_hint = None;
-            self.enqueue_pending = Some(PendingEnqueue {
-                text,
-                known: self.state.queue.iter().map(|item| item.id).collect(),
-                error: self.state.error.clone(),
-            });
+            self.enqueue_pending = Some(PendingEnqueue { text, id });
             cx.notify();
         }
     }
 
-    /// A new queue id is the acknowledgement; a new error is the refusal. Any other snapshot
-    /// (a position tick) leaves the request waiting.
+    /// A matching controller result survives coalesced snapshots and identical refusals.
     pub(super) fn resolve_enqueue(&self, next: &crate::player::State) -> Option<Resolution> {
         let pending = self.enqueue_pending.as_ref()?;
-        // The controller queues the canonical form of exactly what was submitted; an entry from
-        // a playlist import or a History add that lands meanwhile is not this request's answer.
-        let canonical = video_url(&pending.text).ok();
-        if let Some(item) = next.queue.iter().find(|item| {
-            !pending.known.contains(&item.id) && canonical.as_deref() == Some(item.url.as_str())
-        }) {
-            Some(Resolution::Added(item.id))
-        } else if next.error.is_some() && next.error != pending.error {
-            Some(Resolution::Failed)
-        } else {
-            None
-        }
+        let result = next
+            .enqueue_result
+            .filter(|result| result.request_id == pending.id)?;
+        Some(result.item_id.map_or(Resolution::Failed, Resolution::Added))
     }
 
     pub(super) fn finish_enqueue(
