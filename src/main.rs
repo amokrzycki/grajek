@@ -231,7 +231,6 @@ fn run_app(
                     #[cfg(target_os = "windows")]
                     let _tray_task = tray_task;
                     while let Some(action) = window_requests.recv().await {
-                        tracing::info!(?action, "window action received");
                         match action {
                             tray::WindowAction::Quit => {
                                 tray_endpoint
@@ -244,15 +243,11 @@ fn run_app(
                             tray::WindowAction::Show => {
                                 if let Err(error) = visibility(window, true, cx) {
                                     tracing::error!(%error, "Could not restore Grajek window");
-                                } else {
-                                    tracing::info!("window shown");
                                 }
                             }
                             tray::WindowAction::Hide if tray_endpoint.available() => {
                                 if let Err(error) = visibility(window, false, cx) {
                                     tracing::error!(%error, "Could not hide Grajek window");
-                                } else {
-                                    tracing::info!("window hidden");
                                 }
                             }
                             tray::WindowAction::Hide => {}
