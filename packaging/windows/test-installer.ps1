@@ -26,6 +26,13 @@ foreach ($bad in @($BadYtDlpSetup, $BadDenoSetup)) {
     if (Test-Path "$install\tools") { throw 'Invalid download left a partial tools directory' }
 }
 if ((Invoke-Setup $Setup 'install') -ne 0) { throw 'Silent installation failed' }
+if (Test-Path "$install\.env.example") { throw 'Installation includes the developer environment example' }
+$programs = [Environment]::GetFolderPath('Programs')
+if (Test-Path "$programs\Grajek.lnk") { throw 'Installation left a flat Start Menu shortcut' }
+$shell = New-Object -ComObject WScript.Shell
+if ($shell.CreateShortcut("$programs\Grajek\Grajek.lnk").TargetPath -ne "$install\grajek.exe") { throw 'Start Menu application shortcut is missing or targets the wrong executable' }
+$uninstallLinks = @(Get-ChildItem "$programs\Grajek\*.lnk" | Where-Object { $shell.CreateShortcut($_.FullName).TargetPath -like "$install\unins*.exe" })
+if ($uninstallLinks.Count -ne 1) { throw 'Start Menu must contain one uninstaller shortcut' }
 $marker = Get-Content "$install\tools\components.json" -Raw | ConvertFrom-Json
 if ($marker.'yt-dlp' -ne $pins.'yt-dlp'.version -or $marker.deno -ne $pins.deno.version) { throw 'Installed marker versions differ from pins' }
 $ytVersion = & "$install\tools\yt-dlp\yt-dlp.exe" --version
@@ -36,6 +43,7 @@ if ([IO.File]::ReadAllText($data) -ne $sentinel) { throw 'Installation changed u
 $uninstaller = Get-ChildItem "$install\unins*.exe" | Select-Object -First 1
 $process = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$fixture\uninstall.log`"") -Wait -PassThru
 if ($process.ExitCode -ne 0 -or (Test-Path $install)) { throw 'Uninstall did not remove the installation and tools' }
+if (Test-Path "$programs\Grajek") { throw 'Uninstall left the Start Menu folder' }
 if ([IO.File]::ReadAllText($data) -ne $sentinel) { throw 'Uninstall removed or changed user data' }
 Remove-Item $data
 Write-Output "Installer smoke tests passed; logs: $fixture. Native GUI/audio acceptance is still pending."

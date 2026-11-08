@@ -15,6 +15,7 @@ mod components;
 mod composition;
 mod experience;
 mod native_ui;
+mod notice;
 mod seek;
 
 fn state(phase: Phase) -> State {

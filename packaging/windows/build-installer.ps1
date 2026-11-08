@@ -9,14 +9,23 @@ param(
     [switch]$BadDenoHash
 )
 $ErrorActionPreference = 'Stop'
-if ((Get-Item $Iscc).VersionInfo.ProductVersion -notmatch '^6\.7\.1\b') {
+if (-not (Test-Path $Iscc) -and (Test-Path "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe")) {
+    $Iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+}
+# ISCC.exe has no version resource; the pin comes from the uninstall entry.
+$inno = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1',
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1'
+) | ForEach-Object { (Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue).DisplayVersion }
+if (-not ($inno | Where-Object { $_ -match '^6\.7\.1\b' })) {
     throw 'The installer is pinned to Inno Setup 6.7.1. Check the compiler before changing the pin.'
 }
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
 New-Item -ItemType Directory -Force "$StageDirectory\licenses", $OutputDirectory | Out-Null
 $stage = (Resolve-Path $StageDirectory).Path
 $output = (Resolve-Path $OutputDirectory).Path
-Copy-Item "$root\target\release\grajek.exe", "$root\README.md", "$root\.env.example" $stage
+Copy-Item "$root\target\release\grajek.exe", "$root\README.md" $stage
 Copy-Item "$ToolsDirectory\components.json", "$ToolsDirectory\components-en.txt", "$ToolsDirectory\components-pl.txt" $stage
 Copy-Item "$root\LICENSE" "$stage\licenses\Grajek-LICENSE.txt"
 Copy-Item $Notices "$stage\licenses\Grajek-THIRD-PARTY.txt"

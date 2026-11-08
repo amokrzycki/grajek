@@ -204,6 +204,8 @@ fn run_app(
         })
         .detach();
         let close_endpoint = tray_endpoint.clone();
+        #[cfg(target_os = "windows")]
+        let missing_components = media::components::tools().startup_notice();
         let opened = open_window(options, cx, |window, cx| {
             window.on_window_should_close(cx, move |_, _| {
                 if close_endpoint.hide_on_close() {
@@ -224,6 +226,8 @@ fn run_app(
                 let app = app.with_components(runtime);
                 #[cfg(target_os = "windows")]
                 let app = app.with_media(media);
+                #[cfg(target_os = "windows")]
+                let app = app.with_components_notice(missing_components);
                 app
             })
         });

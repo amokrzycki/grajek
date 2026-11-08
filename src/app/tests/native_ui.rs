@@ -152,6 +152,8 @@ fn native_player_redesign_evidence() {
         let executor = cx.background_executor().clone();
         cx.spawn(async move |cx| {
             let mut cases = vec!["idle", "playing", "playing-empty", "focused", "unfocused", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "setup", "settings", "destination", "credentials", "help", "options-hover", "server-selector", "channel-selector", "selector-keyboard", "permission", "setup-help", "auth-error", "idle-queued", "long-title", "link-video", "link-playlist", "added", "reordered", "removed", "removed-keyboard", "settings-long", "onboarding-player", "destination-player", "settings-scroll", "confirmation", "help-bottom", "idle-history", "playing-history", "queue-hover", "history-hover", "history-keyboard", "queue-menu", "history-menu", "focus-action-unfocused", "focus-action-hover", "focus-action-pressed", "focus-action-pointer", "focus-action-tab", "focus-action-activated", "focus-action-restored", "play-pointer", "play-keyboard", "focused-pointer", "focused-keyboard", "history-unicode"];
+            #[cfg(target_os = "windows")]
+            cases.extend(["components-notice", "components-notice-long"]);
             if std::env::var_os("GRAJEK_CAPTURE_INTERACTIONS").is_some() {
                 cases.extend(["hover-input", "hover-button", "pressed-button", "keyboard-button", "keyboard-row"]);
             }
@@ -253,6 +255,12 @@ fn native_player_redesign_evidence() {
                     let mut expected_count = snapshot.queue.len();
                     let after_commands = snapshot.clone();
                     cx.update_window(window, |_, window, cx| view.update(cx, |app, cx| {
+                        #[cfg(target_os = "windows")]
+                        { app.components_notice = match name {
+                            "components-notice" => Some("Playback components are missing or damaged. Run Grajek Setup again to repair the installation.".into()),
+                            "components-notice-long" => Some("Playback components are missing or damaged. Run Grajek Setup again to repair the installation. Additional diagnostic information must wrap without hiding the recovery action or overflowing this compact window.".into()),
+                            _ => None,
+                        }; }
                         app.settings_open = !matches!(name, "onboarding-player" | "destination-player") && matches!(name, "setup" | "setup-help" | "auth-error" | "onboarding-player" | "settings" | "destination" | "credentials" | "server-selector" | "channel-selector" | "selector-keyboard" | "permission" | "settings-long" | "destination-player" | "settings-scroll" | "confirmation");
                         app.credentials_open = matches!(name, "credentials" | "settings-scroll");
                         app.preferences_open = matches!(name, "settings-long" | "settings-scroll");
@@ -427,6 +435,11 @@ fn native_player_redesign_evidence() {
                     cx.update_window(window, |_, window, cx| {
                         assert_eq!(view.read(cx).state.phase, expected_phase, "{name}: controller snapshot applied");
                         assert_eq!(view.read(cx).state.queue.len(), expected_count);
+                        #[cfg(target_os = "windows")]
+                        if name.starts_with("components-notice") {
+                            assert!(window.try_find("components-notice-ok").is_some());
+                            return;
+                        }
                         if view.read(cx).settings_open { assert!(window.try_find("bot-token").is_some() || window.try_find("server-selector").is_some() || window.try_find("confirm-setup").is_some()); } else if !view.read(cx).idle() {
                             assert_eq!(window.find("pause-resume").label(), Some(if expected_phase == Phase::Paused { "Resume" } else { "Pause" }), "{name}: rendered transport matches snapshot");
                         }
@@ -436,7 +449,7 @@ fn native_player_redesign_evidence() {
                         let mut geometry = serde_json::Map::new();
                         let b = window.bounds();
                         geometry.insert("window-on-display".into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
-                        for id in ["player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination", "audio-footer", "volume", "volume-percent", "queue-list", "history-list", "track-options-menu"] {
+                        for id in ["components-notice-content", "components-notice-ok", "player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination", "audio-footer", "volume", "volume-percent", "queue-list", "history-list", "track-options-menu"] {
                             if let Some(element) = window.try_find(id) {
                                 let b = element.bounds();
                                 geometry.insert(id.into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
@@ -465,6 +478,20 @@ fn native_player_redesign_evidence() {
                     }
                     #[cfg(not(target_os = "linux"))]
                     cx.update_window(window, |_, window, _| window.render_to_image().expect("native pixels").save(&path).expect("save native image")).expect("capture window");
+                    #[cfg(target_os = "windows")]
+                    if name.starts_with("components-notice") {
+                        cx.update_window(window, |_, window, cx| {
+                            assert_eq!(window.find("components-notice-ok").focused(), Some(true));
+                            if name == "components-notice" { window.press("enter", cx); }
+                            else { window.click("components-notice-ok", cx); }
+                        }).expect("native notice dismissal");
+                        executor.timer(Duration::from_millis(100)).await;
+                        cx.update_window(window, |_, window, cx| {
+                            assert!(view.read(cx).components_notice.is_none());
+                            assert!(view.read(cx).input.read(cx).focus_handle(cx).is_focused(window));
+                        }).expect("native notice focus recovery");
+                        assert!(receiver.try_recv().is_err(), "notice dismissal sends no playback or repair command");
+                    }
                     cx.update_window(window, |_, window, cx| {
                         if matches!(name, "pressed-button" | "focus-action-pressed") {
                             window.dispatch_event(MouseUpEvent {
@@ -485,6 +512,8 @@ fn native_player_redesign_evidence() {
             let mut response = playing(Phase::Playing, Some("Native interaction check"), 84);
             response.queue = with_lists(Phase::Playing, 2, 0).queue;
             cx.update_window(window, |_, _, cx| view.update(cx, |app, cx| {
+                #[cfg(target_os = "windows")]
+                { app.components_notice = None; }
                 app.settings_open = false;
                 app.select_section(Section::Queue, cx);
             })).expect("return to player");

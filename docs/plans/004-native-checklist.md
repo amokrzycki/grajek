@@ -11,7 +11,10 @@ do `docs/releases/v0.6.0.md` (D7: 0.6.0, instalator PL/EN).
 Osobna maszyna developerska Windows x64 z MSVC/SDK i Rust 1.99.0; następnie
 czysta VM do uruchomienia. Nie stosować Wine ani cross-kompilacji jako dowodu.
 
-- [ ] Zapisać commit oraz `rustc -Vv`, `cargo -V`, wersję Visual Studio/SDK.
+- [x] Zapisać commit oraz `rustc -Vv`, `cargo -V`, wersję Visual Studio/SDK.
+  (2026-11-03, `87e26c9`, MSVC 14.51.36231, SDK 10.0.26100.0; domyślny
+  toolchain podniesiony do Rust 1.99.0 i release przebudowany; szczegóły
+  w `004-evidence.md`.)
 - [ ] W Developer PowerShell, z czystym katalogiem wyjściowym buildu:
 
   ```powershell
@@ -28,13 +31,17 @@ czysta VM do uruchomienia. Nie stosować Wine ani cross-kompilacji jako dowodu.
 
   Żadne trafienie LNK4098/VCRUNTIME140/MSVCP140 nie jest akceptowalne.
   Zmienne ustawić w osobnej sesji PowerShell; po teście zamknąć sesję.
-- [ ] Pobrać Windowsowe ZIP-y z URL-i manifestu do **oddzielnych pustych
+- [x] Pobrać Windowsowe ZIP-y z URL-i manifestu do **oddzielnych pustych
   katalogów poza repo**, sprawdzić `Get-FileHash -Algorithm SHA256` względem
   manifestu, dopiero wtedy rozpakować. Zapisać listingi i sumy.
-- [ ] `dumpbin /dependents deno.exe`; rekurencyjnie `dumpbin /dependents`
+  (2026-11-03, `%TEMP%\grajek-f0-tools`, oba SHA i rozmiary zgodne.)
+- [x] `dumpbin /dependents deno.exe`; rekurencyjnie `dumpbin /dependents`
   dla `yt-dlp.exe` i wszystkich `.exe`, `.dll`, `.pyd` w `_internal`.
   Zapisać dla każdego pliku importy i obecność potrzebnych DLL obok niego.
-- [ ] `deno.exe --version` i `yt-dlp.exe --version` odpowiadają pinom.
+  (2026-11-03, 121 plików; VCRUNTIME140/_1 dołączone w `_internal`,
+  MSVCP140/CONCRT140 brak, Deno tylko systemowe DLL.)
+- [x] `deno.exe --version` i `yt-dlp.exe --version` odpowiadają pinom.
+  (2026-11-03: Deno 2.9.8, yt-dlp 2026.10.26.)
 - [ ] Przenieść zestaw na czystą VM bez VC++ redist; uruchomić Grajka i narzędzia.
   Jeśli Deno potrzebuje systemowego CRT albo statyczny build zawodzi:
   **STOP — decyzja właściciela o planie B**, bez instalowania redist po cichu.

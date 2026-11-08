@@ -10,7 +10,8 @@
 AppId={{713B0B2A-8BF1-4EAD-AF33-B222E4625B3D}
 AppName=Grajek
 AppVersion={#GrajekVersion}
-AppPublisher=Grajek contributors
+AppVerName=Grajek
+AppPublisher=Adrian Mokrzycki
 DefaultDirName={localappdata}\Programs\Grajek
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=
@@ -38,16 +39,21 @@ Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; Flags: unchecked
 [Files]
 Source: "{#StageDir}\grajek.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#StageDir}\.env.example"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#YtDlpUrl}"; DestDir: "{tmp}"; DestName: "yt-dlp_win.zip"; ExternalSize: {#YtDlpZipSize}; Hash: "{#YtDlpSha256}"; Flags: external download ignoreversion deleteafterinstall
 Source: "{tmp}\yt-dlp_win.zip"; DestDir: "{app}\tools\yt-dlp"; ExternalSize: {#YtDlpUnpackedSize}; Flags: external extractarchive recursesubdirs createallsubdirs ignoreversion
 Source: "{#DenoUrl}"; DestDir: "{tmp}"; DestName: "deno.zip"; ExternalSize: {#DenoZipSize}; Hash: "{#DenoSha256}"; Flags: external download ignoreversion deleteafterinstall
 Source: "{tmp}\deno.zip"; DestDir: "{app}\tools\deno"; ExternalSize: {#DenoUnpackedSize}; Flags: external extractarchive recursesubdirs createallsubdirs ignoreversion
-Source: "{#StageDir}\components.json"; DestDir: "{app}\tools"; Flags: ignoreversion
+Source: "{#StageDir}\components.json"; DestDir: "{app}\tools"; Flags: ignoreversion; Check: ToolsInstalled
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\tools"
+Type: files; Name: "{app}\.env.example"
+Type: files; Name: "{autoprograms}\Grajek.lnk"
+Type: files; Name: "{autoprograms}\Grajek\Grajek.lnk"
+Type: files; Name: "{autoprograms}\Grajek\Uninstall Grajek.lnk"
+Type: files; Name: "{autoprograms}\Grajek\Odinstaluj Grajka.lnk"
+Type: dirifempty; Name: "{autoprograms}\Grajek"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\tools"
@@ -75,3 +81,12 @@ english.UninstallAppRunningError=Grajek is running, possibly hidden in the tray.
 polish.UninstallAppRunningError=Grajek działa, być może ukryty w zasobniku. Wybierz Zakończ z menu zasobnika, a następnie kliknij OK.
 english.UninstalledAll=Grajek and its downloaded components were removed. Your settings, queue and history remain in %%LOCALAPPDATA%%\Grajek; your bot token remains in Windows Credential Manager.
 polish.UninstalledAll=Grajek został usunięty razem z pobranymi składnikami. Twoje ustawienia, kolejka i historia pozostały w %%LOCALAPPDATA%%\Grajek, a token bota w Menedżerze poświadczeń Windows.
+
+[Code]
+// The version marker must never exist without the tools it describes, otherwise
+// Grajek reports installed components for an empty tools directory.
+function ToolsInstalled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\tools\yt-dlp\yt-dlp.exe')) and
+    FileExists(ExpandConstant('{app}\tools\deno\deno.exe'));
+end;

@@ -225,6 +225,16 @@ impl Tools {
     }
 
     pub(crate) fn description(&self) -> String {
+        #[cfg(target_os = "windows")]
+        if self.missing() {
+            return match self.mode {
+                Mode::Managed => {
+                    "Playback components: Grajek-managed — needs repair, run Grajek Setup again."
+                        .into()
+                }
+                Mode::System => "Playback components: missing — run Grajek Setup again.".into(),
+            };
+        }
         self.versions.as_ref().map_or_else(
             || match self.mode {
                 Mode::System => "Playback components: system PATH".into(),
@@ -240,8 +250,8 @@ impl Tools {
     }
 
     #[cfg(target_os = "windows")]
-    pub(crate) fn startup_notice(&self) -> Option<String> {
-        let missing = if self.mode == Mode::Managed {
+    fn missing(&self) -> bool {
+        if self.mode == Mode::Managed {
             self.versions.is_none()
                 || [Tool::YtDlp, Tool::Deno]
                     .into_iter()
@@ -252,8 +262,12 @@ impl Tools {
                     !std::env::split_paths(&path).any(|dir| dir.join(tool.filename()).is_file())
                 })
             })
-        };
-        missing.then(|| self.failure().to_string())
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn startup_notice(&self) -> Option<String> {
+        self.missing().then(|| self.failure().to_string())
     }
 
     #[cfg(target_os = "linux")]
@@ -469,6 +483,28 @@ mod tests {
         assert!(!damaged.valid_version(Tool::YtDlp, "2026.10.26"));
         let error = anyhow::Error::new(damaged.failure()).context("version check");
         assert!(error.downcast_ref::<MissingComponents>().is_some());
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_marker_without_binaries_asks_for_repair_instead_of_claiming_versions() -> Result<()> {
+        let dir = Fixture::new()?;
+        std::fs::write(
+            dir.0.join("components.json"),
+            r#"{"yt-dlp":"2026.10.26","yt-dlp-ejs":"0.8.0","deno":"2.9.8"}"#,
+        )?;
+        let tools = Tools::select(false, Some(dir.0.clone()));
+        assert_eq!(tools.mode, Mode::Managed);
+        assert!(tools.description().contains("needs repair"));
+        assert!(!tools.description().contains("Deno 2.9.8"));
+        assert!(tools.startup_notice().is_some());
+        for (folder, name) in [("yt-dlp", "yt-dlp.exe"), ("deno", "deno.exe")] {
+            std::fs::create_dir_all(dir.0.join(folder))?;
+            std::fs::write(dir.0.join(folder).join(name), "stub")?;
+        }
+        assert!(tools.description().contains("Deno 2.9.8"));
+        assert_eq!(tools.startup_notice(), None);
         Ok(())
     }
 

@@ -455,3 +455,171 @@ bez zlecania drugiej recenzji. Minory odroczone: brak.
 Nie zmieniono vendor/gpui-pre-linux, src/window.rs, build.rs, windows.rc ani
 Makefile. Główna crate nadal ma `unsafe_code = "forbid"`. Wszystkie scenariusze
 ręczne pozostają niezaznaczone w osobnej checkliście.
+
+## F0-WIN-CRT — zależności narzędzi Windows (2026-11-03)
+
+Commit `87e26c9`. Windows 11 x64, MSVC 19.51.36231 (BuildTools 18),
+SDK 10.0.26100.0, dumpbin 14.51.36257.0. Pierwszy pomiar zależności narzędzi
+nie zależy od Rusta. Grajek był początkowo w `target/release` z Rust 1.98.1;
+domyślny toolchain podniesiono do **1.99.0** (`rustc 1.99.0 b940084d7`,
+`cargo 1.99.0 5f94df478`, LLVM 23.1.1) i przebudowano
+`cargo build --locked --release`: PASS w 3m17s, binarka z 16:10.
+
+Artefakty pobrano `curl.exe` do pustego katalogu poza repo,
+`C:\Users\Adrian\AppData\Local\Temp\grajek-f0-tools`, przed rozpakowaniem:
+
+```text
+cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf  deno.zip
+fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419  yt-dlp_win.zip
+```
+
+Oba SHA-256 zgadzają się z `packaging/components.json`. Rozmiary po
+rozpakowaniu: yt-dlp **41340247**, Deno **98081568** — zgodne z manifestem.
+`deno --version` → `2.9.8 (stable, release, x86_64-pc-windows-msvc)`;
+`yt-dlp.exe --version` → `2026.10.26`.
+
+### Deno
+
+`dumpbin /dependents deno.exe`: **brak VCRUNTIME140, VCRUNTIME140_1,
+MSVCP140, CONCRT140**. Importy to wyłącznie systemowe: bcryptprimitives,
+kernel32, api-ms-win-core-synch-l1-2-0, user32, ntdll, advapi32, ws2_32,
+crypt32, userenv, shell32, bcrypt. Delay-load: dbghelp, gdi32, opengl32,
+setupapi, oleaut32, combase, rstrtmgr, iphlpapi, psapi, winmm. Deno jest
+samowystarczalne; nie potrzebuje VC++ redist.
+
+### yt-dlp i `_internal`
+
+`yt-dlp.exe` to bootloader PyInstaller: ADVAPI32, KERNEL32, msvcrt, USER32.
+Cała reszta jest w `_internal` (144 pliki, w tym 121 `.exe/.dll/.pyd`).
+Sprawdzono `dumpbin /dependents` na **wszystkich 121** plikach binarnych.
+
+- VCRUNTIME140 i VCRUNTIME140_1 są **dołączone** w `_internal`
+  (14.51.36247.0, 178616 i 50112 bajtów). `MSVCP140`, `MSVCP140_1`
+  i `CONCRT140` nie występują nigdzie — ani jako import, ani jako plik.
+- Pozostałe importy CRT to `api-ms-win-crt-*` (Universal CRT, składnik
+  Windows 10/11), a nie osobny redistributable.
+- Pozostałe niesystemowe importy: `python314.dll`, `libcrypto-3.dll`,
+  `libssl-3.dll`, `libffi-8.dll`, `sqlite3.dll`,
+  `libcurl-impersonate-ae864b926b0a86bfa3b18a664407a1ab.dll`.
+  Wszystkie leżą w `_internal`; każdy import rozwiązywały pliki zestawu,
+  poza systemowym `normaliz.dll` i api-setami.
+- `_wmi.pyd` importuje `VCRUNTIME140_1.dll` i ole32 (delay-load), oba
+  dostępne.
+
+Wniosek: zestaw narzędzi nie wymaga instalacji VC++ redist na Windows 10/11;
+własne DLL ładuje z `_internal`.
+
+### Grajek
+
+`target/release/grajek.exe` (przebudowany Rustem 1.99.0, 16:10): importy
+wyłącznie systemowe — kernel32, advapi32, user32, shell32,
+gdi32, comctl32, ws2_32, ntdll, icuuc, uiautomationcore, oleaut32, combase,
+ole32, dcomp, dwmapi, dwrite, winmm, imm32, dxgi, d3d11, bcrypt,
+bcryptprimitives, gdiplus, userenv i api-sety. **Brak VCRUNTIME140
+i MSVCP140.** Logu LNK4098 z tego builda nie zachowano; brak trafienia
+wynika z braku całej grupy importów CRT.
+
+Logi i listingi: `dependents.log`, `SHA256SUMS.txt`, `listing.txt`
+w katalogu pomiaru. **Nie wykonano** punktu czystej VM bez redist:
+wnioski powyżej to analiza importów, nie dowód uruchomienia.
+
+## Setup Windows zbudowany natywnie (2026-11-03)
+
+Build z commita `87e26c9` plus niezacommitowaną poprawką bramki ISCC opisaną
+niżej. Windows 11 x64, Rust 1.99.0, MSVC 19.51.36231, SDK 10.0.26100.0.
+
+Narzędzia buildu:
+
+- Inno Setup **6.7.1** zainstalowany per-user z
+  `github.com/jrsoftware/issrc/releases/download/is-6_7_1/innosetup-6.7.1.exe`
+  (`SHA-256 4d11e8050b6185e0d49bd9e8cc661a7a59f44959a621d31d11033124c4e8a7b0`,
+  10619024 B), cicho, `/CURRENTUSER`. Rejestr:
+  `DisplayVersion 6.7.1`, katalog
+  `%LOCALAPPDATA%\Programs\Inno Setup 6`. Wersja 6.7.3/6.7.4 z winget
+  i jrsoftware nie została użyta — pin to 6.7.1.
+- Python 3.12.10 (winget, user scope) i `cargo-about 0.9.3 --features cli`.
+
+**Błąd bramki naprawiony.** `ISCC.exe` 6.7.1 nie ma zasobu wersji:
+`VersionInfo.ProductVersion` = `0.0.0.0`, a `ISCC /?` nie wypisuje numeru.
+Dotychczasowa kontrola w `build-installer.ps1` odrzucałaby więc każdy
+prawdziwy 6.7.1. Zamiast tego skrypt czyta `DisplayVersion` wpisu
+odinstalowania (`Inno Setup 6_is1`) z HKLM, HKLM\WOW6432Node i HKCU, nadal
+wymagając `^6\.7\.1`. Dodano fallback ścieżki ISCC do instalacji per-user.
+Pin wersji bez zmian.
+
+Wyniki:
+
+| Krok | Wynik |
+|---|---|
+| `cargo build --locked --release` w czystym `CARGO_TARGET_DIR` | PASS, 3m32s |
+| `Select-String -Pattern LNK4098` w logu builda | brak trafień |
+| `check-crt.ps1` (Grajek, deno, 121 plików `_internal`) | PASS |
+| `check-components.py --platform windows` | PASS: hash, oba rozmiary, `--version`, EJS 0.8.0 offline |
+| `python -I packaging/test-components.py` | 4 PASS |
+| `cargo about generate` (Windows target) | PASS, notka 806579 B |
+| ISCC | Successful compile, 8,297 s |
+
+Artefakt:
+
+```text
+dist\Grajek-Setup-0.6.0.exe
+13772660 bytes
+SHA-256 b59dc91bceb03e6d4e5f18a3b1f3667754c52b8a633b6d6e01a7e182740a0363
+```
+
+Instalator nie jest podpisany i nie był uruchamiany. Pobiera oba ZIP-y
+z URL-i manifestu, weryfikuje `Hash`, rozpakowuje do `{app}\tools`
+i publikuje `components.json` na końcu. **PENDING_NATIVE:** instalacja na
+czystej VM, fixture'y z `-BadYtDlpHash`/`-BadDenoHash`, offline/ponów/anuluj,
+cicha instalacja i deinstalacja, zachowanie `state.json`, zgodność notki
+`is7z.dll` z faktycznie dołączanym plikiem.
+
+Katalog `dist\` nie jest w `.gitignore`; artefakt pozostaje nieśledzony.
+
+### Fałszywy marker i brak monitu o składnikach — poprawione
+
+Zgłoszenie właściciela: instalacja bez internetu, pobrania pominięte, a Grajek
+mimo to raportuje komplet „Grajek-managed” z wersjami; w trybie system PATH,
+gdy narzędzi nie ma, nie pojawia się żaden monit.
+
+Przyczyny (odczyt kodu, nie domysł):
+
+1. `grajek.iss` kopiował `tools\components.json` jako zwykły wpis `[Files]`,
+   bez warunku. Marker wersji istniał więc nawet wtedy, gdy oba ZIP-y nie
+   zostały rozpakowane.
+2. `Tools::select` traktuje sam marker jako Managed, a `description()` brała
+   wersje z markera bez sprawdzenia plików — Settings pokazywało wersje dla
+   pustego `tools`.
+3. Monit o brakujących składnikach na Windows był tylko tekstem w liście
+   historii (`state.notice`, 2 linie, mała czcionka). Ekran startowy składników
+   (`with_components`) był wyłącznie linuksowy, więc nic nie „wyskakiwało”.
+
+Poprawki:
+
+- `grajek.iss`: marker ma `Check: ToolsInstalled`; funkcja w `[Code]` wymaga
+  `{app}\tools\yt-dlp\yt-dlp.exe` i `{app}\tools\deno\deno.exe`. Bez obu
+  plików marker nie powstaje.
+- `src/media/components.rs`: wspólne `missing()` dla trybu Managed i System;
+  `description()` zgłasza „needs repair, run Grajek Setup again” zamiast
+  wersji, gdy plików brak.
+- `src/main.rs` + `src/app.rs`: Windows pokazuje pełnoekranowy monit
+  „Playback components needed” przed odtwarzaczem, z przyciskiem OK.
+  Komunikat nadal trafia też do `state.notice`, więc jest widoczny po
+  zamknięciu.
+
+Weryfikacja lokalna (Windows 11, Rust 1.99.0):
+
+| Kontrola | Wynik |
+|---|---|
+| `cargo test --locked -p grajek --bin grajek components` | 9 PASS, w tym nowy `a_marker_without_binaries_asks_for_repair_instead_of_claiming_versions` |
+| `cargo test --locked --workspace --all-features` | 306 + 3 PASS, 6 ignored |
+| `cargo fmt --all -- --check`, `cargo clippy ... -D warnings` | PASS |
+| UI test `missing_components_are_announced_before_the_player` | PASS (monit obecny, OK zamyka) |
+| Ręcznie: katalog z `grajek.exe` + samym `tools\components.json` | monit widoczny natychmiast, zrzut `%TEMP%\grajek-broken-check\window.png` |
+| ISCC po zmianie `.iss` | Successful compile |
+
+Nowy Setup: `dist\Grajek-Setup-0.6.0.exe`, 13761855 B,
+SHA-256 `2474c96b2ccc710816d052f4768872032bf694a23e85e581e8652a64f78ef257`.
+**PENDING_NATIVE:** zachowanie `Check` na prawdziwej instalacji offline oraz
+to, że po pominiętych pobraniach marker nie istnieje. Nie uruchamiano Setup na
+VM; powyżej jest kompilacja i testy aplikacji, nie dowód instalatora.
