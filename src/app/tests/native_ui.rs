@@ -238,7 +238,10 @@ fn native_player_redesign_evidence() {
                     }
                     if name == "permission" { snapshot.setup.channels[2].name = "Private listening room · 夜の音楽 · A very long unavailable channel name".into(); }
                     if name == "confirmation" { snapshot.confirm_setup = true; snapshot.phase = Phase::Paused; snapshot.track = playing(Phase::Paused, Some("Nils Frahm — Says"), 84).track; snapshot.voice_connected = true; }
-                    if name == "help-bottom" { snapshot.queue[if width < 500. { 3 } else { 4 }].title = Some("A longer title near the window boundary · Żółć · 音楽を楽しむ · Привет".into()); }
+                    // ROW_HEIGHT is 44px and the compact 420x480 queue viewport is
+                    // 136px, so only three rows fit; the bottom boundary row is the
+                    // third (id 12), not the fourth (id 13, clipped by the list).
+                    if name == "help-bottom" { snapshot.queue[if width < 500. { 2 } else { 4 }].title = Some("A longer title near the window boundary · Żółć · 音楽を楽しむ · Привет".into()); }
                     if name == "importing" {
                         snapshot.import = ImportStatus::Importing;
                         snapshot.error = Some("Offline fixture: the previous seek failed. Playback remains paused. Try a different position.".into());
@@ -400,7 +403,7 @@ fn native_player_redesign_evidence() {
                         }).expect("scroll longer settings");
                     }
                     if name == "help-bottom" {
-                        cx.update_window(window, |_, window, cx| window.hover(("queue-title", if width < 500. { 13_u64 } else { 14_u64 }), cx)).expect("hover boundary help");
+                        cx.update_window(window, |_, window, cx| window.hover(("queue-title", if width < 500. { 12_u64 } else { 14_u64 }), cx)).expect("hover boundary help");
                         executor.timer(Duration::from_millis(800)).await;
                     }
                     if matches!(name, "help" | "options-hover") {
