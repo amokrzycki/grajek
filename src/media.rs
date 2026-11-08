@@ -26,6 +26,17 @@ impl Tool {
             Self::Deno => "deno",
         }
     }
+    /// Name a PATH installation uses; the managed Linux artifact is named differently.
+    pub(crate) fn system_name(self) -> &'static str {
+        #[cfg(target_os = "linux")]
+        {
+            self.name()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.filename()
+        }
+    }
     fn filename(self) -> &'static str {
         match self {
             #[cfg(target_os = "linux")]

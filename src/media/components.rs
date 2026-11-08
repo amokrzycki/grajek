@@ -264,7 +264,7 @@ impl Tools {
         if self.mode == Mode::System {
             let available = path.is_some_and(|path| {
                 [Tool::YtDlp, Tool::Deno].into_iter().all(|tool| {
-                    std::env::split_paths(path).any(|dir| executable(&dir.join(tool.filename())))
+                    std::env::split_paths(path).any(|dir| executable(&dir.join(tool.system_name())))
                 })
             });
             return (!available).then_some(Need::Missing);

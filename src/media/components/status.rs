@@ -40,7 +40,7 @@ impl Tools {
         }
         std::env::var_os("PATH").and_then(|path| {
             std::env::split_paths(&path)
-                .map(|dir| dir.join(tool.filename()))
+                .map(|dir| dir.join(tool.system_name()))
                 .find(|path| path.is_file())
         })
     }
