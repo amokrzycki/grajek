@@ -385,7 +385,41 @@ impl PlayerApp {
         if configured {
             panel = panel.child(self.destination_settings(window, cx));
         }
-        panel.child(self.preferences_settings(cx))
+        panel = panel.child(self.preferences_settings(cx)).child(
+            div()
+                .id("playback-components")
+                .test_support()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Playback components"),
+                )
+                .child(self.component_rows(cx))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(
+                            self.button("manage-components")
+                                .label(self.components_action())
+                                .on_click(cx.listener(|this, _, _, cx| this.open_components(cx)))
+                                .reveal("reveal-manage-components", &self.settings_scroll),
+                        )
+                        .child(
+                            self.button("check-components")
+                                .ghost()
+                                .label("Check components")
+                                .disabled(self.components_busy())
+                                .on_click(cx.listener(|this, _, _, cx| this.check_components(cx)))
+                                .reveal("reveal-check-components", &self.settings_scroll),
+                        ),
+                ),
+        );
+        panel
     }
 
     fn setup_status(&self) -> &'static str {

@@ -1,11 +1,43 @@
 name: Rust checks
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
 
 jobs:
+  packaging-changes:
+    runs-on: ubuntu-22.04
+    outputs:
+      changed: ${{ steps.paths.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect packaging changes
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- packaging Cargo.toml Cargo.lock .cargo .github/workflows; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  packaging:
+    needs: [packaging-changes, checks]
+    if: needs.packaging-changes.outputs.changed == 'true'
+    uses: ./.github/workflows/package.yml
+    with:
+      ref: ${{ github.sha }}
+
   checks:
     strategy:
       fail-fast: false
@@ -43,7 +75,13 @@ jobs:
         run: cargo build --locked
       - name: Build Windows portable executable
         if: runner.os == 'Windows'
-        run: cargo build --locked --release
+        run: |
+          cargo build --locked --release 2>&1 | Tee-Object "$env:RUNNER_TEMP\grajek-build.log"
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+          if (Select-String -Path "$env:RUNNER_TEMP\grajek-build.log" -Pattern 'LNK4098' -Quiet) { throw 'Conflicting CRT link' }
+          $imports = & dumpbin /dependents target/release/grajek.exe
+          if ($LASTEXITCODE -ne 0 -or $imports -match 'VCRUNTIME140|MSVCP140') { throw 'Static CRT import check failed' }
+          $imports | Write-Output
       - name: Save unsigned Windows build
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4

@@ -2686,7 +2686,60 @@ fn leave_voice_availability_follows_session_and_controller_state() {
 }
 
 mod playlist;
+
+#[tokio::test]
+async fn missing_components_in_a_playlist_are_a_prompt_request_and_preserve_playback() -> Result<()>
+{
+    let mut rig = Rig::new().await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    rig.fake.track(0)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    let reply = rig.fake.import_reply();
+    rig.send(Command::ImportPlaylist(
+        "https://www.youtube.com/playlist?list=PL_test123".into(),
+    ))
+    .await?;
+    rig.until(|s| s.import == ImportStatus::Importing).await?;
+    reply
+        .send(Err(crate::playlist::Error::MissingComponents.into()))
+        .map_err(|_| anyhow::anyhow!("import receiver dropped"))?;
+    let state = rig.until(|s| s.import != ImportStatus::Importing).await?;
+    assert_eq!(state.components_request, 1);
+    assert_eq!(state.phase, Phase::Playing);
+    assert_eq!(state.import, ImportStatus::Ready);
+    rig.shutdown.send_replace(true);
+    rig.task.await?;
+    Ok(())
+}
 mod seek;
+
+#[tokio::test]
+async fn missing_components_stop_recovery_without_skipping_more_queued_tracks() -> Result<()> {
+    let (mut controller, _fake, updates) = solo(Saved {
+        continue_on_error: true,
+        ..Saved::default()
+    });
+    controller.enqueue(B);
+    controller.job = Some(Job {
+        task: tokio::spawn(async { Ok(JobOutput::Disconnected) }),
+        connected: None,
+        kind: JobKind::Prepare {
+            url: A.into(),
+            queued: true,
+        },
+        voice_ready: true,
+    });
+    controller
+        .finish_job(Ok(Err(crate::media::components::tools().failure().into())))
+        .await;
+    assert_eq!(updates.borrow().components_request, 1);
+    assert!(updates.borrow().error.is_none());
+    assert_eq!(updates.borrow().phase, Phase::Ready);
+    assert!(controller.scheduled.is_none());
+    assert_eq!(updates.borrow().queue[0].url, B);
+    Ok(())
+}
 
 mod native;
 

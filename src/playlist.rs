@@ -35,6 +35,7 @@ pub struct Playlist {
 pub enum Error {
     InvalidUrl,
     Tool,
+    MissingComponents,
     Unavailable,
     Timeout,
     OutputLimit,
@@ -47,6 +48,7 @@ impl fmt::Display for Error {
         f.write_str(match self {
             Self::InvalidUrl => "Use a valid YouTube playlist URL.",
             Self::Tool => "Could not run yt-dlp. Check its installation and try again.",
+            Self::MissingComponents => "Playback components are missing or damaged. Open Settings to download or repair them.",
             Self::Unavailable => {
                 "Playlist unavailable. Check the public link and network, then try again."
             }
@@ -88,7 +90,12 @@ fn args() -> [&'static str; 18] {
 
 pub async fn extract(url: String) -> Result<Playlist, Error> {
     let url = playlist_url(&url).map_err(|_| Error::InvalidUrl)?;
-    let child = crate::media::tool_command("yt-dlp")
+    let execution = crate::media::components::execution::acquire()
+        .await
+        .map_err(|_| Error::MissingComponents)?;
+    let child = execution
+        .tools
+        .command(crate::media::Tool::YtDlp)
         .args(args())
         .arg(url)
         .stdin(Stdio::null())
@@ -96,8 +103,9 @@ pub async fn extract(url: String) -> Result<Playlist, Error> {
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|_| Error::Tool)?;
+        .map_err(|_| Error::MissingComponents)?;
     let bytes = collect(child, TIMEOUT).await?;
+    drop(execution);
     parse(&bytes)
 }
 

@@ -1,0 +1,11 @@
+Playback components
+
+Grajek needs two free tools to play YouTube audio. Setup will download them now from their authors' official servers (GitHub, or Deno's own download server), verify their SHA-256 checksums and store them in Grajek's installation folder. They do not change system settings or PATH.
+
+yt-dlp {ytdlp_version} ({ytdlp_size} bytes): reads YouTube video and playlist information and audio stream addresses. Includes yt-dlp-ejs {ejs_version} for YouTube challenges. License: GPLv3+.
+Source: {ytdlp_url}
+
+Deno {deno_version} ({deno_size} bytes): JavaScript runtime that runs those challenge scripts. License: MIT.
+Source: {deno_url} (fallback: {deno_mirror_url})
+
+An internet connection is required. Components are updated with new Grajek releases. If YouTube changes its protections, playback may stop working until a new Grajek release.

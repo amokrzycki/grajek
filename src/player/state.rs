@@ -152,6 +152,8 @@ pub struct State {
     pub transport_ack: u64,
     pub phase: Phase,
     pub error: Option<String>,
+    /// Monotonic request to show the playback-components prompt; ordinary snapshots retain it.
+    pub components_request: u64,
     pub available: bool,
     /// Local queue/history edits need a running controller, even if the gateway is down.
     pub controller_ready: bool,
@@ -187,6 +189,7 @@ impl Default for State {
             transport_ack: 0,
             phase: Phase::Initializing,
             error: None,
+            components_request: 0,
             available: false,
             controller_ready: false,
             voice_connected: false,

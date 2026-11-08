@@ -271,6 +271,7 @@ pub(super) struct Controller<B: Backend> {
     volume: u8,
     volume_seq: u64,
     transport_ack: u64,
+    components_request: u64,
     notice: Option<String>,
     job: Option<Job>,
     track: Option<Active<B::Handle>>,
@@ -308,6 +309,7 @@ impl<B: Backend> Controller<B> {
             saved,
             volume_seq: 0,
             transport_ack: 0,
+            components_request: 0,
             notice,
             job: None,
             track: None,
@@ -335,6 +337,7 @@ impl<B: Backend> Controller<B> {
     fn view(&self, mut state: State) -> State {
         state.close_to_tray = self.saved.close_to_tray;
         state.transport_ack = self.transport_ack;
+        state.components_request = self.components_request;
         state.track_id = self.track.as_ref().map_or(0, |track| track.id);
         state.seek = self
             .track
@@ -566,6 +569,13 @@ impl<B: Backend> Controller<B> {
             }
             error => {
                 tracing::debug!(?error, "Playlist import failed");
+                if matches!(&error, Ok(Err(error)) if error.downcast_ref::<crate::playlist::Error>() == Some(&crate::playlist::Error::MissingComponents))
+                {
+                    self.components_request = self.components_request.wrapping_add(1);
+                    self.import = ImportStatus::Ready;
+                    self.sync();
+                    return;
+                }
                 self.import = ImportStatus::Failed(match error {
                     Ok(Err(error)) => error.downcast_ref::<crate::playlist::Error>().map_or_else(
                         || "Playlist unavailable. Check the public link and try again.".into(),
@@ -1292,6 +1302,17 @@ impl<B: Backend> Controller<B> {
             }
             (JobKind::Prepare { queued, .. }, Err(error)) => {
                 tracing::error!(error = %format!("{error:#}"), "Audio request failed");
+                if error
+                    .downcast_ref::<media::components::MissingComponents>()
+                    .is_some()
+                {
+                    self.components_request = self.components_request.wrapping_add(1);
+                    self.queued_track = false;
+                    self.failure_notice = None;
+                    self.scheduled = None;
+                    self.publish(Phase::Ready, None);
+                    return;
+                }
                 self.queued_track = queued && job.voice_ready;
                 self.media_failure(&media::user_error(&error));
                 self.backend.recover().await;

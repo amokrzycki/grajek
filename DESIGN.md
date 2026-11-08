@@ -161,11 +161,14 @@ Help is now application-owned using Base TooltipOverlay/TooltipRequest and its a
 
 Semantic rhythm: 4px title/status pairs and frame/actions/status inside the composer, 8px related controls, 8–16px between regions as specified in Main player cohesion, 16px root inset. The minimum-size error-plus-import case keeps two complete 44px rows inside the actual clipped viewport. Queue insertion is confirmed by the controller snapshot: the composer's fixed-height status line and a status check acknowledge it without moving the list (see Main player cohesion). No optimistic playback/selection or extra animation was introduced.
 
-Evidence and the independent Impeccable/UI UX Pro Max assessments are in `.impeccable/review/experience/REPORT.md`; the implementation specification is `docs/superpowers/plans/2026-10-30-product-experience.md`. The image gallery shows compositor captures, not an HTML implementation. Native XWayland evidence does not establish native Wayland, Windows runtime, live Discord audio, assistive technology or fractional scaling acceptance.
+Evidence and the independent Impeccable/UI UX Pro Max assessments are kept outside
+this repository, as is the implementation specification. The image gallery shows
+compositor captures, not an HTML implementation. Native XWayland evidence does not establish native Wayland, Windows runtime, live Discord audio, assistive technology or fractional scaling acceptance.
 
 ## Main player cohesion (2026-11-01)
 
-This implementation supersedes earlier transport-volume, three-action rows and composer shortcut glyph descriptions. The Signal Ledger palette, native typography and controller semantics remain. The candidate comparison is `docs/superpowers/plans/2026-11-01-player-cohesion.md`; native evidence and its limitations are in `.impeccable/review/cohesion/REPORT.md`.
+This implementation supersedes earlier transport-volume, three-action rows and composer shortcut glyph descriptions. The Signal Ledger palette, native typography and controller semantics remain. The candidate comparison and the native evidence, with its limitations, are kept
+outside this repository.
 
 **Composition.** A compact connection header leads into the real track, state/time/seek line and transport when applicable, then music entry and a flexible collection. A permanent footer owns Playback preferences and Bot volume. Default region gaps are 12/16/12px; at heights of 480px or less they are 8/12/8px. Related controls retain 4/8px spacing and the root retains 16px insets. Ready with an empty queue omits the listening region entirely; the composer follows the header directly. Pending idle tracks expose a content-width Play Queue. Setup guidance and factual transitional headlines remain.
 
@@ -333,6 +336,25 @@ Empty guidance is one short truthful line, left-aligned near the list top, never
 ### Discord setup and settings
 
 Settings retain their existing flow and controls; shared rem, focus and header refinements also apply there. Keep compact native settings, masked token entry, explicit secure-storage/session-only actions, progressively disclosed help and named server/channel choices. Disabled choices explain recovery; full-name tooltips and visible keyboard focus remain. Confirm active-playback interruption before changing destination. Setup captures are regression context, not evidence of a new settings design or verified tray wording.
+
+### Playback component recovery (2026-11-08)
+
+Settings and startup share a native **Playback components** surface on Windows and Linux.
+Separate flat yt-dlp and Deno rows show factual Missing, Not checked, Checking, Ready
+or Needs repair states. A successful bounded version check, not file presence, earns
+Ready. Preserve the existing 14px body, 12px supporting text, warm palette and native controls.
+
+The fixed heading and action region frame a scrollable diagnosis/Details area.
+Download/Repair is the sole filled brass action; real byte progress, cancellation,
+background continuation, retry and return remain available at minimum size. Details
+discloses versions, paths, sources, checksums, licences and full failure diagnostics.
+No download starts without consent. Completion never starts playback. The panel
+restores player/settings focus on dismissal; queue and Discord state stay untouched.
+
+Windows repairs publish under LOCALAPPDATA/Grajek/tools without changing PATH or
+the installer copy. Failed or cancelled downloads preserve previous tools.
+Offline native captures are in `.impeccable/review/components/after`; real GitHub
+download acceptance remains separate from fixture installation and native layout checks.
 
 ### Motion and rendering
 

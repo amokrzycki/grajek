@@ -10,6 +10,9 @@ use tokio::sync::{mpsc, watch};
 
 pub(in crate::app) mod animation_fixes;
 mod cohesion;
+mod components;
+#[cfg(windows)]
+mod components_live;
 mod composition;
 mod experience;
 mod native_ui;

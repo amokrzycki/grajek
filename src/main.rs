@@ -64,6 +64,23 @@ fn main() -> Result<()> {
         )
         .init();
     let config = config::Config::load();
+    #[cfg(target_os = "windows")]
+    let _app_mutex =
+        grajek_smtc::hold_app_mutex().context("Could not create the Grajek installer mutex.")?;
+    let tools_dir = store::app_data_dir().map(|dir| dir.join("tools"));
+    if let Some(dir) = &tools_dir
+        && let Err(error) = media::components::download::recover(dir)
+    {
+        tracing::warn!(%error, "Could not recover playback components");
+    }
+    #[cfg(target_os = "windows")]
+    let bundled_tools = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("tools")));
+    #[cfg(target_os = "windows")]
+    media::components::initialize_with_fallback(tools_dir, bundled_tools);
+    #[cfg(target_os = "linux")]
+    media::components::initialize(tools_dir);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -101,6 +118,7 @@ fn main() -> Result<()> {
         endpoint,
         tray_endpoint,
         window_requests,
+        runtime.handle().clone(),
     );
     shutdown.send_replace(true);
     runtime.block_on(async {
@@ -159,6 +177,7 @@ fn run_app(
     endpoint: native::Endpoint,
     tray_endpoint: tray::Endpoint,
     mut window_requests: mpsc::Receiver<tray::WindowAction>,
+    runtime: tokio::runtime::Handle,
 ) {
     #[cfg(not(target_os = "windows"))]
     drop(endpoint);
@@ -200,6 +219,7 @@ fn run_app(
             let media = native::windows::attach(window, cx, &endpoint);
             cx.new(|cx| {
                 let app = app::PlayerApp::new(window, cx, commands, volume, updates);
+                let app = app.with_components(runtime);
                 #[cfg(target_os = "windows")]
                 let app = app.with_media(media);
                 app
