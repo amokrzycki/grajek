@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import runpy
 import tempfile
 import unittest
@@ -34,6 +35,16 @@ class ComponentsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 api["extract_zip"](path, root / "out", 3)
             self.assertFalse((root / "escaped").exists())
+
+    def test_installer_defines_carry_the_deno_mirror_pin(self):
+        manifest = json.loads(Path(__file__).with_name("components.json").read_text())
+        mirror = manifest["deno"]["windows"]["mirror"]
+        values = api["iscc_values"](manifest)
+        self.assertEqual(values["DenoMirrorUrl"], mirror["url"])
+        self.assertEqual(values["DenoMirrorSha256"], mirror["sha256"])
+        self.assertTrue(mirror["url"].startswith("https://"))
+        self.assertNotEqual(mirror["sha256"], manifest["deno"]["windows"]["sha256"])
+        self.assertEqual(mirror["size"], manifest["deno"]["windows"]["size"])
 
     def test_unpacking_preserves_upstream_name_and_internal_directory(self):
         with tempfile.TemporaryDirectory() as name:

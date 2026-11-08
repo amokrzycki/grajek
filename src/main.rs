@@ -67,18 +67,19 @@ fn main() -> Result<()> {
     #[cfg(target_os = "windows")]
     let _app_mutex =
         grajek_smtc::hold_app_mutex().context("Could not create the Grajek installer mutex.")?;
-    #[cfg(target_os = "linux")]
     let tools_dir = store::app_data_dir().map(|dir| dir.join("tools"));
-    #[cfg(target_os = "linux")]
     if let Some(dir) = &tools_dir
         && let Err(error) = media::components::download::recover(dir)
     {
         tracing::warn!(%error, "Could not recover playback components");
     }
     #[cfg(target_os = "windows")]
-    let tools_dir = std::env::current_exe()
+    let bundled_tools = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("tools")));
+    #[cfg(target_os = "windows")]
+    media::components::initialize_with_fallback(tools_dir, bundled_tools);
+    #[cfg(target_os = "linux")]
     media::components::initialize(tools_dir);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -178,8 +179,6 @@ fn run_app(
     mut window_requests: mpsc::Receiver<tray::WindowAction>,
     runtime: tokio::runtime::Handle,
 ) {
-    #[cfg(target_os = "windows")]
-    drop(runtime);
     #[cfg(not(target_os = "windows"))]
     drop(endpoint);
     let (application, visibility) = window::application();
@@ -204,8 +203,6 @@ fn run_app(
         })
         .detach();
         let close_endpoint = tray_endpoint.clone();
-        #[cfg(target_os = "windows")]
-        let missing_components = media::components::tools().startup_notice();
         let opened = open_window(options, cx, |window, cx| {
             window.on_window_should_close(cx, move |_, _| {
                 if close_endpoint.hide_on_close() {
@@ -222,12 +219,9 @@ fn run_app(
             let media = native::windows::attach(window, cx, &endpoint);
             cx.new(|cx| {
                 let app = app::PlayerApp::new(window, cx, commands, volume, updates);
-                #[cfg(target_os = "linux")]
                 let app = app.with_components(runtime);
                 #[cfg(target_os = "windows")]
                 let app = app.with_media(media);
-                #[cfg(target_os = "windows")]
-                let app = app.with_components_notice(missing_components);
                 app
             })
         });

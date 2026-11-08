@@ -36,7 +36,9 @@ if ($BadYtDlpHash) {
     $defines = @($defines | Where-Object { -not $_.StartsWith('/DYtDlpSha256=') }) + ('/DYtDlpSha256=' + ('0' * 64))
 }
 if ($BadDenoHash) {
-    $defines = @($defines | Where-Object { -not $_.StartsWith('/DDenoSha256=') }) + ('/DDenoSha256=' + ('0' * 64))
+    # Setup retries Deno from the mirror, so the fixture must break both pins.
+    $defines = @($defines | Where-Object { -not $_.StartsWith('/DDenoSha256=') -and -not $_.StartsWith('/DDenoMirrorSha256=') }) +
+        ('/DDenoSha256=' + ('0' * 64)) + ('/DDenoMirrorSha256=' + ('0' * 64))
 }
 $arguments = @("/DGrajekVersion=$Version", "/DStageDir=$stage", "/O$output") + $defines + @("$PSScriptRoot\grajek.iss")
 & $Iscc @arguments

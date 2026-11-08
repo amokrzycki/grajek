@@ -21,7 +21,12 @@
       "url": "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip",
       "sha256": "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf",
       "size": 42917472,
-      "unpacked_size": 98081568
+      "unpacked_size": 98081568,
+      "mirror": {
+        "url": "https://dl.deno.land/release/v2.9.8/deno-x86_64-pc-windows-msvc.zip",
+        "sha256": "b0f654158ad3edaee34cf6aa8d39695f242d3b122753f6fb965261b9c7986f24",
+        "size": 42917472
+      }
     },
     "linux": {
       "url": "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-unknown-linux-gnu.zip",

@@ -2707,10 +2707,7 @@ async fn missing_components_in_a_playlist_are_a_prompt_request_and_preserve_play
     let state = rig.until(|s| s.import != ImportStatus::Importing).await?;
     assert_eq!(state.components_request, 1);
     assert_eq!(state.phase, Phase::Playing);
-    #[cfg(target_os = "linux")]
     assert_eq!(state.import, ImportStatus::Ready);
-    #[cfg(target_os = "windows")]
-    assert!(matches!(state.import, ImportStatus::Failed(ref message) if message.contains("Setup")));
     rig.shutdown.send_replace(true);
     rig.task.await?;
     Ok(())
@@ -2737,16 +2734,8 @@ async fn missing_components_stop_recovery_without_skipping_more_queued_tracks() 
         .finish_job(Ok(Err(crate::media::components::tools().failure().into())))
         .await;
     assert_eq!(updates.borrow().components_request, 1);
-    #[cfg(target_os = "linux")]
     assert!(updates.borrow().error.is_none());
-    #[cfg(target_os = "windows")]
-    assert!(
-        updates
-            .borrow()
-            .error
-            .as_ref()
-            .is_some_and(|error| error.contains("Setup"))
-    );
+    assert_eq!(updates.borrow().phase, Phase::Ready);
     assert!(controller.scheduled.is_none());
     assert_eq!(updates.borrow().queue[0].url, B);
     Ok(())

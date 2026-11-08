@@ -39,6 +39,11 @@ clean-Windows, desktop, tray or live Discord behavior. F5 stays manual.
 5. For Deno, compare hashes with each release's `.zip.sha256sum`. The Windows
    file can use PowerShell's `Hash : ...` format, unlike Linux's sha256sum line.
    These files share the download origin and are not an independent trust anchor.
+   The Deno `mirror` entry points at Deno's own download server (`dl.deno.land`,
+   the one its install script uses). That server repacks the ZIP: equal size and
+   contents, different SHA-256. Update `mirror.url`, `mirror.sha256` and
+   `mirror.size` together and compare them with that server's own
+   `.zip.sha256sum`.
 6. Update `version`, `ejs`, `sha256`, `size` (ZIP bytes) and `unpacked_size`
    (sum of ZIP entry sizes) in the manifest. Verify with independent local
    SHA-256 and ZIP listings before committing; the repository hash is the
@@ -160,11 +165,17 @@ cargo about generate --locked --all-features --target x86_64-pc-windows-msvc -c 
 
 The stage contains no tool executables. Inno downloads from upstream during
 installation, then extracts into `{app}\tools`; its version marker is last.
+yt-dlp uses the declarative `download` flag. Deno cannot: `[Files]` has no mirror
+list, and GitHub answered 504 for its release asset while `dl.deno.land` served
+the same release. A `PrepareToInstall` download page therefore tries the GitHub
+URL first and then the manifest's `mirror` pin, each with its own SHA-256, and
+stops with `DenoDownloadFailed` when both fail. One silent install on Windows
+(with an unreachable primary) logged the failed attempt, downloaded the mirror,
+and passed `Verification successful`; the clean-VM and offline cases stay open in
+`004-native-checklist.md`.
 The stable AppId must not change across releases. `{app}` defaults to
 `%LOCALAPPDATA%\Programs\Grajek`, separate from `%LOCALAPPDATA%\Grajek` user data.
 AppMutex stays alive while hidden in tray; updates and uninstall require Quit.
-No Pascal download fallback was introduced without native evidence against the
-declarative path. Its flag combination remains **PENDING_NATIVE** on this Linux.
 
 Build separate fixtures with `-BadYtDlpHash` and `-BadDenoHash`. On a clean test
 account, `test-installer.ps1` accepts their paths plus the good Setup and checks

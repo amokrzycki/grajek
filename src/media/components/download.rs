@@ -1,10 +1,12 @@
 use std::{
     fs::{File, OpenOptions},
     io::Read as _,
-    os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
     time::Duration,
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 
 use anyhow::{Context as _, Result, ensure};
 use sha2::{Digest as _, Sha256};
@@ -166,7 +168,8 @@ async fn download(
         _ = cancel.changed() => anyhow::bail!("Download cancelled."),
         response = client.get(&pin.url).send() => response.map_err(reqwest::Error::without_url)
             .context("Couldn't download playback components. Check your connection and try again.")?
-            .error_for_status().map_err(reqwest::Error::without_url)?,
+            .error_for_status().map_err(reqwest::Error::without_url)
+            .context("The download server returned an error. Try again in a moment.")?,
     };
     let mut file = tokio::fs::File::create_new(destination).await?;
     let mut hash = Sha256::new();
@@ -240,6 +243,7 @@ fn extract(
         let size = entry.size();
         let copied = std::io::copy(&mut entry.by_ref().take(size.saturating_add(1)), &mut file)?;
         ensure!(copied == size, "The archive has an invalid entry size.");
+        #[cfg(unix)]
         if let Some(mode) = entry.unix_mode() {
             file.set_permissions(std::fs::Permissions::from_mode(mode & 0o777))?;
         }
@@ -296,9 +300,9 @@ async fn install_with(
     let partial = directory.with_extension("partial");
     std::fs::create_dir(&partial)?;
     let result = async {
-        let total = pins.ytdlp.linux.size.checked_add(pins.deno.linux.size).context("Invalid component sizes.")?;
+        let total = pins.ytdlp.artifact().size.checked_add(pins.deno.artifact().size).context("Invalid component sizes.")?;
         let mut completed = 0;
-        for (tool, pin) in [(Tool::YtDlp, &pins.ytdlp.linux), (Tool::Deno, &pins.deno.linux)] {
+        for (tool, pin) in [(Tool::YtDlp, pins.ytdlp.artifact()), (Tool::Deno, pins.deno.artifact())] {
             let archive = partial.join(format!("{}.zip", tool.name()));
             download(&client, pin, &archive, completed, total, &progress, &mut cancel).await?;
             progress.send_replace(Progress::Extracting);
@@ -312,10 +316,13 @@ async fn install_with(
         check_cancel(&cancel)?;
         progress.send_replace(Progress::Checking);
         let tools = Tools { mode: Mode::Managed, directory: Some(partial.clone()), versions: Some(pins.versions()) };
-        for tool in [Tool::YtDlp, Tool::Deno] {
-            let output = tokio::time::timeout(Duration::from_secs(5), tools.command(tool).arg("--version").kill_on_drop(true).output()).await??;
-            ensure!(output.status.success() && tools.valid_version(tool, &String::from_utf8_lossy(&output.stdout)),
-                "Downloaded playback components couldn't run or have an unexpected version. Check system compatibility.");
+        let reports = tokio::select! {
+            _ = cancel.changed() => anyhow::bail!("Download cancelled."),
+            reports = tools.check() => reports,
+        };
+        for report in reports {
+            ensure!(report.state == super::status::ComponentState::Ready,
+                "Downloaded {} couldn't run or has an unexpected version. Check system compatibility and try again.", report.tool.name());
         }
         check_cancel(&cancel)?;
         // Block new process snapshots until publication and resolver activation are both finished.

@@ -85,8 +85,6 @@ pub async fn run(
     let saver = loaded.path.map(|path| store::spawn_saver(path, snapshots));
     let destination = loaded.saved.destination.clone();
     let notice = config.warning.clone().or(loaded.warning);
-    #[cfg(target_os = "windows")]
-    let notice = notice.or_else(|| crate::media::components::tools().startup_notice());
     let mut controller = Controller::new(backend, loaded.saved, notice, states, persist);
     controller
         .configure(crate::setup::Request::Restore {

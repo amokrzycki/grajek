@@ -8,15 +8,11 @@ use std::{
 use super::Tool;
 
 static TOOLS: OnceLock<RwLock<Tools>> = OnceLock::new();
-#[cfg(target_os = "linux")]
 pub(crate) static EXECUTIONS: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
-#[cfg(target_os = "linux")]
 pub(crate) mod download;
-#[cfg(target_os = "linux")]
 pub(crate) mod execution;
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, serde::Deserialize)]
 pub(crate) struct Artifact {
     pub url: String,
@@ -25,7 +21,6 @@ pub(crate) struct Artifact {
     pub unpacked_size: u64,
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, serde::Deserialize)]
 pub(crate) struct Pin {
     pub version: String,
@@ -33,9 +28,10 @@ pub(crate) struct Pin {
     pub ejs: String,
     #[cfg(target_os = "linux")]
     pub linux: Artifact,
+    #[cfg(target_os = "windows")]
+    pub windows: Artifact,
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, serde::Deserialize)]
 pub(crate) struct Pins {
     #[serde(rename = "yt-dlp")]
@@ -43,14 +39,12 @@ pub(crate) struct Pins {
     pub deno: Pin,
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) fn pins() -> anyhow::Result<Pins> {
     Ok(serde_json::from_str(include_str!(
         "../../packaging/components.json"
     ))?)
 }
 
-#[cfg(target_os = "linux")]
 impl Pins {
     pub fn versions(&self) -> Versions {
         Versions {
@@ -60,6 +54,21 @@ impl Pins {
         }
     }
 }
+
+impl Pin {
+    pub fn artifact(&self) -> &Artifact {
+        #[cfg(target_os = "linux")]
+        {
+            &self.linux
+        }
+        #[cfg(target_os = "windows")]
+        {
+            &self.windows
+        }
+    }
+}
+
+pub(crate) mod status;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Versions {
@@ -92,7 +101,6 @@ fn installed_versions(directory: &Path) -> Option<Versions> {
         .filter(Versions::valid)
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Need {
     Missing,
@@ -107,9 +115,7 @@ pub(crate) struct MissingComponents {
 
 impl fmt::Display for MissingComponents {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if cfg!(target_os = "windows") {
-            f.write_str("Playback components are missing or damaged. Run Grajek Setup again to repair the installation.")
-        } else if self.managed {
+        if self.managed {
             f.write_str("Playback components are missing or damaged. Re-download them in Settings.")
         } else {
             f.write_str("Playback components are missing. Install yt-dlp and Deno 2.3 or newer on PATH, or download them in Settings.")
@@ -132,6 +138,18 @@ pub(crate) struct Tools {
 }
 
 impl Tools {
+    fn select_with_fallback(
+        force_system: bool,
+        directory: Option<PathBuf>,
+        fallback: Option<PathBuf>,
+    ) -> Self {
+        let primary = Self::select(force_system, directory);
+        if !force_system && primary.mode == Mode::System {
+            Self::select(false, fallback)
+        } else {
+            primary
+        }
+    }
     fn select(force_system: bool, directory: Option<PathBuf>) -> Self {
         let directory = directory.filter(|dir| {
             !force_system && dir.join("components.json").try_exists().unwrap_or(true)
@@ -155,7 +173,7 @@ impl Tools {
         )
     }
 
-    pub(super) fn command(&self, tool: Tool) -> tokio::process::Command {
+    pub(crate) fn command(&self, tool: Tool) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(self.path(tool));
         command.stdin(std::process::Stdio::null());
         #[cfg(windows)]
@@ -224,68 +242,29 @@ impl Tools {
         })
     }
 
-    pub(crate) fn description(&self) -> String {
-        #[cfg(target_os = "windows")]
-        if self.missing() {
-            return match self.mode {
-                Mode::Managed => {
-                    "Playback components: Grajek-managed — needs repair, run Grajek Setup again."
-                        .into()
-                }
-                Mode::System => "Playback components: missing — run Grajek Setup again.".into(),
-            };
-        }
-        self.versions.as_ref().map_or_else(
-            || match self.mode {
-                Mode::System => "Playback components: system PATH".into(),
-                Mode::Managed => "Playback components: Grajek-managed — needs repair".into(),
-            },
-            |v| {
-                format!(
-                    "Playback components: Grajek-managed — yt-dlp {}, Deno {}",
-                    v.ytdlp, v.deno
-                )
-            },
-        )
-    }
-
-    #[cfg(target_os = "windows")]
-    fn missing(&self) -> bool {
-        if self.mode == Mode::Managed {
-            self.versions.is_none()
-                || [Tool::YtDlp, Tool::Deno]
-                    .into_iter()
-                    .any(|tool| !self.path(tool).is_file())
-        } else {
-            std::env::var_os("PATH").is_none_or(|path| {
-                [Tool::YtDlp, Tool::Deno].into_iter().any(|tool| {
-                    !std::env::split_paths(&path).any(|dir| dir.join(tool.filename()).is_file())
-                })
-            })
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    pub(crate) fn startup_notice(&self) -> Option<String> {
-        self.missing().then(|| self.failure().to_string())
-    }
-
-    #[cfg(target_os = "linux")]
     pub(crate) fn need(&self) -> Option<Need> {
         self.need_on(std::env::var_os("PATH").as_deref())
     }
 
-    #[cfg(target_os = "linux")]
     fn need_on(&self, path: Option<&OsStr>) -> Option<Need> {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt as _;
         let executable = |path: &std::path::Path| {
-            std::fs::metadata(path)
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            std::fs::metadata(path).is_ok_and(|meta| {
+                #[cfg(unix)]
+                {
+                    meta.is_file() && meta.permissions().mode() & 0o111 != 0
+                }
+                #[cfg(windows)]
+                {
+                    meta.is_file()
+                }
+            })
         };
         if self.mode == Mode::System {
             let available = path.is_some_and(|path| {
                 [Tool::YtDlp, Tool::Deno].into_iter().all(|tool| {
-                    std::env::split_paths(path).any(|dir| executable(&dir.join(tool.name())))
+                    std::env::split_paths(path).any(|dir| executable(&dir.join(tool.filename())))
                 })
             });
             return (!available).then_some(Need::Missing);
@@ -311,10 +290,16 @@ impl Tools {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn initialize(directory: Option<PathBuf>) {
-    let tools = Tools::select(
+    initialize_with_fallback(directory, None);
+}
+
+pub(crate) fn initialize_with_fallback(directory: Option<PathBuf>, fallback: Option<PathBuf>) {
+    let tools = Tools::select_with_fallback(
         std::env::var_os("GRAJEK_TOOLS").as_deref() == Some(OsStr::new("system")),
         directory,
+        fallback,
     );
     if let Some(v) = &tools.versions {
         tracing::info!(mode = ?tools.mode, yt_dlp = %v.ytdlp, ejs = %v.ejs, deno = %v.deno, "Playback components selected");
@@ -332,7 +317,6 @@ pub(crate) fn tools() -> Tools {
         .clone()
 }
 
-#[cfg(target_os = "linux")]
 fn refresh(directory: PathBuf) {
     let selection = Tools::select(
         std::env::var_os("GRAJEK_TOOLS").as_deref() == Some(OsStr::new("system")),
@@ -355,6 +339,62 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recovery_preserves_previous_install_after_interrupted_publication() -> Result<()> {
+        let dir = Fixture::new()?;
+        let tools = dir.0.join("tools");
+        std::fs::create_dir(&tools)?;
+        std::fs::write(tools.join("components.json"), "previous marker")?;
+        std::fs::rename(&tools, tools.with_extension("old"))?;
+        std::fs::create_dir(tools.with_extension("partial"))?;
+        super::download::recover(&tools)?;
+        assert_eq!(
+            std::fs::read(tools.join("components.json"))?,
+            b"previous marker"
+        );
+        assert!(!tools.with_extension("partial").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn user_install_precedes_bundle_but_absent_marker_preserves_bundle() -> Result<()> {
+        let user = Fixture::new()?;
+        let bundle = Fixture::new()?;
+        std::fs::write(bundle.0.join("components.json"), "broken")?;
+        let select = |force| {
+            Tools::select_with_fallback(force, Some(user.0.clone()), Some(bundle.0.clone()))
+        };
+        assert_eq!(select(false).directory, Some(bundle.0.clone()));
+        std::fs::write(user.0.join("components.json"), "broken")?;
+        assert_eq!(select(false).directory, Some(user.0.clone()));
+        assert_eq!(select(true).mode, Mode::System);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reports_distinguish_missing_from_present_but_broken_tools() -> Result<()> {
+        use super::status::ComponentState;
+        let dir = Fixture::new()?;
+        std::fs::write(dir.0.join("components.json"), "broken")?;
+        let tools = Tools::select(false, Some(dir.0.clone()));
+        assert!(
+            tools
+                .inspect()
+                .iter()
+                .all(|r| r.state == ComponentState::Missing)
+        );
+        let path = tools.path(Tool::YtDlp);
+        std::fs::create_dir_all(path.parent().ok_or_else(|| anyhow::anyhow!("no parent"))?)?;
+        std::fs::write(path, b"not executable")?;
+        let reports = tools.check().await;
+        assert!(matches!(reports[0].state, ComponentState::NeedsRepair(_)));
+        assert_eq!(reports[1].state, ComponentState::Missing);
+        assert_eq!(reports[0].tool, Tool::YtDlp);
+        assert_eq!(reports[1].tool, Tool::Deno);
+        Ok(())
+    }
 
     struct Fixture(PathBuf);
     impl Fixture {
@@ -496,15 +536,24 @@ mod tests {
         )?;
         let tools = Tools::select(false, Some(dir.0.clone()));
         assert_eq!(tools.mode, Mode::Managed);
-        assert!(tools.description().contains("needs repair"));
-        assert!(!tools.description().contains("Deno 2.9.8"));
-        assert!(tools.startup_notice().is_some());
+        assert_eq!(tools.need(), Some(Need::Repair));
+        assert!(
+            tools
+                .inspect()
+                .iter()
+                .all(|r| r.state == status::ComponentState::Missing)
+        );
         for (folder, name) in [("yt-dlp", "yt-dlp.exe"), ("deno", "deno.exe")] {
             std::fs::create_dir_all(dir.0.join(folder))?;
             std::fs::write(dir.0.join(folder).join(name), "stub")?;
         }
-        assert!(tools.description().contains("Deno 2.9.8"));
-        assert_eq!(tools.startup_notice(), None);
+        assert_eq!(tools.need(), None);
+        assert!(
+            tools
+                .inspect()
+                .iter()
+                .all(|r| r.state == status::ComponentState::NotChecked)
+        );
         Ok(())
     }
 

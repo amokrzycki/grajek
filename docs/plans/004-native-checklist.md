@@ -85,7 +85,8 @@ Fixture ma osobny AppId i osobny katalog `Grajek-F0-Fixture`, nigdy katalog dany
   `{"yt-dlp":"2026.10.26","yt-dlp-ejs":"0.8.0","deno":"2.9.8"}`.
 - [ ] Wywołać ISCC z `/DYtDlpUrl`, `/DYtDlpZipSize`, `/DYtDlpSha256`,
   `/DYtDlpUnpackedSize`, `/DDenoUrl`, `/DDenoZipSize`, `/DDenoSha256`,
-  `/DDenoUnpackedSize` z manifestu `packaging/components.json`, potem `probe.iss`.
+  `/DDenoUnpackedSize`, `/DDenoMirrorUrl`, `/DDenoMirrorSha256` z manifestu
+  `packaging/components.json`, potem `probe.iss`.
   Zachować pełny command line i log kompilatora. Jeśli flagi są niezgodne,
   zapisać błąd i wrócić do decyzji o `CreateDownloadPage` + `ExtractArchive`.
 - [ ] Uruchomić fixture na czystej VM z `/LOG=<absolutny-log>`: pobranie,
@@ -95,6 +96,12 @@ Fixture ma osobny AppId i osobny katalog `Grajek-F0-Fixture`, nigdy katalog dany
 - [ ] Powtórzyć z prawidłowym yt-dlp i SHA Deno równym 64 zerom. Ustalić,
   czy wcześniejszy yt-dlp został już rozpakowany; nie uznawać samego braku
   markera za dowód braku częściowych plików.
+- [x] Fallback Deno (2026-11-08, Windows 10.0.26200, instalacja cicha): fixture
+  z `/DDenoUrl` wskazującym nieistniejący asset i poprawnym `/DDenoMirror*`
+  zapisał `Deno download failed from ...` i pobrał 42 917 472 B z
+  `dl.deno.land`, po czym `Verification successful`. yt-dlp padł później na
+  GitHubie, więc pełna instalacja na tym hoście pozostaje otwarta; do zrobienia
+  na czystej VM: oba źródła niedostępne, Anuluj w trakcie i log bez pozostałości.
 - [ ] Snapshot → offline. Ponów po włączeniu sieci; osobno Anuluj.
   Sprawdzić brak częściowych plików. Zachować logi i zrzuty.
 - [ ] Cicha instalacja `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=...`,

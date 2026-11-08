@@ -1,11 +1,11 @@
 Składniki odtwarzania
 
-Do odtwarzania z YouTube Grajek potrzebuje dwóch darmowych narzędzi. Instalator pobierze je teraz z oficjalnych wydań ich autorów na GitHubie, sprawdzi sumy SHA-256 i zapisze w folderze instalacji Grajka. Nie zmieniają ustawień systemu ani zmiennej PATH.
+Do odtwarzania z YouTube Grajek potrzebuje dwóch darmowych narzędzi. Instalator pobierze je teraz z oficjalnych serwerów ich autorów (GitHub albo serwer pobierania Deno), sprawdzi sumy SHA-256 i zapisze w folderze instalacji Grajka. Nie zmieniają ustawień systemu ani zmiennej PATH.
 
 yt-dlp {ytdlp_version} ({ytdlp_size} bajtów): odczytuje informacje o filmach i playlistach YouTube oraz adresy strumieni audio. Zawiera skrypty yt-dlp-ejs {ejs_version} do rozwiązywania zabezpieczeń YouTube. Licencja: GPLv3+.
 Źródło: {ytdlp_url}
 
 Deno {deno_version} ({deno_size} bajtów): środowisko JavaScript, w którym yt-dlp uruchamia te skrypty. Licencja: MIT.
-Źródło: {deno_url}
+Źródło: {deno_url} (zapasowe: {deno_mirror_url})
 
 Wymagane jest połączenie z internetem. Składniki aktualizują się razem z nowymi wersjami Grajka. Jeśli YouTube zmieni zabezpieczenia, odtwarzanie może przestać działać do czasu nowej wersji Grajka.

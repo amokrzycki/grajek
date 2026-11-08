@@ -573,11 +573,6 @@ impl<B: Backend> Controller<B> {
                 {
                     self.components_request = self.components_request.wrapping_add(1);
                     self.import = ImportStatus::Ready;
-                    #[cfg(target_os = "windows")]
-                    {
-                        self.import =
-                            ImportStatus::Failed(media::components::tools().failure().to_string());
-                    }
                     self.sync();
                     return;
                 }
@@ -1268,10 +1263,6 @@ impl<B: Backend> Controller<B> {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Preparation, recovery and disconnect share one job completion boundary"
-    )]
     async fn finish_job(&mut self, result: Result<Result<JobOutput>, JoinError>) {
         let Some(job) = self.job.take() else {
             return;
@@ -1319,10 +1310,7 @@ impl<B: Backend> Controller<B> {
                     self.queued_track = false;
                     self.failure_notice = None;
                     self.scheduled = None;
-                    #[cfg(target_os = "linux")]
                     self.publish(Phase::Ready, None);
-                    #[cfg(target_os = "windows")]
-                    self.publish(Phase::Error, Some(error.to_string()));
                     return;
                 }
                 self.queued_track = queued && job.voice_ready;

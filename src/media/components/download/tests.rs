@@ -64,6 +64,7 @@ async fn server(bytes: Vec<u8>, truncated: bool) -> Result<Server> {
     Ok(Server { url, task })
 }
 
+#[cfg(unix)]
 fn archive() -> Result<Vec<u8>> {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
@@ -82,6 +83,65 @@ fn archive() -> Result<Vec<u8>> {
     Ok(zip.finish()?.into_inner())
 }
 
+#[cfg(windows)]
+fn archive() -> Result<Vec<u8>> {
+    use std::sync::OnceLock;
+    static EXECUTABLE: OnceLock<std::result::Result<Vec<u8>, String>> = OnceLock::new();
+    let exe = EXECUTABLE
+        .get_or_init(|| {
+            (|| -> Result<Vec<u8>> {
+                let dir = Fixture::new()?;
+                let source = dir.0.join("fixture.rs");
+                std::fs::write(
+                    &source,
+                    r#"fn main() {
+                let exe = std::env::current_exe().unwrap();
+                if exe.file_name().unwrap() == "deno.exe" {
+                    println!("deno 2.9.8 (stable)");
+                } else { println!("2026.10.26"); }
+            }"#,
+                )?;
+                let binary = dir.0.join("fixture.exe");
+                let output = std::process::Command::new("rustc")
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&binary)
+                    .output()?;
+                ensure!(
+                    output.status.success(),
+                    "Fixture compilation failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                Ok(std::fs::read(binary)?)
+            })()
+            .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for name in ["yt-dlp.exe", "deno.exe"] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())?;
+        zip.write_all(exe)?;
+    }
+    zip.start_file(
+        "_internal/yt_dlp_ejs/yt/solver/core.min.js",
+        zip::write::SimpleFileOptions::default(),
+    )?;
+    zip.write_all(b"verified test EJS")?;
+    Ok(zip.finish()?.into_inner())
+}
+
+fn artifact_mut(pin: &mut super::super::Pin) -> &mut super::super::Artifact {
+    #[cfg(unix)]
+    {
+        &mut pin.linux
+    }
+    #[cfg(windows)]
+    {
+        &mut pin.windows
+    }
+}
+
 fn pins_for(url: &str, bytes: &[u8]) -> Result<Pins> {
     let mut pins = super::super::pins()?;
     let unpacked_size = u64::try_from(
@@ -90,7 +150,7 @@ fn pins_for(url: &str, bytes: &[u8]) -> Result<Pins> {
             .unwrap_or(0),
     )?;
     for pin in [&mut pins.ytdlp, &mut pins.deno] {
-        pin.linux = super::super::Artifact {
+        *artifact_mut(pin) = super::super::Artifact {
             url: url.into(),
             sha256: format!("{:x}", Sha256::digest(bytes)),
             size: u64::try_from(bytes.len())?,
@@ -119,8 +179,18 @@ async fn verified_archives_publish_a_complete_pair_and_marker() -> Result<()> {
         ),
     )
     .await??;
-    assert!(dir.tools().join("yt-dlp/yt-dlp_linux").is_file());
-    assert!(dir.tools().join("deno/deno").is_file());
+    assert!(
+        dir.tools()
+            .join("yt-dlp")
+            .join(Tool::YtDlp.filename())
+            .is_file()
+    );
+    assert!(
+        dir.tools()
+            .join("deno")
+            .join(Tool::Deno.filename())
+            .is_file()
+    );
     assert!(
         dir.tools()
             .join("yt-dlp/_internal/yt_dlp_ejs/yt/solver/core.min.js")
@@ -162,7 +232,7 @@ async fn wrong_hash_and_interrupted_download_never_replace_existing_tools() -> R
         let server = server(bytes.clone(), truncated).await?;
         let mut pins = pins_for(&server.url, &bytes)?;
         if !truncated {
-            pins.ytdlp.linux.sha256 = "0".repeat(64);
+            artifact_mut(&mut pins.ytdlp).sha256 = "0".repeat(64);
         }
         let (progress, _rx) = watch::channel(Progress::Ready);
         let (_cancel, cancelled) = watch::channel(false);
@@ -196,7 +266,7 @@ async fn traversal_and_oversized_archives_are_rejected_without_publishing() -> R
         let server = server(bytes.clone(), false).await?;
         let mut pins = pins_for(&server.url, &bytes)?;
         if name == "safe" {
-            pins.ytdlp.linux.unpacked_size = 1;
+            artifact_mut(&mut pins.ytdlp).unpacked_size = 1;
         }
         let (progress, _rx) = watch::channel(Progress::Ready);
         let (_cancel, cancelled) = watch::channel(false);
@@ -386,29 +456,41 @@ async fn publication_waits_for_running_extractors_and_can_be_cancelled_while_wai
     Ok(())
 }
 
+#[test]
+fn execution_lock_fixture() -> Result<()> {
+    let Some(directory) = std::env::var_os("GRAJEK_EXECUTION_LOCK_FIXTURE") else {
+        return Ok(());
+    };
+    let directory = PathBuf::from(directory);
+    let lock = execution::open_lock(&directory)?;
+    lock.lock_shared()?;
+    std::fs::write(directory.with_extension("ready"), b"ready")?;
+    let mut release = String::new();
+    std::io::stdin().read_line(&mut release)?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn publication_waits_for_a_managed_extractor_in_another_process() -> Result<()> {
     let dir = Fixture::new()?;
     old_install(&dir)?;
-    let mut reader = tokio::process::Command::new("flock")
-        .args(["--no-fork", "--shared"])
-        .arg(dir.tools().with_extension("execution.lock"))
-        .args(["sh", "-c", "printf ready; read release"])
+    let mut reader = tokio::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "media::components::download::tests::execution_lock_fixture",
+            "--nocapture",
+        ])
+        .env("GRAJEK_EXECUTION_LOCK_FIXTURE", dir.tools())
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
-    let mut ready = [0; 5];
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        reader
-            .stdout
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("no lock-reader stdout"))?
-            .read_exact(&mut ready),
-    )
-    .await??;
-    assert_eq!(&ready, b"ready");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !dir.tools().with_extension("ready").is_file() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
     let bytes = archive()?;
     let server = server(bytes.clone(), false).await?;
     let pins = pins_for(&server.url, &bytes)?;
@@ -444,6 +526,11 @@ async fn publication_waits_for_a_managed_extractor_in_another_process() -> Resul
         .await?;
     assert!(reader.wait().await?.success());
     let _publication = tokio::time::timeout(Duration::from_secs(5), task).await???;
-    assert!(dir.tools().join("yt-dlp/yt-dlp_linux").is_file());
+    assert!(
+        dir.tools()
+            .join("yt-dlp")
+            .join(Tool::YtDlp.filename())
+            .is_file()
+    );
     Ok(())
 }

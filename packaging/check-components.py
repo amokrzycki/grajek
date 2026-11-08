@@ -60,7 +60,9 @@ def fetch(pin, path):
     if urllib.parse.urlsplit(pin["url"]).scheme != "https":
         raise ValueError("Pinned download must use HTTPS")
     opener = urllib.request.build_opener(HttpsRedirects())
-    with opener.open(pin["url"], timeout=30) as response, path.open("xb") as output:
+    # dl.deno.land answers 403 to Python's default user agent.
+    request = urllib.request.Request(pin["url"], headers={"User-Agent": "grajek-check-components"})
+    with opener.open(request, timeout=30) as response, path.open("xb") as output:
         size = 0
         while chunk := response.read(1024 * 1024):
             size += len(chunk)
@@ -102,6 +104,17 @@ def has_ejs(output, version):
                for token in line[len(prefix):].split(","))
 
 
+def iscc_values(manifest):
+    values = {}
+    for tool, prefix in (("yt-dlp", "YtDlp"), ("deno", "Deno")):
+        pin = manifest[tool]["windows"]
+        values.update({f"{prefix}Url": pin["url"], f"{prefix}Sha256": pin["sha256"], f"{prefix}ZipSize": pin["size"], f"{prefix}UnpackedSize": pin["unpacked_size"], f"{prefix}Version": manifest[tool]["version"]})
+        if mirror := pin.get("mirror"):
+            values.update({f"{prefix}MirrorUrl": mirror["url"], f"{prefix}MirrorSha256": mirror["sha256"]})
+    values["EjsVersion"] = manifest["yt-dlp"]["ejs"]
+    return values
+
+
 def check_components(manifest, platform, directory, defines):
     if (platform == "windows") != (sys.platform == "win32"):
         raise ValueError("Run component executables on their native platform")
@@ -112,6 +125,9 @@ def check_components(manifest, platform, directory, defines):
         work.mkdir()
         archive = work / "upstream.zip"
         fetch(pin, archive)
+        if mirror := pin.get("mirror"):
+            fetch(mirror, work / "mirror.zip")
+            print(f"{tool} mirror: hash and size verified")
         unpacked = work / "unpacked"
         extract_zip(archive, unpacked, pin["unpacked_size"])
         name = ("yt-dlp.exe" if tool == "yt-dlp" else "deno.exe") if platform == "windows" else ("yt-dlp_linux" if tool == "yt-dlp" else "deno")
@@ -135,18 +151,14 @@ def check_components(manifest, platform, directory, defines):
         values = {"ytdlp_version": manifest["yt-dlp"]["version"], "ejs_version": manifest["yt-dlp"]["ejs"],
                   "deno_version": manifest["deno"]["version"], "ytdlp_size": manifest["yt-dlp"]["windows"]["size"],
                   "deno_size": manifest["deno"]["windows"]["size"], "ytdlp_url": manifest["yt-dlp"]["windows"]["url"],
-                  "deno_url": manifest["deno"]["windows"]["url"]}
+                  "deno_url": manifest["deno"]["windows"]["url"], "deno_mirror_url": manifest["deno"]["windows"]["mirror"]["url"]}
         for language in ("en", "pl"):
             template = ROOT / f"packaging/windows/components-{language}.txt"
             (directory / template.name).write_text(template.read_text(encoding="utf-8").format(**values), encoding="utf-8-sig")
     if defines:
         if platform != "windows":
             raise ValueError("ISCC defines require Windows artifacts")
-        values = {}
-        for tool, prefix in (("yt-dlp", "YtDlp"), ("deno", "Deno")):
-            pin = manifest[tool]["windows"]
-            values.update({f"{prefix}Url": pin["url"], f"{prefix}Sha256": pin["sha256"], f"{prefix}ZipSize": pin["size"], f"{prefix}UnpackedSize": pin["unpacked_size"], f"{prefix}Version": manifest[tool]["version"]})
-        values["EjsVersion"] = manifest["yt-dlp"]["ejs"]
+        values = iscc_values(manifest)
         defines.write_text("\n".join(f"/D{key}={value}" for key, value in values.items()) + "\n")
 
 

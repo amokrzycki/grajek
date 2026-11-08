@@ -3,10 +3,7 @@ use songbird::input::{
     AudioStream, AudioStreamError, Input, LiveInput, YoutubeDl, metadata::YoutubeDlOutput,
 };
 use std::{ffi::OsString, process::Stdio, time::Duration};
-use tokio::{
-    process::Command,
-    time::{Instant, timeout, timeout_at},
-};
+use tokio::time::{Instant, timeout, timeout_at};
 
 #[path = "media/availability.rs"]
 mod availability;
@@ -17,13 +14,13 @@ pub(crate) use range::SourceControl;
 
 const MAX_TITLE_CHARS: usize = 200;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tool {
     YtDlp,
     Deno,
 }
 impl Tool {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::YtDlp => "yt-dlp",
             Self::Deno => "deno",
@@ -92,20 +89,11 @@ fn ytdlp_args(tools: &Tools, format: &str) -> Vec<OsString> {
     args
 }
 
-/// Avoid console flashes when a Windows GUI app invokes the extractor tools.
-pub(crate) fn tool_command(tool: Tool) -> Command {
-    tools().command(tool)
-}
-
 pub async fn check_tools() -> Result<()> {
-    #[cfg(target_os = "linux")]
     let execution = components::execution::acquire()
         .await
         .map_err(|_| tools().failure())?;
-    #[cfg(target_os = "linux")]
     let tools = execution.tools.clone();
-    #[cfg(target_os = "windows")]
-    let tools = tools();
     for tool in [Tool::YtDlp, Tool::Deno] {
         let output = timeout(
             Duration::from_secs(5),
@@ -124,7 +112,6 @@ pub async fn check_tools() -> Result<()> {
             tools.failure()
         );
     }
-    #[cfg(target_os = "linux")]
     drop(execution);
     Ok(())
 }
@@ -148,14 +135,10 @@ fn supported_deno(output: &str) -> bool {
 
 /// Extracts display metadata only: no format selection, stream access or decoding.
 pub async fn title(url: String) -> Result<Option<String>> {
-    #[cfg(target_os = "linux")]
     let execution = components::execution::acquire()
         .await
         .map_err(|_| tools().failure())?;
-    #[cfg(target_os = "linux")]
     let tools = execution.tools.clone();
-    #[cfg(target_os = "windows")]
-    let tools = tools();
     let output = tools
         .command(Tool::YtDlp)
         .args(title_args(&tools))
@@ -165,7 +148,6 @@ pub async fn title(url: String) -> Result<Option<String>> {
         .output()
         .await
         .map_err(|_| tools.failure())?;
-    #[cfg(target_os = "linux")]
     drop(execution);
     ensure!(output.status.success(), "yt-dlp title extraction failed");
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
@@ -199,15 +181,11 @@ pub(super) async fn resolve_format(
     url: String,
     format: &str,
 ) -> Result<Resolved> {
-    #[cfg(target_os = "linux")]
     let execution = components::execution::acquire()
         .await
         .map_err(|_| tools().failure())?;
     let deadline = Instant::now() + Duration::from_secs(60);
-    #[cfg(target_os = "linux")]
     let tools = execution.tools.clone();
-    #[cfg(target_os = "windows")]
-    let tools = tools();
     let result = timeout_at(deadline, async {
         // Songbird's query() does not kill yt-dlp on cancellation; own only that subprocess.
         let output = tools
@@ -294,7 +272,6 @@ pub(super) async fn resolve_format(
     })
     .await
     .context("Audio resolution timed out. Check the network and yt-dlp/EJS installation.")?;
-    #[cfg(target_os = "linux")]
     drop(execution);
     result
 }

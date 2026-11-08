@@ -37,8 +37,15 @@ clean-Windows checks; cross-compilation does not establish that they work.
 
 Quit Grajek from the tray before updating or uninstalling. Setup detects running
 mutex-aware instances (0.6.0+), including a hidden window. Older portable builds
-must be quit manually. Re-running Setup repairs missing or damaged
-components. Uninstall removes the program and downloaded tools; settings, queue,
+must be quit manually. Settings → **Playback components** lists yt-dlp and Deno
+separately, checks whether they can run, and offers **Download missing components**
+or **Repair components**. Nothing downloads without your consent. You can cancel,
+retry, or keep a download running in the background. Repairs verify the complete
+pair before activation and keep previous tools if download or verification fails.
+Recovered tools live in `%LOCALAPPDATA%\Grajek\tools`, take precedence over Setup's
+tools, and need no administrator permissions. Re-running Setup remains an option
+for repairing its bundled copy. Uninstall removes the program and its bundled tools;
+privately recovered tools, settings, queue,
 history and `.env` remain in `%LOCALAPPDATA%\Grajek`, and the bot token remains in
 Windows Credential Manager. An `.env` you added to the installation folder is kept.
 
@@ -60,16 +67,16 @@ requiring libfuse2. If FUSE is unavailable:
 ```
 
 The AppImage contains no yt-dlp or Deno. With working system tools on PATH, it
-uses those. Otherwise **Playback components needed** lists the tools, versions,
-sources, licenses and download size. Choose **Download** to fetch verified
-upstream files, or **Not now / Later** to defer. Downloads run in the background;
+uses those. Otherwise **Playback components** shows each tool's state, with versions,
+sources, licenses and download size under **Details**. Choose **Download missing
+components** to fetch verified upstream files, or **Not now** to defer. Downloads run in the background;
 you can cancel or retry. Tools live in `$XDG_DATA_HOME/grajek/tools` (normally
 `~/.local/share/grajek/tools`), with upstream executable name `yt-dlp_linux`.
 Neither PATH nor system packages are changed. GitHub access is required for the
 first download and any requested update; playback itself still needs the network.
 
-Settings shows the selected mode and versions, with Download, Re-download or
-Update. A newer AppImage can offer newer pinned components; Later keeps the
+Settings offers **Check components** and **Repair components**, even when version
+checks pass but playback still fails. A newer AppImage can offer newer pinned components; **Not now** keeps the
 installed versions. Updates always require a click. A failed download keeps the
 previous complete set. Pinned versions are yt-dlp **2026.10.26**, EJS **0.8.0**,
 Deno **2.9.8**; downloaded Deno requires glibc 2.27, below the app's 2.35 floor.
@@ -81,7 +88,10 @@ also want to delete its private playback tools. Other data and credentials stay.
 
 ### Playback-tool modes
 
-An existing `tools/components.json` selects the managed pair. Missing or damaged
+On Windows, a per-user `Grajek/tools/components.json` takes precedence over the
+executable-adjacent installation marker. A corrupt per-user marker requests repair
+rather than silently falling back. On Linux, the app-data marker selects the pair.
+Missing or damaged
 managed files cause a repair prompt, with no silent fallback to system tools.
 `GRAJEK_TOOLS=system` forces both tools from PATH; on Windows it can be set in
 `%LOCALAPPDATA%\Grajek\.env`. Remove the override and restart to use managed tools.

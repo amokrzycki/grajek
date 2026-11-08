@@ -1,4 +1,3 @@
-#[cfg(target_os = "linux")]
 mod components;
 pub(super) mod composer;
 mod controls;
@@ -52,12 +51,7 @@ enum Pending {
     reason = "Independent UI focus, pending-operation and panel flags are not a single state machine"
 )]
 pub struct PlayerApp {
-    #[cfg(target_os = "linux")]
     components: components::Panel,
-    #[cfg(target_os = "windows")]
-    components_notice: Option<String>,
-    #[cfg(target_os = "windows")]
-    components_notice_focus: FocusHandle,
     help: help::Help,
     focus: focus::FocusPresentation,
     row_menu: Option<lists::TrackTarget>,
@@ -135,106 +129,6 @@ impl PlayerApp {
         self
     }
 
-    #[cfg(target_os = "windows")]
-    pub fn with_components_notice(mut self, notice: Option<String>) -> Self {
-        self.components_notice = notice;
-        self
-    }
-
-    /// Shown before the player on Windows because playback cannot work without the tools.
-    #[cfg(target_os = "windows")]
-    fn components_notice_surface(&self, cx: &Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let message = self.components_notice.clone().unwrap_or_default();
-        div()
-            .id("components-notice")
-            .test_support()
-            .size_full()
-            .p(px(24.))
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .bg(theme.background)
-            .text_color(theme.foreground)
-            .font_family(theme.font_family.clone())
-            .text_sm()
-            .line_height(px(20.))
-            .child(
-                div()
-                    .id("components-notice-content")
-                    .test_support()
-                    .w_full()
-                    .max_w(px(360.))
-                    .flex()
-                    .flex_col()
-                    .gap(space::SECTION)
-                    .child(
-                        Icon::new(AudioIcon::TriangleAlert)
-                            .size(px(28.))
-                            .text_color(theme.primary),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(space::GROUP)
-                            .child(
-                                div()
-                                    .text_size(px(24.))
-                                    .line_height(px(30.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Playback needs repair"),
-                            )
-                            .child(div().text_color(theme.muted_foreground).child(message)),
-                    )
-                    .child(
-                        div()
-                            .mt(space::GROUP)
-                            .flex()
-                            .flex_col()
-                            .items_start()
-                            .gap(space::DETAIL)
-                            .child(
-                                gpui_kit::base::Button::new("components-notice-ok")
-                                    .track_focus(&self.components_notice_focus)
-                                    .accessibility_label("Continue without playback")
-                                    .h(px(32.))
-                                    .px(px(10.))
-                                    .rounded(theme.radius)
-                                    .flex()
-                                    .items_center()
-                                    .bg(theme.button_primary)
-                                    .text_color(theme.button_primary_foreground)
-                                    .border_1()
-                                    .border_color(theme.button_primary)
-                                    .hover(|button| button.bg(theme.button_primary_hover))
-                                    .active(|button| button.bg(theme.button_primary_active))
-                                    .focus_visible(|button| {
-                                        button.border_color(theme.button_primary_foreground)
-                                    })
-                                    .child("Continue without playback")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.components_notice = None;
-                                        if this.settings_open {
-                                            this.focus_settings(window, cx);
-                                        } else {
-                                            this.input.read(cx).focus_handle(cx).focus(window, cx);
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .line_height(px(16.))
-                                    .text_color(theme.muted_foreground)
-                                    .child("Queue and settings remain available."),
-                            ),
-                    ),
-            )
-            .into_any_element()
-    }
     #[expect(
         clippy::too_many_lines,
         reason = "The window owns its controls, subscriptions and focus handles in one constructor"
@@ -326,12 +220,7 @@ impl PlayerApp {
         });
         let transport_seq = state.transport_ack;
         let mut app = Self {
-            #[cfg(target_os = "linux")]
             components: components::Panel::new(cx),
-            #[cfg(target_os = "windows")]
-            components_notice: None,
-            #[cfg(target_os = "windows")]
-            components_notice_focus: cx.focus_handle(),
             help,
             focus: focus::FocusPresentation::from_window(window),
             row_menu: None,
@@ -388,7 +277,6 @@ impl PlayerApp {
     }
 
     fn accept_state(&mut self, state: State, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(target_os = "linux")]
         if state.components_request != self.state.components_request {
             self.open_components(cx);
         }
@@ -967,16 +855,11 @@ impl PlayerApp {
 impl Render for PlayerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.focus = focus::FocusPresentation::from_window(window);
-        #[cfg(target_os = "linux")]
+        if self.components.check_pending {
+            self.check_components(cx);
+        }
         if self.components.open {
             return self.components_surface(window, cx);
-        }
-        #[cfg(target_os = "windows")]
-        if self.components_notice.is_some() {
-            if !self.components_notice_focus.is_focused(window) {
-                self.components_notice_focus.focus(window, cx);
-            }
-            return self.components_notice_surface(cx);
         }
         self.help.enable(
             !self.settings_open && !self.queue_options_open && self.row_menu.is_none(),

@@ -334,6 +334,25 @@ Empty guidance is one short truthful line, left-aligned near the list top, never
 
 Settings retain their existing flow and controls; shared rem, focus and header refinements also apply there. Keep compact native settings, masked token entry, explicit secure-storage/session-only actions, progressively disclosed help and named server/channel choices. Disabled choices explain recovery; full-name tooltips and visible keyboard focus remain. Confirm active-playback interruption before changing destination. Setup captures are regression context, not evidence of a new settings design or verified tray wording.
 
+### Playback component recovery (2026-11-08)
+
+Settings and startup share a native **Playback components** surface on Windows and Linux.
+Separate flat yt-dlp and Deno rows show factual Missing, Not checked, Checking, Ready
+or Needs repair states. A successful bounded version check, not file presence, earns
+Ready. Preserve the existing 14px body, 12px supporting text, warm palette and native controls.
+
+The fixed heading and action region frame a scrollable diagnosis/Details area.
+Download/Repair is the sole filled brass action; real byte progress, cancellation,
+background continuation, retry and return remain available at minimum size. Details
+discloses versions, paths, sources, checksums, licences and full failure diagnostics.
+No download starts without consent. Completion never starts playback. The panel
+restores player/settings focus on dismissal; queue and Discord state stay untouched.
+
+Windows repairs publish under LOCALAPPDATA/Grajek/tools without changing PATH or
+the installer copy. Failed or cancelled downloads preserve previous tools.
+Offline native captures are in `.impeccable/review/components/after`; real GitHub
+download acceptance remains separate from fixture installation and native layout checks.
+
 ### Motion and rendering
 
 No new application animation, polling or frame-request loop belongs to this composition. Native hover/focus and existing kit loading behavior remain. Preserve elapsed snapshots, controller-owned seek behavior and volume coalescing. Never animate the state symbol as an audio meter or infer changes to kit animation defaults from the redesign.

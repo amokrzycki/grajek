@@ -42,7 +42,6 @@ Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#YtDlpUrl}"; DestDir: "{tmp}"; DestName: "yt-dlp_win.zip"; ExternalSize: {#YtDlpZipSize}; Hash: "{#YtDlpSha256}"; Flags: external download ignoreversion deleteafterinstall
 Source: "{tmp}\yt-dlp_win.zip"; DestDir: "{app}\tools\yt-dlp"; ExternalSize: {#YtDlpUnpackedSize}; Flags: external extractarchive recursesubdirs createallsubdirs ignoreversion
-Source: "{#DenoUrl}"; DestDir: "{tmp}"; DestName: "deno.zip"; ExternalSize: {#DenoZipSize}; Hash: "{#DenoSha256}"; Flags: external download ignoreversion deleteafterinstall
 Source: "{tmp}\deno.zip"; DestDir: "{app}\tools\deno"; ExternalSize: {#DenoUnpackedSize}; Flags: external extractarchive recursesubdirs createallsubdirs ignoreversion
 Source: "{#StageDir}\components.json"; DestDir: "{app}\tools"; Flags: ignoreversion; Check: ToolsInstalled
 
@@ -69,6 +68,12 @@ Filename: "{app}\grajek.exe"; Description: "{cm:LaunchProgram,Grajek}"; Flags: p
 [CustomMessages]
 english.DesktopShortcut=Create a desktop shortcut
 polish.DesktopShortcut=Utwórz skrót na pulpicie
+english.DownloadDeno=Downloading Deno {#DenoVersion}
+polish.DownloadDeno=Pobieranie Deno {#DenoVersion}
+english.DownloadDenoDescription=GitHub first, then Deno's own download server.
+polish.DownloadDenoDescription=Najpierw GitHub, potem serwer pobierania Deno.
+english.DenoDownloadFailed=Deno wasn't downloaded. Check your connection, then run Setup again.
+polish.DenoDownloadFailed=Nie pobrano Deno. Sprawdź połączenie i uruchom Setup ponownie.
 english.UninstallShortcut=Uninstall Grajek
 polish.UninstallShortcut=Odinstaluj Grajka
 
@@ -83,6 +88,47 @@ english.UninstalledAll=Grajek and its downloaded components were removed. Your s
 polish.UninstalledAll=Grajek został usunięty razem z pobranymi składnikami. Twoje ustawienia, kolejka i historia pozostały w %%LOCALAPPDATA%%\Grajek, a token bota w Menedżerze poświadczeń Windows.
 
 [Code]
+var
+  DenoPage: TDownloadWizardPage;
+
+function FetchDeno(Url, Sha256: String): Boolean;
+begin
+  DenoPage.Clear;
+  DenoPage.Add(Url, 'deno.zip', Sha256);
+  try
+    DenoPage.Download;
+    Result := True;
+  except
+    Log('Deno download failed from ' + Url + ': ' + GetExceptionMessage);
+    Result := False;
+  end;
+end;
+
+// GitHub can answer 504 for a release asset while Deno's own CDN still serves the
+// same release, so the download retries there. Each source has its own pinned SHA-256;
+// the extracted {tmp}\deno.zip is the only file both sources must provide.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  DenoPage := CreateDownloadPage(ExpandConstant('{cm:DownloadDeno}'),
+    ExpandConstant('{cm:DownloadDenoDescription}'), nil);
+  try
+    DenoPage.ShowBaseNameInsteadOfUrl := True;
+    DenoPage.Show;
+    try
+      if FetchDeno('{#DenoUrl}', '{#DenoSha256}') then
+        Result := ''
+      else if FetchDeno('{#DenoMirrorUrl}', '{#DenoMirrorSha256}') then
+        Result := ''
+      else
+        Result := ExpandConstant('{cm:DenoDownloadFailed}');
+    finally
+      DenoPage.Hide;
+    end;
+  finally
+    DenoPage.Free;
+  end;
+end;
+
 // The version marker must never exist without the tools it describes, otherwise
 // Grajek reports installed components for an empty tools directory.
 function ToolsInstalled: Boolean;
