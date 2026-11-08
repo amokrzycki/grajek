@@ -161,11 +161,14 @@ Help is now application-owned using Base TooltipOverlay/TooltipRequest and its a
 
 Semantic rhythm: 4px title/status pairs and frame/actions/status inside the composer, 8px related controls, 8–16px between regions as specified in Main player cohesion, 16px root inset. The minimum-size error-plus-import case keeps two complete 44px rows inside the actual clipped viewport. Queue insertion is confirmed by the controller snapshot: the composer's fixed-height status line and a status check acknowledge it without moving the list (see Main player cohesion). No optimistic playback/selection or extra animation was introduced.
 
-Evidence and the independent Impeccable/UI UX Pro Max assessments are in `.impeccable/review/experience/REPORT.md`; the implementation specification is `docs/superpowers/plans/2026-10-30-product-experience.md`. The image gallery shows compositor captures, not an HTML implementation. Native XWayland evidence does not establish native Wayland, Windows runtime, live Discord audio, assistive technology or fractional scaling acceptance.
+Evidence and the independent Impeccable/UI UX Pro Max assessments are kept outside
+this repository, as is the implementation specification. The image gallery shows
+compositor captures, not an HTML implementation. Native XWayland evidence does not establish native Wayland, Windows runtime, live Discord audio, assistive technology or fractional scaling acceptance.
 
 ## Main player cohesion (2026-11-01)
 
-This implementation supersedes earlier transport-volume, three-action rows and composer shortcut glyph descriptions. The Signal Ledger palette, native typography and controller semantics remain. The candidate comparison is `docs/superpowers/plans/2026-11-01-player-cohesion.md`; native evidence and its limitations are in `.impeccable/review/cohesion/REPORT.md`.
+This implementation supersedes earlier transport-volume, three-action rows and composer shortcut glyph descriptions. The Signal Ledger palette, native typography and controller semantics remain. The candidate comparison and the native evidence, with its limitations, are kept
+outside this repository.
 
 **Composition.** A compact connection header leads into the real track, state/time/seek line and transport when applicable, then music entry and a flexible collection. A permanent footer owns Playback preferences and Bot volume. Default region gaps are 12/16/12px; at heights of 480px or less they are 8/12/8px. Related controls retain 4/8px spacing and the root retains 16px insets. Ready with an empty queue omits the listening region entirely; the composer follows the header directly. Pending idle tracks expose a content-width Play Queue. Setup guidance and factual transitional headlines remain.
 

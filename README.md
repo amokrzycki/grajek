@@ -11,9 +11,7 @@ to start a single audio stream.
 - Use Linux MPRIS or Windows system media controls for the bot's Discord playback.
 
 Version 0.6.0 adds per-user Windows Setup and a Linux AppImage with optional,
-private playback-component downloads. Native acceptance is still pending; see
-[distribution evidence](docs/plans/004-evidence.md) and the
-[manual checklist](docs/plans/004-native-checklist.md).
+private playback-component downloads. Native acceptance is still pending.
 
 ## Install
 
@@ -247,8 +245,7 @@ backend has a scoped visibility patch; Windows uses the existing HWND. Wayland
 restore may let the compositor choose a new placement. Focus requests remain
 subject to desktop policy. KDE Plasma needs a StatusNotifier host; if the host
 disappears while Grajek is hidden, Grajek restores its window and Close falls
-back to Quit. Native Windows and live Discord acceptance remain pending; see
-[the v0.5.0 release record](docs/releases/v0.5.0.md).
+back to Quit. Native Windows and live Discord acceptance remain pending.
 
 ### Advanced environment compatibility
 
@@ -415,9 +412,7 @@ Use media only where access and playback are authorized by applicable service te
 
 For diagnostics, run `RUST_LOG=grajek=debug,warn cargo run`. Detailed failures go
 to stderr; the window shows shorter messages. Check logs for private information
-before sharing them, and never share `.env`. The
-[development guide](docs/development.md) has extraction and windowing checks;
-[historical validation](docs/validation.md) records test scope and known gaps.
+before sharing them, and never share `.env`.
 
 ## Development
 
@@ -436,10 +431,8 @@ cargo test --locked --workspace --all-features
 cargo build --locked
 ```
 
-CI uses Rust 1.99.0 on Ubuntu 22.04. See the
-[development guide](docs/development.md) for test prerequisites, optional network
-checks and implementation notes, [PRODUCT.md](PRODUCT.md) for the behavior
-contract, and [DESIGN.md](DESIGN.md) for the native interface design.
+CI uses Rust 1.99.0 on Ubuntu 22.04. See [PRODUCT.md](PRODUCT.md) for the
+behavior contract, and [DESIGN.md](DESIGN.md) for the native interface design.
 
 ## Releases
 
@@ -448,8 +441,7 @@ contract, and [DESIGN.md](DESIGN.md) for the native interface design.
 [packaging workflow](.github/workflows/package.yml) used by packaging-related PRs.
 It builds on Ubuntu 22.04 and Windows 2022, checks tools and licenses, packages
 Setup/AppImage and transition ZIP/tar.gz archives, verifies `SHA256SUMS`, and
-creates a **draft**. Native tests in the [checklist](docs/plans/004-native-checklist.md)
-remain mandatory before a human publishes it. CI smoke tests are not desktop or
+creates a **draft**. Native tests remain mandatory before a human publishes it. CI smoke tests are not desktop or
 Discord audio acceptance. An existing release is never overwritten.
 
 See [packaging/README.md](packaging/README.md) for local builds, pin updates,

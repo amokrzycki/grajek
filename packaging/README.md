@@ -6,10 +6,10 @@ yt-dlp or Deno: Setup or the Linux app downloads pinned upstream ZIPs after
 disclosure. `components.json` is the single source of URLs, hashes and sizes,
 including the AppImage build tools. Runtime tools are never added to PATH.
 
-Implementation and measured results: [004-evidence.md](../docs/plans/004-evidence.md).
-Native acceptance: [004-native-checklist.md](../docs/plans/004-native-checklist.md).
-The presence of these scripts, cross-checks or a green runner does not establish
-clean-Windows, desktop, tray or live Discord behavior. F5 stays manual.
+Implementation and measured results, and the native acceptance checklist, are kept
+outside this repository. The presence of these scripts, cross-checks or a green
+runner does not establish clean-Windows, desktop, tray or live Discord behavior.
+F5 stays manual.
 
 ## Updating playback pins
 
@@ -189,5 +189,5 @@ an existing tag and creates only a draft with Setup, AppImage, portable archives
 and SHA256SUMS. A runner does not close F5. This implementation task does not
 push, tag, dispatch workflows, publish or create a PR.
 
-Keep `[004-native-checklist.md](../docs/plans/004-native-checklist.md)` open until
-the real systems, tray/media sessions and audible Discord scenarios are recorded.
+Keep the native acceptance checklist open until the real systems, tray/media
+sessions and audible Discord scenarios are recorded.
