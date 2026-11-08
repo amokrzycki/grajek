@@ -1,0 +1,36 @@
+name: Diag
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inno:
+    runs-on: windows-2022
+    steps:
+      - name: Dump Inno Setup facts
+        run: |
+          Get-Command iscc -ErrorAction SilentlyContinue | Format-List Name,Source
+          $paths = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          foreach ($p in $paths) {
+            if (Test-Path $p) {
+              $v = (Get-Item $p).VersionInfo
+              "FOUND $p File=$($v.FileVersion) Product=$($v.ProductVersion) Ver=$($v.ProductVersionRaw)"
+            } else {
+              "MISSING $p"
+            }
+          }
+          $roots = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          )
+          foreach ($r in $roots) {
+            Get-ChildItem $r -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match 'Inno' } | ForEach-Object {
+              $props = Get-ItemProperty $_.PSPath
+              "KEY $($_.PSPath) Name=$($props.DisplayName) Version=$($props.DisplayVersion)"
+            }
+          }
