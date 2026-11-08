@@ -314,9 +314,11 @@ fn native_player_redesign_evidence() {
                         }).expect("type a link");
                         if name == "added" {
                             executor.timer(Duration::from_millis(150)).await;
-                            assert!(matches!(receiver.try_recv(), Ok(Command::Enqueue(url)) if url == link), "added: Enqueue intent sent");
+                            let Command::EnqueueRequest { id: request_id, value } = receiver.try_recv().expect("enqueue intent") else { panic!("expected enqueue request"); };
+                            assert_eq!(value, link);
                             let mut acknowledged = after_commands.clone();
                             let id = acknowledged.queue.iter().map(|item| item.id).max().unwrap_or(0) + 1;
+                            acknowledged.enqueue_result = Some(crate::player::EnqueueResult { request_id, item_id: Some(id) });
                             acknowledged.queue.push(crate::queue::QueueItem { id, url: link.into(), title: Some("Aqua Mundi — Live from the Funkhaus (acknowledged by the controller)".into()), title_unavailable: false });
                             expected_count = acknowledged.queue.len();
                             snapshots.send_replace(acknowledged);
@@ -554,7 +556,7 @@ fn native_player_redesign_evidence() {
                 window.input("https://youtu.be/aqz-KE-bpKQ", cx);
                 window.press("ctrl-enter", cx);
             }).expect("native input and shortcut");
-            assert!(matches!(receiver.try_recv(), Ok(Command::Enqueue(url)) if url == "https://youtu.be/aqz-KE-bpKQ"));
+            assert!(matches!(receiver.try_recv(), Ok(Command::EnqueueRequest { value, .. }) if value == "https://youtu.be/aqz-KE-bpKQ"));
             std::fs::write(directory.join("interactions.txt"), "Native Pause: one intent; confirmed Playing retained while pending.\nAcknowledged Paused snapshot: Resume rendered and enabled.\nNative typing + Ctrl+Enter: Enqueue submitted with unchanged URL.\n").expect("interaction evidence");
             // Follow the real selector event/focus path, then acknowledge only controller snapshots.
             let mut destination = super::experience::configured();

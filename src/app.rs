@@ -71,6 +71,7 @@ pub struct PlayerApp {
     input: Entity<InputState>,
     /// An Add to queue the controller has not answered yet.
     enqueue_pending: Option<composer::PendingEnqueue>,
+    enqueue_seq: u64,
     /// The entry the controller last inserted for this window's Add to queue.
     added: Option<u64>,
     local_hint: Option<&'static str>,
@@ -239,6 +240,7 @@ impl PlayerApp {
             setup_help: false,
             input,
             enqueue_pending: None,
+            enqueue_seq: 0,
             added: None,
             local_hint: None,
             retired_import: None,
@@ -917,6 +919,18 @@ impl Render for PlayerApp {
                 }
             }))
             .child(self.header(cx))
+            .children(self.state.notice.as_ref().map(|notice| {
+                div()
+                    .id("notice")
+                    .role(gpui_kit::Role::Alert)
+                    .flex_none()
+                    .text_xs()
+                    .text_color(theme.yellow)
+                    .line_clamp(2)
+                    .child(notice.clone())
+                    .help(notice.clone(), &self.help)
+                    .test_support()
+            }))
             .when(has_listening, |root| {
                 root.child(div().mt(after_header).child(listening))
             })

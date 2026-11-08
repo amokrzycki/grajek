@@ -6,6 +6,7 @@ use std::{
     fs::{self, DirBuilder, File},
     io::{self, Write as _},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{sync::watch, task::JoinHandle};
@@ -305,7 +306,33 @@ pub fn load(path: Option<PathBuf>) -> Loaded {
     }
 }
 
-/// Writes through a temporary file in the same directory and renames it into place, so a
+struct Temporary(PathBuf);
+
+impl Temporary {
+    fn create(path: &Path) -> io::Result<(Self, File)> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let temporary = path.with_extension(format!(
+                "json.tmp-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match File::create_new(&temporary) {
+                Ok(file) => return Ok((Self(temporary), file)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+impl Drop for Temporary {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Writes through a private temporary file in the same directory and renames it into place, so a
 /// crash leaves either the old file or the new one.
 pub fn write(path: &Path, saved: &Saved) -> io::Result<()> {
     let dir = path
@@ -319,33 +346,53 @@ pub fn write(path: &Path, saved: &Saved) -> io::Result<()> {
         builder.mode(0o700);
     }
     builder.create(dir)?;
-    let temporary = path.with_extension("json.tmp");
-    let mut file = File::create(&temporary)?;
+    let (temporary, mut file) = Temporary::create(path)?;
     file.write_all(&serde_json::to_vec_pretty(saved)?)?;
     file.sync_all()?;
     drop(file);
-    fs::rename(&temporary, path)?;
+    fs::rename(&temporary.0, path)?;
     if let Ok(dir) = File::open(dir) {
         let _ = dir.sync_all();
     }
     Ok(())
 }
 
-/// The only writer. It always saves the latest snapshot and skips intermediate ones, so a
+pub struct Saver {
+    pub task: JoinHandle<()>,
+    pub status: watch::Receiver<Option<&'static str>>,
+}
+
+/// The instance's only writer. It saves the latest snapshot and skips intermediate ones, so a
 /// slow write can never land after, and overwrite, newer state. It exits (after saving
 /// the final snapshot) when the sender is dropped.
-pub fn spawn_saver(path: PathBuf, mut snapshots: watch::Receiver<Saved>) -> JoinHandle<()> {
-    tokio::spawn(async move {
+pub fn spawn_saver(path: PathBuf, mut snapshots: watch::Receiver<Saved>) -> Saver {
+    let (status, updates) = watch::channel(None);
+    let task = tokio::spawn(async move {
         while snapshots.changed().await.is_ok() {
             let saved = snapshots.borrow_and_update().clone();
             let target = path.clone();
-            match tokio::task::spawn_blocking(move || write(&target, &saved)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => tracing::warn!(%error, "Could not save application state"),
-                Err(error) => tracing::warn!(%error, "Saving application state was interrupted"),
-            }
+            let warning = match tokio::task::spawn_blocking(move || write(&target, &saved)).await {
+                Ok(Ok(())) => None,
+                result => {
+                    tracing::warn!(?result, "Could not save application state");
+                    Some(
+                        "Could not save history and settings. Check disk space and file permissions; changes may be lost when Grajek closes.",
+                    )
+                }
+            };
+            status.send_if_modified(|previous| {
+                if *previous == warning {
+                    return false;
+                }
+                *previous = warning;
+                true
+            });
         }
-    })
+    });
+    Saver {
+        task,
+        status: updates,
+    }
 }
 
 #[cfg(test)]
@@ -423,6 +470,56 @@ mod tests {
         let saved = Saved::default();
         assert_eq!(saved.volume, DEFAULT_VOLUME);
         assert_eq!(saved.history.len(), 0);
+    }
+
+    #[test]
+    fn concurrent_writers_never_share_staging_files() -> Result<()> {
+        use std::sync::{Arc, Barrier};
+        let scratch = Scratch::new()?;
+        let path = scratch.file();
+        write(&path, &Saved::default())?;
+        let barrier = Arc::new(Barrier::new(2));
+        let mut large = Saved::default();
+        for id in 0..HISTORY_LIMIT {
+            let mut item = entry(&id.to_string());
+            item.title = Some("ż".repeat(200));
+            large.record(item);
+        }
+        let small = Saved::default();
+        let results = std::thread::scope(|scope| {
+            let worker = |saved: &Saved| {
+                let mut errors = 0;
+                let mut corrupt = 0;
+                for _ in 0..100 {
+                    barrier.wait();
+                    errors += usize::from(write(&path, saved).is_err());
+                    barrier.wait();
+                    corrupt += usize::from(
+                        fs::read(&path)
+                            .is_ok_and(|bytes| serde_json::from_slice::<Saved>(&bytes).is_err()),
+                    );
+                    barrier.wait();
+                }
+                (errors, corrupt)
+            };
+            let first = scope.spawn(move || worker(&large));
+            let second = scope.spawn(move || worker(&small));
+            Ok::<_, anyhow::Error>((
+                first
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("first writer panicked"))?,
+                second
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("second writer panicked"))?,
+            ))
+        })?;
+        assert_eq!(
+            results,
+            ((0, 0), (0, 0)),
+            "write failures and malformed snapshots"
+        );
+        assert_eq!(names(path.parent().context("no parent")?)?, ["state.json"]);
+        Ok(())
     }
 
     #[test]
@@ -505,6 +602,10 @@ mod tests {
         fs::write(destination.join("keep"), b"original")?;
         assert!(write(&destination, &Saved::default()).is_err());
         assert_eq!(fs::read(destination.join("keep"))?, b"original");
+        assert_eq!(
+            names(destination.parent().context("no parent")?)?,
+            ["state.json"]
+        );
         Ok(())
     }
 
@@ -590,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn write_failure_keeps_the_previous_file_and_can_be_retried() -> Result<()> {
+    fn leftover_fixed_temporary_never_blocks_new_saves() -> Result<()> {
         let scratch = Scratch::new()?;
         let file = scratch.file();
         write(&file, &Saved::default())?;
@@ -600,9 +701,6 @@ mod tests {
             volume: 25,
             ..Saved::default()
         };
-        assert!(write(&file, &changed).is_err());
-        assert_eq!(load(Some(file.clone())).saved, Saved::default());
-        fs::remove_dir(file.with_extension("json.tmp"))?;
         write(&file, &changed)?;
         assert_eq!(load(Some(file)).saved, changed);
         Ok(())
@@ -686,7 +784,7 @@ mod tests {
             sender.send_replace(last.clone());
         }
         drop(sender);
-        saver.await?;
+        saver.task.await?;
         assert_eq!(load(Some(scratch.file())).saved, last);
         Ok(())
     }

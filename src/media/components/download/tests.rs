@@ -206,6 +206,45 @@ async fn verified_archives_publish_a_complete_pair_and_marker() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn installed_checks_reload_external_updates_and_damage_under_the_lock() -> Result<()> {
+    let dir = Fixture::new()?;
+    let bytes = archive()?;
+    let pins = pins_for("https://example.invalid", &bytes)?;
+    let zip = dir.0.join("tools.zip");
+    std::fs::write(&zip, &bytes)?;
+    let (_cancel, cancelled) = watch::channel(false);
+    for tool in [Tool::YtDlp, Tool::Deno] {
+        extract(
+            &zip,
+            &dir.tools().join(tool.name()),
+            pins.ytdlp.artifact().unpacked_size,
+            &cancelled,
+        )?;
+    }
+    let marker = dir.tools().join("components.json");
+    std::fs::write(
+        &marker,
+        br#"{"yt-dlp":"2025.01.01","yt-dlp-ejs":"0.8.0","deno":"2.3.0"}"#,
+    )?;
+    let stale = Tools::select(false, Some(dir.tools()));
+    std::fs::write(&marker, serde_json::to_vec(&pins.versions())?)?;
+    assert!(
+        stale
+            .check()
+            .await
+            .iter()
+            .all(|report| report.state == super::super::status::ComponentState::Ready)
+    );
+    let cached = Tools::select(false, Some(dir.tools()));
+    std::fs::write(&marker, b"{damaged")?;
+    assert!(cached.check().await.iter().all(|report| matches!(
+        report.state,
+        super::super::status::ComponentState::NeedsRepair(_)
+    )));
+    Ok(())
+}
+
 fn old_install(dir: &Fixture) -> Result<()> {
     std::fs::create_dir(dir.tools())?;
     std::fs::write(dir.tools().join("components.json"), b"previous marker")?;

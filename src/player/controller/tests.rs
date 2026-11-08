@@ -146,6 +146,8 @@ fn seek_bounds_reject_unreliable_duration_and_clamp_before_end() {
 }
 
 struct Fake {
+    tools_missing: AtomicBool,
+    tools_ready: watch::Sender<bool>,
     ready: AtomicBool,
     health: watch::Sender<Health>,
     requests: Mutex<Vec<String>>,
@@ -171,6 +173,8 @@ struct Fake {
 impl Fake {
     fn new() -> Arc<Self> {
         Arc::new(Self {
+            tools_missing: AtomicBool::new(false),
+            tools_ready: watch::channel(true).0,
             ready: AtomicBool::new(true),
             health: watch::channel(Health {
                 gateway: true,
@@ -289,6 +293,16 @@ impl Backend for Fake {
         self.health.subscribe()
     }
     fn clear_error(&self) {}
+    async fn check_tools(&self) -> Result<()> {
+        self.tools_ready
+            .subscribe()
+            .wait_for(|ready| *ready)
+            .await?;
+        if self.tools_missing.load(SeqCst) {
+            return Err(crate::media::components::tools().failure().into());
+        }
+        Ok(())
+    }
     async fn prepare(&self, url: String, connected: oneshot::Sender<()>) -> Result<Resolved> {
         self.requests
             .lock()
@@ -447,7 +461,7 @@ impl Rig {
         let (states, states_rx) = watch::channel(State::default());
         let (to_disk, snapshots) = watch::channel(saved.clone());
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let controller = Controller::new(fake.clone(), saved, None, states, to_disk);
+        let controller = Controller::new(fake.clone(), saved, None, states, to_disk, None);
         Self {
             fake,
             commands,
@@ -665,7 +679,10 @@ fn active(track: &Arc<FakeTrack>) -> Active<FakeHandle> {
             duration: Some(Duration::from_secs(225)),
             seekable: true,
         },
-        A.into(),
+        jobs::Request {
+            url: A.into(),
+            origin: Origin::Direct,
+        },
     )
 }
 
@@ -741,7 +758,7 @@ fn solo(saved: Saved) -> (Controller<Fake>, Arc<Fake>, watch::Receiver<State>) {
     let (states, updates) = watch::channel(State::default());
     let (persist, _) = watch::channel(saved.clone());
     (
-        Controller::new(fake.clone(), saved, None, states, persist),
+        Controller::new(fake.clone(), saved, None, states, persist, None),
         fake,
         updates,
     )
@@ -1672,19 +1689,15 @@ async fn a_rejoin_result_classifies_failure_before_the_driver_callback() -> Resu
             health.voice_error = terminal_error.map(str::to_owned);
         });
         controller.command(Command::Enqueue(B.into())).await;
-        controller.job = Some(Job {
+        controller.job = Some(Job::Rejoin {
             task: tokio::spawn(async move {
                 Err(anyhow::Error::new(error).context("Cannot join Discord voice."))
             }),
-            connected: None,
-            kind: JobKind::Rejoin(1),
-            voice_ready: false,
+            attempt: 1,
         });
-        let JobEvent::Done(result) = job_event(&mut controller.job).await else {
-            bail!("A rejoin must not report media preparation");
-        };
+        let event = job_event(&mut controller.job).await;
         // No driver callback has set voice_retry; the typed result is already definitive.
-        controller.finish_job(result).await;
+        controller.finish_job(event).await;
         assert_eq!(
             matches!(controller.scheduled, Some((_, Scheduled::Rejoin(2)))),
             retry
@@ -2721,17 +2734,11 @@ async fn missing_components_stop_recovery_without_skipping_more_queued_tracks() 
         ..Saved::default()
     });
     controller.enqueue(B);
-    controller.job = Some(Job {
-        task: tokio::spawn(async { Ok(JobOutput::Disconnected) }),
-        connected: None,
-        kind: JobKind::Prepare {
-            url: A.into(),
-            queued: true,
-        },
-        voice_ready: true,
-    });
     controller
-        .finish_job(Ok(Err(crate::media::components::tools().failure().into())))
+        .finish_job(JobEvent::Checked {
+            start: Start::Queue(Vec::new()),
+            result: Err(crate::media::components::tools().failure().into()),
+        })
         .await;
     assert_eq!(updates.borrow().components_request, 1);
     assert!(updates.borrow().error.is_none());
@@ -2742,6 +2749,212 @@ async fn missing_components_stop_recovery_without_skipping_more_queued_tracks() 
 }
 
 mod native;
+mod storage;
+
+#[tokio::test]
+async fn missing_tool_preflight_preserves_the_entire_saved_queue() -> Result<()> {
+    let mut rig = Rig::start(Saved {
+        remember_queue: true,
+        continue_on_error: true,
+        queue: [A, B]
+            .into_iter()
+            .map(|url| SavedQueueItem {
+                url: url.into(),
+                title: Some(url.into()),
+            })
+            .collect(),
+        ..Saved::default()
+    });
+    rig.until(|state| state.phase == Phase::Ready).await?;
+    rig.fake.tools_missing.store(true, SeqCst);
+    rig.send(Command::Next).await?;
+    rig.until(|state| state.components_request == 1).await?;
+    assert_eq!(rig.queued(), [A, B]);
+    assert_eq!(
+        rig.saves
+            .borrow()
+            .queue
+            .iter()
+            .map(|item| item.url.as_str())
+            .collect::<Vec<_>>(),
+        [A, B]
+    );
+    assert_eq!(rig.fake.started(), 0);
+    assert_eq!(rig.fake.connects.load(SeqCst), 0);
+    rig.fake.tools_missing.store(false, SeqCst);
+    rig.send(Command::Next).await?;
+    rig.started(1).await?;
+    assert_eq!(rig.fake.track(0)?.title, A);
+    assert_eq!(rig.queued(), [B]);
+    rig.shutdown.send_replace(true);
+    rig.task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn enqueue_requests_retain_results_after_consumption_and_identical_errors() {
+    let (mut controller, _fake, updates) = solo(Saved::default());
+    controller
+        .command(Command::EnqueueRequest {
+            id: 1,
+            value: A.into(),
+        })
+        .await;
+    assert_eq!(
+        updates.borrow().enqueue_result,
+        Some(crate::player::EnqueueResult {
+            request_id: 1,
+            item_id: Some(0)
+        })
+    );
+    controller.queue.pop_front();
+    controller.queue_changed();
+    assert_eq!(
+        updates.borrow().enqueue_result,
+        Some(crate::player::EnqueueResult {
+            request_id: 1,
+            item_id: Some(0)
+        })
+    );
+    for id in [2, 3] {
+        controller
+            .command(Command::EnqueueRequest {
+                id,
+                value: "invalid".into(),
+            })
+            .await;
+        assert_eq!(
+            updates.borrow().enqueue_result,
+            Some(crate::player::EnqueueResult {
+                request_id: id,
+                item_id: None
+            })
+        );
+    }
+    controller.command(Command::Enqueue(B.into())).await;
+    assert_eq!(
+        updates.borrow().enqueue_result,
+        Some(crate::player::EnqueueResult {
+            request_id: 3,
+            item_id: None
+        })
+    );
+}
+
+#[tokio::test]
+async fn slow_preflight_keeps_next_intents_and_stop_preserves_unattempted_entries() -> Result<()> {
+    for stop in [false, true] {
+        let mut rig = Rig::new().await?;
+        rig.fake.tools_ready.send_replace(false);
+        for url in [A, B, C] {
+            rig.enqueue(url).await?;
+        }
+        rig.until(|state| state.queue.len() == 3).await?;
+        for _ in 0..3 {
+            rig.send(Command::Next).await?;
+        }
+        rig.send(Command::EnqueueRequest {
+            id: 77,
+            value: "invalid".into(),
+        })
+        .await?;
+        rig.until(|state| {
+            state
+                .enqueue_result
+                .is_some_and(|result| result.request_id == 77)
+        })
+        .await?;
+        assert_eq!(rig.queued(), [A, B, C]);
+        assert_eq!(rig.fake.requests().len(), 0);
+        if stop {
+            rig.send(Command::Stop).await?;
+            rig.until(|state| state.phase == Phase::Ready).await?;
+        }
+        rig.fake.tools_ready.send_replace(true);
+        if stop {
+            rig.settle().await;
+            assert_eq!(rig.queued(), [A, B, C]);
+            assert_eq!(rig.fake.started(), 0);
+        } else {
+            rig.started(1).await?;
+            assert_eq!(rig.fake.track(0)?.title, C);
+            assert_eq!(rig.queued().len(), 0);
+        }
+        rig.shutdown.send_replace(true);
+        rig.task.await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn preflight_queue_edits_keep_capacity_and_the_selected_track_identity() -> Result<()> {
+    let mut rig = Rig::start(Saved {
+        remember_queue: true,
+        queue: vec![
+            SavedQueueItem {
+                url: A.into(),
+                title: Some("Pending".into())
+            };
+            QUEUE_LIMIT
+        ],
+        ..Saved::default()
+    });
+    rig.until(|state| state.phase == Phase::Ready).await?;
+    let selected = rig.state().queue[0].id;
+    rig.fake.tools_ready.send_replace(false);
+    rig.send(Command::Next).await?;
+    rig.send(Command::EnqueueRequest {
+        id: 1,
+        value: B.into(),
+    })
+    .await?;
+    let full = rig
+        .until(|state| {
+            state
+                .enqueue_result
+                .is_some_and(|result| result.request_id == 1)
+        })
+        .await?;
+    assert_eq!(full.enqueue_result.and_then(|result| result.item_id), None);
+    assert_eq!(full.queue.len(), QUEUE_LIMIT);
+    rig.send(Command::Shift {
+        id: selected,
+        up: false,
+    })
+    .await?;
+    rig.send(Command::Dequeue(selected)).await?;
+    rig.send(Command::EnqueueRequest {
+        id: 2,
+        value: C.into(),
+    })
+    .await?;
+    let edited = rig
+        .until(|state| {
+            state
+                .enqueue_result
+                .is_some_and(|result| result.request_id == 2)
+        })
+        .await?;
+    assert!(
+        edited
+            .enqueue_result
+            .and_then(|result| result.item_id)
+            .is_some()
+    );
+    assert_eq!(edited.queue.len(), QUEUE_LIMIT);
+    rig.fake.tools_ready.send_replace(true);
+    rig.started(1).await?;
+    assert_eq!(rig.fake.track(0)?.title, A);
+    assert_eq!(rig.state().queue.len(), QUEUE_LIMIT);
+    assert_eq!(
+        rig.state().queue.last().map(|item| item.url.as_str()),
+        Some(C)
+    );
+    assert_eq!(rig.saves.borrow().queue.len(), QUEUE_LIMIT);
+    rig.shutdown.send_replace(true);
+    rig.task.await?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn ui_transport_acknowledges_errors_and_ignored_commands_without_guessing_phase() -> Result<()>
@@ -2799,8 +3012,8 @@ async fn destination_switch_is_explicit_preserves_queue_and_never_repeats_interr
         let mut playing = active(&track);
         playing.confirmed = true;
         playing.paused = paused;
+        playing.request.origin = Origin::Queue;
         controller.track = Some(playing);
-        controller.queued_track = true;
         controller
             .command(Command::Setup(crate::setup::Request::Select(destination(
                 4,
@@ -2936,10 +3149,8 @@ async fn failed_discovery_disconnect_is_retried_after_setup_finishes() -> Result
         .finish_setup(&Ok(Err(anyhow::anyhow!("Could not leave voice"))))
         .await;
     assert_eq!(updates.borrow().phase, Phase::Disconnecting);
-    let JobEvent::Done(result) = job_event(&mut controller.job).await else {
-        bail!("Disconnect must finish without media preparation");
-    };
-    controller.finish_job(result).await;
+    let event = job_event(&mut controller.job).await;
+    controller.finish_job(event).await;
     assert_eq!(fake.disconnects.load(SeqCst), 1);
     assert!(!fake.health.borrow().voice);
     assert_eq!(updates.borrow().queue[0].url, B);
