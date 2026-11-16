@@ -24,6 +24,7 @@ pub(super) enum LinkKind {
     VideoInPlaylist,
     Playlist,
     Other,
+    Query,
 }
 
 impl LinkKind {
@@ -39,8 +40,10 @@ impl LinkKind {
             }
         } else if video_url(text).is_ok() {
             Self::Video
-        } else {
+        } else if url_shaped(text) {
             Self::Other
+        } else {
+            Self::Query
         }
     }
 
@@ -50,7 +53,7 @@ impl LinkKind {
 
     fn message(self) -> Option<&'static str> {
         match self {
-            Self::Empty | Self::Other => None,
+            Self::Empty | Self::Other | Self::Query => None,
             Self::Video => Some("Video link recognized."),
             Self::VideoInPlaylist => {
                 Some("Video in a playlist · Play now and Add to queue use this video only.")
@@ -58,6 +61,31 @@ impl LinkKind {
             Self::Playlist => Some("Playlist link · Import playlist adds up to 100 tracks."),
         }
     }
+}
+
+fn url_shaped(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let first = lower.split_whitespace().next().unwrap_or_default();
+    lower.contains("://")
+        || first.starts_with("www.")
+        || first.starts_with("youtube.")
+        || first.starts_with("youtu.be")
+        || first.starts_with("www.youtube.")
+        || first.starts_with("m.youtube.")
+        || first.starts_with("music.youtube.")
+        || first
+            .split_once('/')
+            .is_some_and(|(host, _)| host.contains('.'))
+        || ["http:", "https:", "file:", "ftp:", "data:", "javascript:"]
+            .iter()
+            .any(|scheme| first.starts_with(scheme))
+        || text.split_once(':').is_some_and(|(scheme, rest)| {
+            !scheme.is_empty()
+                && scheme
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+                && rest.chars().next().is_some_and(|ch| !ch.is_whitespace())
+        })
 }
 
 /// A submitted Add to queue that the controller has not answered yet.
@@ -76,6 +104,11 @@ impl PlayerApp {
     /// Add to queue for the entered link. Feedback follows the controller's snapshots only.
     pub(super) fn enqueue(&mut self, cx: &mut Context<Self>) {
         let text = self.input_text(cx);
+        if LinkKind::of(&text) == LinkKind::Query {
+            self.local_hint = Some("Search, then select a result to add to queue.");
+            cx.notify();
+            return;
+        }
         if text.trim().is_empty() {
             self.local_hint = Some("Paste a link first.");
             self.added = None;
@@ -164,6 +197,7 @@ impl PlayerApp {
     fn link_frame(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
+        let query = LinkKind::of(&self.input_text(cx)) == LinkKind::Query;
         let boundary = self.focus.editing_border(focused, cx);
         let primary = self.state.available
             && !matches!(self.state.phase, Phase::Playing | Phase::Paused)
@@ -196,7 +230,7 @@ impl PlayerApp {
                     .child(
                         Input::new(&self.input)
                             .id("url-editor")
-                            .aria_label("Paste YouTube link")
+                            .aria_label("YouTube link or search query")
                             .bordered(false)
                             .w_full()
                             .bg(theme.muted),
@@ -206,13 +240,13 @@ impl PlayerApp {
                 self.button("play")
                     .when(primary, ButtonVariants::primary)
                     .icon(AudioIcon::Play)
-                    .label("Play now")
+                    .label(if query { "Search YouTube" } else { "Play now" })
                     .flex_none()
                     .help(
-                        "Play this video now · Enter. Replaces what is playing; the queue is kept.",
+                        if query { "Search YouTube · Enter. Select a result, then Play now or Add to queue." } else { "Play this video now · Enter. Replaces what is playing; the queue is kept." },
                         &self.help,
                     )
-                    .disabled(!self.play_enabled())
+                    .disabled(if query { !self.state.controller_ready } else { !self.play_enabled() })
                     .on_click(cx.listener(|this, _, window, cx| this.play(window, cx))),
             )
             .test_support()

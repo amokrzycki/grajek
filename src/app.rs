@@ -7,6 +7,7 @@ mod history;
 mod lists;
 mod progress;
 mod queue;
+mod search;
 mod settings;
 
 use gpui_kit::assets::IconName as AudioIcon;
@@ -69,6 +70,7 @@ pub struct PlayerApp {
     setup_starting: bool,
     setup_help: bool,
     input: Entity<InputState>,
+    search_ui: search::SearchUi,
     /// An Add to queue the controller has not answered yet.
     enqueue_pending: Option<composer::PendingEnqueue>,
     enqueue_seq: u64,
@@ -149,7 +151,8 @@ impl PlayerApp {
                 .masked(true)
                 .placeholder("Bot token")
         });
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Paste YouTube link"));
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("YouTube link or search query"));
         window.focus(&token.read(cx).focus_handle(cx), cx);
         let volume = cx.new(|_| {
             SliderState::new()
@@ -169,7 +172,6 @@ impl PlayerApp {
             cx.observe_window_activation(window, |this, _, cx| this.help.dismiss(cx)),
             cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
                 InputEvent::PressEnter { secondary, .. } => {
-                    // Enter plays; Ctrl+Enter queues.
                     if *secondary {
                         this.enqueue(cx);
                     } else {
@@ -179,6 +181,7 @@ impl PlayerApp {
                 InputEvent::Change => {
                     // Typing starts a new entry; programmatic clearing keeps the confirmation.
                     this.local_hint = None;
+                    this.retire_search(cx);
                     if this.state.import != crate::player::ImportStatus::Importing {
                         this.retired_import = Some(this.state.import.clone());
                     }
@@ -239,6 +242,7 @@ impl PlayerApp {
             setup_starting: true,
             setup_help: false,
             input,
+            search_ui: search::SearchUi::default(),
             enqueue_pending: None,
             enqueue_seq: 0,
             added: None,
@@ -279,6 +283,7 @@ impl PlayerApp {
     }
 
     fn accept_state(&mut self, state: State, window: &mut Window, cx: &mut Context<Self>) {
+        self.observe_search(&state, window, cx);
         if state.components_request != self.state.components_request {
             self.open_components(cx);
         }
@@ -359,6 +364,7 @@ impl PlayerApp {
     }
 
     fn activate_section(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_search(window, cx);
         let list_had_focus = self.queue_options_open
             || self.row_menu.is_some()
             || self
@@ -539,6 +545,7 @@ impl PlayerApp {
                             .ghost()
                             .flex_none()
                             .on_click(cx.listener(|this, _, window, cx| {
+                                this.retire_search(cx);
                                 this.help.dismiss(cx);
                                 this.setup_starting = false;
                                 this.settings_open = !this.settings_open;
@@ -768,6 +775,7 @@ impl PlayerApp {
                             .primary()
                             .label(action)
                             .on_click(cx.listener(|this, _, window, cx| {
+                                this.retire_search(cx);
                                 this.setup_starting = false;
                                 this.settings_open = true;
                                 this.help.dismiss(cx);
@@ -795,7 +803,10 @@ impl PlayerApp {
             .test_support()
     }
 
-    fn sections(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn sections(&self, cx: &Context<Self>) -> AnyElement {
+        if self.searching() {
+            return self.search_collection(cx);
+        }
         let selected = match self.section {
             Section::Queue => 0,
             Section::History => 1,
@@ -851,6 +862,7 @@ impl PlayerApp {
                 Section::Queue => self.queue_list(cx).into_any_element(),
                 Section::History => self.history_list(cx).into_any_element(),
             })
+            .into_any_element()
     }
 }
 
@@ -903,13 +915,14 @@ impl Render for PlayerApp {
             .capture_key_down({
                 let help = self.help.clone();
                 move |event: &KeyDownEvent, _, cx| {
-                    if event.keystroke.key != "f1" {
+                    if !matches!(event.keystroke.key.as_str(), "f1" | "escape") {
                         help.dismiss(cx);
                     }
                 }
             })
             // The kit's tabs cannot take focus, so Ctrl+1 / Ctrl+2 switch sections.
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.search_escape(event, window, cx);
                 if event.keystroke.modifiers.control {
                     match event.keystroke.key.as_str() {
                         "1" => this.activate_section(Section::Queue, window, cx),

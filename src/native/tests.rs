@@ -208,3 +208,28 @@ fn endpoint_is_bounded_and_reports_shutdown() {
     drop(rx);
     assert!(endpoint.send(Command::Play).is_err());
 }
+
+#[test]
+fn search_snapshots_do_not_change_native_media_or_tray_projection() {
+    let mut state = playing();
+    let media = Snapshot::from(&state);
+    let tray = crate::tray::menu(&state);
+    for phase in [
+        crate::player::SearchPhase::Loading,
+        crate::player::SearchPhase::Empty { rejected: 2 },
+        crate::player::SearchPhase::Failed(crate::search::Error::Unavailable),
+        crate::player::SearchPhase::Results(crate::search::Results {
+            items: Vec::new(),
+            rejected: 0,
+        }),
+    ] {
+        state.search = crate::player::SearchState {
+            id: 10,
+            query: "Music".into(),
+            phase,
+            status: None,
+        };
+        assert_eq!(Snapshot::from(&state), media);
+        assert_eq!(crate::tray::menu(&state), tray);
+    }
+}

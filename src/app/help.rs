@@ -31,6 +31,14 @@ impl Help {
         }
     }
 
+    pub fn dismiss_if_active(&self, cx: &mut App) -> bool {
+        let active = self.active.get().is_some();
+        if active {
+            self.dismiss(cx);
+        }
+        active
+    }
+
     pub fn dismiss(&self, cx: &mut App) {
         self.active.set(None);
         self.overlay.update(cx, TooltipOverlay::hide);

@@ -9,8 +9,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::{config::Config, discord::Health, live::Live, media::Resolved, store};
 use controller::Controller;
 pub use state::{
-    Command, EnqueueResult, ImportStatus, Phase, Preferences, RepeatMode, SeekStatus, State,
-    VolumeRequest, percent_from, seek_target, volume_factor,
+    Command, EnqueueResult, ImportStatus, Phase, Preferences, RepeatMode, SearchAction,
+    SearchPhase, SearchState, SeekStatus, State, VolumeRequest, percent_from, seek_target,
+    volume_factor,
 };
 
 /// How a track ended, as reported by its own event mailbox.
@@ -56,6 +57,11 @@ pub trait Backend: Send + Sync + 'static {
         &self,
         url: String,
     ) -> impl Future<Output = Result<crate::playlist::Playlist>> + Send;
+    fn search(
+        &self,
+        query: String,
+        cancel: watch::Receiver<bool>,
+    ) -> impl Future<Output = std::result::Result<crate::search::Results, crate::search::Error>> + Send;
     fn connect(&self) -> impl Future<Output = Result<()>> + Send;
     fn disconnect(&self) -> impl Future<Output = Result<()>> + Send;
     fn recover(&self) -> impl Future<Output = ()> + Send;

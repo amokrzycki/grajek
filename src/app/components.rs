@@ -176,6 +176,7 @@ impl PlayerApp {
     }
 
     pub(super) fn open_components(&mut self, cx: &mut Context<Self>) {
+        self.retire_search(cx);
         self.components.open = true;
         self.components.focus_pending = true;
         self.help.dismiss(cx);

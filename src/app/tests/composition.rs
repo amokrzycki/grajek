@@ -34,7 +34,11 @@ fn type_link(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) {
     });
 }
 
-fn tab_until(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) {
+pub(super) fn tab_until(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    id: impl Into<ElementId>,
+) {
     let id = id.into();
     for _ in 0..40 {
         if focused(cx, window, id.clone()) {
@@ -69,7 +73,7 @@ fn links_are_recognized_locally() {
     assert_eq!(LinkKind::of(VIDEO), LinkKind::Video);
     assert_eq!(LinkKind::of(PLAYLIST_WATCH), LinkKind::VideoInPlaylist);
     assert_eq!(LinkKind::of(PLAYLIST), LinkKind::Playlist);
-    assert_eq!(LinkKind::of("not a link"), LinkKind::Other);
+    assert_eq!(LinkKind::of("not a link"), LinkKind::Query);
     assert_eq!(
         LinkKind::of("https://example.com/watch?v=aqz-KE-bpKQ"),
         LinkKind::Other
@@ -563,5 +567,35 @@ fn focus_survives_moves_to_both_boundaries_and_shortcuts_still_work(cx: &mut Tes
             !focused(cx, window, ("queue-more", 11_u64)),
             "Tab is not stranded"
         );
+    }
+}
+
+#[test]
+fn queries_never_swallow_url_recovery() {
+    for value in [
+        "Bach: cello suites",
+        "巴赫 大提琴",
+        "--help",
+        "ordinary words",
+    ] {
+        assert_eq!(LinkKind::of(value), LinkKind::Query, "{value}");
+    }
+    for value in [
+        "https:/youtu.be/x",
+        "youtu.be/short",
+        "youtube.com/watch?v=bad",
+        "https://example.com/music",
+        "file:/tmp/music",
+        "data:audio",
+        "javascript:alert(1)",
+        "Bach:Cello",
+        "m.youtube.com",
+        "music.youtube.com",
+        "www.example.com",
+        "example.com/music",
+        "youtube.com.evil/watch",
+        "https://user:password@youtube.com/watch?v=aqz-KE-bpKQ",
+    ] {
+        assert_eq!(LinkKind::of(value), LinkKind::Other, "{value}");
     }
 }
