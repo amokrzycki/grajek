@@ -158,6 +158,7 @@ struct Fake {
     disconnect_failing: AtomicBool,
     playlist_reply: Mutex<Option<oneshot::Receiver<Result<crate::playlist::Playlist>>>>,
     playlist_calls: AtomicUsize,
+    search_calls: Mutex<Option<mpsc::UnboundedSender<search::Call>>>,
     title_requests: Mutex<Vec<String>>,
     title_replies: Mutex<HashMap<String, oneshot::Receiver<Result<Option<String>>>>>,
     running: AtomicUsize,
@@ -190,6 +191,7 @@ impl Fake {
             disconnect_failing: AtomicBool::new(false),
             playlist_reply: Mutex::default(),
             playlist_calls: AtomicUsize::new(0),
+            search_calls: Mutex::default(),
             title_requests: Mutex::default(),
             title_replies: Mutex::default(),
             running: AtomicUsize::new(0),
@@ -390,6 +392,13 @@ impl Backend for Fake {
             Some(reply) => reply.await?,
             None => Ok(None),
         }
+    }
+    async fn search(
+        &self,
+        query: String,
+        cancel: watch::Receiver<bool>,
+    ) -> std::result::Result<crate::search::Results, crate::search::Error> {
+        search::run(self, query, cancel).await
     }
     async fn playlist(&self, _url: String) -> Result<crate::playlist::Playlist> {
         self.playlist_calls.fetch_add(1, SeqCst);
@@ -3157,3 +3166,5 @@ async fn failed_discovery_disconnect_is_retried_after_setup_finishes() -> Result
     assert_eq!(fake.started(), 0);
     Ok(())
 }
+
+mod search;

@@ -4,4 +4,10 @@
 !.env.example
 *.log
 .impeccable
-docs/
+!/docs/
+docs/*
+!docs/agents/
+docs/agents/*
+!docs/agents/issue-tracker.md
+!docs/agents/triage-labels.md
+!docs/agents/domain.md

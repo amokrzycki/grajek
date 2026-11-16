@@ -23,7 +23,7 @@ Paste a YouTube video URL, import a public playlist into the pending queue, play
 - Voice leaves after ten idle minutes; Playing, Paused and pending jobs are active. Queue and history survive, and the window stays open.
 - Native playback progress follows the existing 250 ms Songbird position poll. Drag previews stay local; release sends one controller-owned seek and reconciles with its actual result. WebM/Opus and streamable M4A/AAC use bounded HTTP ranges with the existing extraction/headers. Unknown/zero duration and live streams show elapsed time only; incompatible sources and failed seeks disable seeking honestly.
 - Focused progress keys: Left/Right ±5 seconds, Page Down/Up ±10 seconds, Home zero, End one second before duration (zero for subsecond tracks). One owned seek task and one latest target preserve transport responsiveness; per-track IDs cancel stale work/gestures. Pause state, volume, queue/repeat, history, recovery and playlist import remain independent.
-- Controller snapshots are the truth. No optimistic playback state, simulated waveform, artwork or discovery.
+- Controller snapshots are the truth. No optimistic playback state, simulated waveform, artwork, recommendations or unbounded discovery.
 - Native accessible seek actions use controller intents and disabled semantics. Delayed polls retain the last confirmed position for a bounded 15-second liveness window; range failures never qualify as successful natural completion or repeat rotation.
 - Queue is FIFO, limited to 100 pending entries; optional Remember queue defaults off, saves pending-only canonical URLs/titles and restores without starting playback. Disabling erases the saved queue while keeping the session queue. History holds 50 unique successfully played videos.
 - Repeat Off (default), Track (fresh extraction after confirmed success) and Queue (successful queued completions rotate behind pending entries) are saved preferences. Direct Play URL does not enter Queue repeat; a queued singleton cycles. The mode at completion applies. Stop, Next, cancellation and errors never recycle interrupted tracks; Next needs a pending successor. Clear removes pending entries only.
@@ -52,3 +52,7 @@ README.md, src/app.rs, src/app/{controls,queue,history,tests}.rs and controller 
 - Preserve native controls and controller-owned behavior.
 - Express personality with one useful detail and precise proportions.
 - Keep compact layouts usable with long titles, failures and keyboard input.
+
+## Bounded YouTube search
+
+The shared composer accepts a YouTube link or search query. Explicit text submission returns at most five transient video candidates; typing and paste do nothing. Select a result, then explicitly Play now (replaces playback, keeps the queue) or Add to queue (appends within the 100-entry bound). Selection, search, cancellation and errors never join voice, change playback, or save a search. No recommendations, favorites, artwork, collections, Queue next or shuffle.

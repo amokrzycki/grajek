@@ -371,6 +371,13 @@ impl Backend for Live {
         media::title(url).await
     }
 
+    async fn search(
+        &self,
+        query: String,
+        cancel: watch::Receiver<bool>,
+    ) -> std::result::Result<crate::search::Results, crate::search::Error> {
+        crate::search::extract(query, cancel).await
+    }
     async fn playlist(&self, url: String) -> Result<crate::playlist::Playlist> {
         Ok(crate::playlist::extract(url).await?)
     }

@@ -9,6 +9,7 @@ mod native;
 mod player;
 mod playlist;
 mod queue;
+mod search;
 mod setup;
 mod store;
 mod style;

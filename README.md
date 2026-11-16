@@ -406,7 +406,7 @@ unwritable storage also produces a warning; playback can continue without saving
 | Playback stops after a disconnect       | Connectivity recovery does not restart interrupted audio. Once the gateway is ready, use Play URL or Play Queue. Fatal configuration/gateway startup failures require a restart.                                                                                                                              |
 
 Grajek controls one bot in one server and one ordinary voice channel, with one
-track at a time. It has no search, shuffle, playlist library, Discord commands or
+track at a time. It supports explicit YouTube search with at most five transient results and explicit Play now/Add to queue actions. It has no shuffle, playlist library, Discord commands or
 drag and drop. Historical Linux native-window checks cover KWin Wayland and
 XWayland, not every compositor or display setup. Current platform verification
 and its outstanding Windows checks are recorded in the release report.

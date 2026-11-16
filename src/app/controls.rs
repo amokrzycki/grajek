@@ -32,7 +32,7 @@ impl PlayerApp {
         self.state.can_play() && matches!(self.pending, None | Some(Pending::Pause))
     }
 
-    fn send_transport(&mut self, command: Command, pending: Pending) -> bool {
+    pub(super) fn send_transport(&mut self, command: Command, pending: Pending) -> bool {
         let id = self.transport_seq + 1;
         if !self.send(Command::Transport {
             id,
@@ -49,6 +49,10 @@ impl PlayerApp {
 
     pub(super) fn play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let url = self.input_text(cx);
+        if super::composer::LinkKind::of(&url) == super::composer::LinkKind::Query {
+            self.submit_search(window, cx);
+            return;
+        }
         if url.trim().is_empty() {
             self.local_hint = Some("Paste a YouTube link to play.");
             window.focus(&self.input.read(cx).focus_handle(cx), cx);

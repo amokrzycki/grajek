@@ -1,4 +1,5 @@
 mod jobs;
+mod search;
 #[cfg(test)]
 use jobs::Event as JobEvent;
 use jobs::{Job, Origin, Request, Start, event as job_event};
@@ -249,6 +250,7 @@ pub(super) struct Controller<B: Backend> {
     import: ImportStatus,
     seek_job: Option<SeekJob>,
     track_id: u64,
+    search: search::Search,
 }
 
 impl<B: Backend> Controller<B> {
@@ -289,6 +291,7 @@ impl<B: Backend> Controller<B> {
             import: ImportStatus::Ready,
             seek_job: None,
             track_id: 0,
+            search: search::Search::default(),
         }
     }
 
@@ -328,6 +331,7 @@ impl<B: Backend> Controller<B> {
         state.volume_seq = self.volume_seq;
         state.queue = self.queue.snapshot();
         state.import.clone_from(&self.import);
+        state.search.clone_from(&self.search.state);
         state.history.clone_from(&self.saved.history);
         let save_notice = self
             .saver_status
@@ -840,6 +844,13 @@ impl<B: Backend> Controller<B> {
             }
             Command::Seek { track_id, position } => self.seek(track_id, position),
             Command::ImportPlaylist(value) => self.start_import(&value),
+            Command::Search { id, query } => self.submit_search(id, query),
+            Command::CancelSearch { id } => self.cancel_search(id),
+            Command::SearchAction {
+                search_id,
+                video_id,
+                action,
+            } => self.search_action(search_id, &video_id, action).await,
             Command::CancelImport => {
                 self.cancel_import().await;
                 self.sync();
@@ -1338,6 +1349,7 @@ impl<B: Backend> Controller<B> {
                 self.scheduled = Some((Instant::now() + IDLE_TIMEOUT, Scheduled::Idle));
             }
             let deadline = self.scheduled.map(|(deadline, _)| deadline);
+            let search_deadline = self.search.deadline();
             let poll_handle = self
                 .track
                 .as_ref()
@@ -1367,6 +1379,10 @@ impl<B: Backend> Controller<B> {
                 result = async {
                     match &mut self.setup_job { Some(job) => job.await, None => pending().await }
                 } => self.finish_setup(&result).await,
+                result = search::result(&mut self.search.job) => self.finish_search(result),
+                () = async {
+                    match search_deadline { Some(deadline) => sleep_until(deadline).await, None => pending().await }
+                } => self.search_expired(),
                 result = import_result(&mut self.import_job) => self.finish_import(result),
                 result = title_result(&mut self.title_job) => self.finish_title(result),
                 changed = async {
@@ -1403,6 +1419,7 @@ impl<B: Backend> Controller<B> {
                 },
             }
         }
+        self.join_search().await;
         self.cancel_import().await;
         if let Some(job) = self.title_job.take() {
             job.task.abort();

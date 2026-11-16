@@ -136,6 +136,32 @@ impl ImportStatus {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchState {
+    pub id: u64,
+    pub query: String,
+    pub phase: SearchPhase,
+    pub status: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SearchPhase {
+    #[default]
+    Idle,
+    Loading,
+    Results(crate::search::Results),
+    Empty {
+        rejected: usize,
+    },
+    Failed(crate::search::Error),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchAction {
+    Play,
+    Enqueue { id: u64 },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnqueueResult {
     pub request_id: u64,
@@ -182,6 +208,7 @@ pub struct State {
     pub volume_seq: u64,
     pub queue: Vec<QueueItem>,
     pub import: ImportStatus,
+    pub search: SearchState,
     pub history: Vec<HistoryEntry>,
     /// A non-fatal remark from startup, such as a recovered history file.
     pub notice: Option<String>,
@@ -212,6 +239,7 @@ impl Default for State {
             volume_seq: 0,
             queue: Vec::new(),
             import: ImportStatus::Ready,
+            search: SearchState::default(),
             history: Vec::new(),
             notice: None,
         }
@@ -318,6 +346,18 @@ pub enum Command {
     },
     ImportPlaylist(String),
     CancelImport,
+    Search {
+        id: u64,
+        query: String,
+    },
+    CancelSearch {
+        id: u64,
+    },
+    SearchAction {
+        search_id: u64,
+        video_id: String,
+        action: SearchAction,
+    },
     Next,
     Pause,
     Resume,

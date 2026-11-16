@@ -15,7 +15,9 @@ mod components;
 mod components_live;
 mod composition;
 mod experience;
+mod native_search;
 mod native_ui;
+mod search;
 mod seek;
 
 fn state(phase: Phase) -> State {
@@ -169,7 +171,9 @@ fn reveal_action(cx: &mut TestAppContext, window: AnyWindowHandle, id: &ElementI
                 window.render_frame(cx);
             });
         }
-    } else if present(cx, window, "repeat") || present(cx, window, "import-playlist") {
+    } else if !present(cx, window, "search-region")
+        && (present(cx, window, "repeat") || present(cx, window, "import-playlist"))
+    {
         act(cx, window, |window, cx| {
             window.press("escape", cx);
             window.render_frame(cx);

@@ -159,6 +159,7 @@ fn native_player_redesign_evidence() {
         let executor = cx.background_executor().clone();
         cx.spawn(async move |cx| {
             let mut cases = vec!["idle", "playing", "playing-empty", "focused", "unfocused", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "setup", "settings", "destination", "credentials", "help", "options-hover", "server-selector", "channel-selector", "selector-keyboard", "permission", "setup-help", "auth-error", "idle-queued", "long-title", "link-video", "link-playlist", "added", "reordered", "removed", "removed-keyboard", "settings-long", "onboarding-player", "destination-player", "settings-scroll", "confirmation", "help-bottom", "idle-history", "playing-history", "queue-hover", "history-hover", "history-keyboard", "queue-menu", "history-menu", "focus-action-unfocused", "focus-action-hover", "focus-action-pressed", "focus-action-pointer", "focus-action-tab", "focus-action-activated", "focus-action-restored", "play-pointer", "play-keyboard", "focused-pointer", "focused-keyboard", "history-unicode"];
+            cases.extend(super::native_search::CASES);
             cases.extend(["components-notice", "components-notice-long", "components-checking", "components-downloading", "components-broken", "components-success"]);
             if std::env::var_os("GRAJEK_CAPTURE_INTERACTIONS").is_some() {
                 cases.extend(["hover-input", "hover-button", "pressed-button", "keyboard-button", "keyboard-row"]);
@@ -166,6 +167,8 @@ fn native_player_redesign_evidence() {
             if let Ok(filter) = std::env::var("GRAJEK_CAPTURE_CASES") {
                 cases.retain(|name| filter.split(',').any(|selected| selected == *name));
             }
+            assert!(!cases.is_empty(), "capture filter selected no cases");
+            std::fs::write(directory.join("cases.txt"), cases.join("\n")).expect("case list");
             for (width, height) in [(520., 560.), (420., 480.)] {
                 if std::env::var("GRAJEK_CAPTURE_WIDTH").is_ok_and(|filter| filter != format!("{width:.0}")) { continue; }
                 cx.update_window(window, |_, window, _| window.resize(size(px(width), px(height)))).expect("resize");
@@ -306,8 +309,39 @@ fn native_player_redesign_evidence() {
                         window.refresh();
                         window.on_next_frame(|_, _| {});
                     })).expect("configure fixture surface");
-                    snapshots.send_replace(snapshot);
+                    snapshots.send_replace(snapshot.clone());
                     executor.timer(Duration::from_millis(500)).await;
+                    if name.starts_with("search-") {
+                        cx.update_window(window, |_, window, cx| {
+                            view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx));
+                            window.input("Bach cello", cx);
+                        }).expect("native search text");
+                        executor.timer(Duration::from_millis(100)).await;
+                        assert!(receiver.try_recv().is_err(), "typing search never submits");
+                        cx.update_window(window, |_, window, cx| window.press("enter", cx)).expect("submit native search");
+                        executor.timer(Duration::from_millis(100)).await;
+                        let Command::Search { id, query } = receiver.try_recv().expect("search intent") else { panic!("expected explicit search"); };
+                        assert_eq!(query, "Bach cello");
+                        snapshots.send_replace(super::native_search::snapshot(name, snapshot.clone(), id));
+                        executor.timer(Duration::from_millis(200)).await;
+                        cx.update_window(window, |_, window, cx| {
+                            if name == "search-selected" { window.click("search-row-0", cx); }
+                            if name == "search-keyboard" {
+                                for _ in 0..30 {
+                                    if window.find("search-row-0").focused() == Some(true) { break; }
+                                    window.press("tab", cx);
+                                    window.render_frame(cx);
+                                }
+                                assert_eq!(window.find("search-row-0").focused(), Some(true));
+                                window.press("end", cx);
+                                window.press("space", cx);
+                            }
+                        }).expect("native search selection");
+                        executor.timer(Duration::from_millis(100)).await;
+                        assert!(receiver.try_recv().is_err(), "selecting results never mutates playback or queue");
+                        cx.update_window(window, |_, window, _| super::native_search::assert_geometry(name, window)).expect("native search geometry");
+                        std::fs::write(directory.join(format!("{name}-{width:.0}.interaction.txt")), "Explicit Enter search; no paste/typing or selection mutations; native geometry passed. Offline snapshots, no network/audio.\n").expect("search interaction evidence");
+                    }
                     if matches!(name, "link-video" | "link-playlist" | "added") {
                         let link = if name == "link-playlist" { "https://www.youtube.com/watch?v=aqz-KE-bpKQ&list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG" } else { "https://youtu.be/aqz-KE-bpKQ" };
                         cx.update_window(window, |_, window, cx| {
@@ -472,8 +506,9 @@ fn native_player_redesign_evidence() {
                     let geometry = cx.update_window(window, |_, window, _| {
                         let mut geometry = serde_json::Map::new();
                         let b = window.bounds();
+                        geometry.insert("scale-factor".into(), serde_json::json!(window.scale_factor()));
                         geometry.insert("window-on-display".into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
-                        for id in ["components-content", "components-download", "components-later", "player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination", "audio-footer", "volume", "volume-percent", "queue-list", "history-list", "track-options-menu"] {
+                        for id in ["search-region", "search-list", "search-row-0", "search-row-4", "search-actions", "search-cancel", "search-play", "search-enqueue", "components-content", "components-download", "components-later", "player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination", "audio-footer", "volume", "volume-percent", "queue-list", "history-list", "track-options-menu"] {
                             if let Some(element) = window.try_find(id) {
                                 let b = element.bounds();
                                 geometry.insert(id.into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
@@ -514,6 +549,36 @@ fn native_player_redesign_evidence() {
                         }).expect("native notice focus recovery");
                         assert!(receiver.try_recv().is_err(), "notice dismissal sends no playback or repair command");
                     }
+                    if matches!(name, "search-selected" | "search-keyboard") {
+                        let search_id = cx.update_window(window, |_, _, cx| view.read(cx).state.search.id).expect("current native search identity");
+                        cx.update_window(window, |_, window, cx| window.click(if name == "search-selected" { "search-enqueue" } else { "search-play" }, cx)).expect("explicit native selected action");
+                        executor.timer(Duration::from_millis(100)).await;
+                        let mut accepted = super::native_search::snapshot(name, snapshot.clone(), search_id);
+                        accepted.search.phase = crate::player::SearchPhase::Idle;
+                        if name == "search-selected" {
+                            let Command::SearchAction { search_id: selected_id, video_id, action: crate::player::SearchAction::Enqueue { id } } = receiver.try_recv().expect("selected enqueue intent") else { panic!("expected selected enqueue"); };
+                            assert_eq!(selected_id, search_id);
+                            assert_eq!(video_id, "aaaaaaaaaa0");
+                            accepted.queue.push(QueueItem { id: 900, url: "https://www.youtube.com/watch?v=aaaaaaaaaa0".into(), title: None, title_unavailable: false });
+                            accepted.enqueue_result = Some(crate::player::EnqueueResult { request_id: id, item_id: Some(900) });
+                        } else {
+                            let Command::Transport { id, command } = receiver.try_recv().expect("selected play transport") else { panic!("expected selected play transport"); };
+                            assert!(matches!(*command, Command::SearchAction { search_id: selected_id, video_id, action: crate::player::SearchAction::Play } if selected_id == search_id && video_id == "aaaaaaaaaa4"));
+                            accepted.transport_ack = id;
+                        }
+                        assert!(receiver.try_recv().is_err(), "one selected action only");
+                        cx.update_window(window, |_, window, _| assert!(window.try_find("search-region").is_some(), "action waits for controller acknowledgement")).expect("native pending search");
+                        snapshots.send_replace(accepted);
+                        executor.timer(Duration::from_millis(150)).await;
+                        cx.update_window(window, |_, window, cx| {
+                            assert!(window.try_find("search-region").is_none());
+                            assert!(view.read(cx).input.read(cx).focus_handle(cx).is_focused(window));
+                        }).expect("native selected-action acknowledgement and focus");
+                        let path = directory.join(format!("{name}-{width:.0}.interaction.txt"));
+                        let mut evidence = std::fs::read_to_string(&path).expect("read selection evidence");
+                        evidence.push_str("After capture: one explicit identity-bound selected action; kept results while pending; controller acknowledgement closed results and restored editor focus.\n");
+                        std::fs::write(path, evidence).expect("native selected action evidence");
+                    }
                     cx.update_window(window, |_, window, cx| {
                         if matches!(name, "pressed-button" | "focus-action-pressed") {
                             window.dispatch_event(MouseUpEvent {
@@ -523,7 +588,12 @@ fn native_player_redesign_evidence() {
                             }.to_platform_input(), cx);
                         }
                         window.press("escape", cx);
+                        if name.starts_with("search-") && view.read(cx).searching() { window.press("escape", cx); }
                     }).expect("dismiss menus and release pointer");
+                    if name.starts_with("search-") && !matches!(name, "search-selected" | "search-keyboard") {
+                        assert!(matches!(receiver.try_recv(), Ok(Command::CancelSearch { .. })), "native Escape cancels only the current search");
+                        assert!(receiver.try_recv().is_err(), "search fixture leaves no mutation commands");
+                    }
                     if name == "confirmation" { assert!(matches!(receiver.try_recv(), Ok(Command::ConfirmSetup(false))), "fixture confirmation cancellation"); }
                 }
             }
@@ -556,6 +626,7 @@ fn native_player_redesign_evidence() {
                 assert_eq!(window.find("pause-resume").label(), Some("Resume"));
                 assert!(window.find("pause-resume").focused().is_some());
                 view.update(cx, |app, cx| window.focus(&app.input.read(cx).focus_handle(cx), cx));
+                window.press("ctrl-a", cx);
                 window.input("https://youtu.be/aqz-KE-bpKQ", cx);
                 window.press("ctrl-enter", cx);
             }).expect("native input and shortcut");

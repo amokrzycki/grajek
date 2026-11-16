@@ -15,3 +15,17 @@
 - Preserve the existing GPUI window, playback controller and media sessions. Hide must unmap rather than minimize or close; every tray Show path must restore hidden/minimized windows. Respect compositor focus restrictions.
 - Validate backend changes with the documented Cargo checks and real KDE Wayland/XWayland tests in `scripts/check-tray-linux.py`. Cross-compilation does not establish native Windows behavior; stopped fixtures do not establish live Discord audio.
 - Remove the vendor override only after a replacement API passes those native checks; update Cargo configuration/lockfile and `src/window.rs` together. A local registry edit or ignored source directory is not a reproducible replacement.
+
+## Agent skills
+
+### Issue tracker
+
+Use GitHub Issues in `amokrzycki/grajek`. Read `docs/agents/issue-tracker.md` before ticket operations.
+
+### Triage labels
+
+Use the five default triage labels. Read `docs/agents/triage-labels.md` before triaging issues.
+
+### Domain docs
+
+Use single-context domain docs. Read `docs/agents/domain.md` before exploring domain concepts or decisions.
