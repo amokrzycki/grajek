@@ -220,10 +220,8 @@ async fn assert_released(pid: u32, lock: &std::path::Path) -> anyhow::Result<()>
                 .write(true)
                 .open(lock)
                 .is_ok_and(|file| file.try_lock().is_ok());
-            #[cfg(target_os = "linux")]
-            let process_reaped = !std::path::Path::new(&format!("/proc/{pid}")).exists();
-            #[cfg(not(target_os = "linux"))]
-            let process_reaped = true;
+            let process_reaped = !cfg!(target_os = "linux")
+                || !std::path::Path::new(&format!("/proc/{pid}")).exists();
             if lock_released && process_reaped {
                 break Ok::<(), anyhow::Error>(());
             }
