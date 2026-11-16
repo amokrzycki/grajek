@@ -189,7 +189,10 @@ fn marker_path() -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "grajek-search-{}-{}.marker",
         std::process::id(),
-        std::thread::current().name().unwrap_or("test")
+        std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .replace(':', "-")
     ))
 }
 
