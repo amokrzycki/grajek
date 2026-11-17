@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::composer::Landing;
 use crate::player::{SearchAction, SearchPhase, SearchState};
 use crate::search::{ResultItem, Results};
 
@@ -10,7 +11,7 @@ fn edit(cx: &mut TestAppContext, window: AnyWindowHandle, value: &str) {
     });
 }
 
-fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
+pub(super) fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
     cx.run_until_parked();
     act(cx, window, |window, cx| {
         window.simulate_next_frame(cx);
@@ -76,7 +77,7 @@ fn explicit_submission_selection_and_acknowledged_enqueue(cx: &mut TestAppContex
     click(cx, window, "search-enqueue");
     click(cx, window, "search-enqueue");
     assert!(
-        matches!(received.try_recv(), Ok(Command::SearchAction { search_id: 1, video_id, action: SearchAction::Enqueue { id: 1 } }) if video_id == "aaaaaaaaaa0")
+        matches!(received.try_recv(), Ok(Command::SearchAction { search_id: 1, video_id, action: SearchAction::Enqueue { id: 1, placement: crate::player::Placement::End } }) if video_id == "aaaaaaaaaa0")
     );
     assert!(received.try_recv().is_err());
     assert!(
@@ -97,7 +98,7 @@ fn explicit_submission_selection_and_acknowledged_enqueue(cx: &mut TestAppContex
     states.send_replace(accepted);
     settle(cx, window);
     assert!(!present(cx, window, "search-cancel"));
-    cx.update(|cx| assert_eq!(view.read(cx).added, Some(42)));
+    cx.update(|cx| assert_eq!(view.read(cx).added, Some((42, Landing::End))));
 }
 
 #[gpui_kit::test]
@@ -187,7 +188,10 @@ fn action_refusal_retains_selection_and_retry_uses_a_new_acknowledgement(cx: &mu
     assert!(matches!(
         received.try_recv(),
         Ok(Command::SearchAction {
-            action: SearchAction::Enqueue { id: 1 },
+            action: SearchAction::Enqueue {
+                id: 1,
+                placement: crate::player::Placement::End
+            },
             ..
         })
     ));
@@ -203,7 +207,7 @@ fn action_refusal_retains_selection_and_retry_uses_a_new_acknowledgement(cx: &mu
     assert!(!button(cx, window, "search-enqueue").1);
     click(cx, window, "search-enqueue");
     assert!(
-        matches!(received.try_recv(), Ok(Command::SearchAction { search_id: 1, video_id, action: SearchAction::Enqueue { id: 2 } }) if video_id == "aaaaaaaaaa1")
+        matches!(received.try_recv(), Ok(Command::SearchAction { search_id: 1, video_id, action: SearchAction::Enqueue { id: 2, placement: crate::player::Placement::End } }) if video_id == "aaaaaaaaaa1")
     );
 }
 

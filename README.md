@@ -284,22 +284,25 @@ the queue intact and open component recovery. Stop can cancel these checks.
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Play URL / Enter          | Replaces the playing or paused track immediately and keeps the queue. Invalid input leaves playback intact.                                            |
 | Add to queue / Ctrl+Enter | Appends a video without starting playback, joining voice or interrupting the current track.                                                            |
+| Queue next / Move to next | Inserts a new video, or moves a queued entry, to the front of the pending queue. Never interrupts the current track or joins voice.                    |
 | Play Queue / Next         | Starts the first pending entry. During playback or preparation it reads Next and cancels the current track or request first. Requires a pending entry. |
 | Pause / Resume            | Pauses or resumes the current track without advancing the queue.                                                                                       |
 | Stop                      | Cancels audio preparation, playback and pending recovery. Keeps the queue and never advances it. Playlist import continues.                            |
 | Leave voice               | Stops audio and recovery, then disconnects. Keeps local data; a later Play URL or Play Queue reconnects.                                               |
 | Clear queue               | Removes pending entries and cancels playlist import; leaves the current track playing.                                                                 |
 
-Move entries up or down, or remove them in the Queue tab. Titles load separately;
+Move entries to next, up or down, or remove them in the Queue tab. Titles load separately;
 a title lookup failure does not prevent playback. The History tab holds the 50
 most recently played unique videos, newest first. Play now replaces the current
-track; Add to queue appends it. Clear history asks for confirmation.
+track; Add to queue appends it and Queue next inserts it at the front of the
+pending queue. Clear history asks for confirmation.
 
 Repeat cycles through Off, Repeat Track and Repeat Queue. Repeat Track restarts
 a successfully completed track. Repeat Queue rotates successfully completed
 queued tracks behind pending entries; a direct Play URL track never enters that
 cycle. Next skips the interrupted track, and Stop never requeues it. Clear queue
 can leave the active queued track repeating alone; use Stop or turn repeat off.
+With Repeat Track on, a queued next entry waits until you press Next or Play Queue.
 
 Continue on error defaults to Off. When enabled, it skips queued media failures
 after a short delay and stops after three consecutive failures. It does not retry
@@ -314,8 +317,8 @@ The window stays open after idle leave. Play URL or Play Queue reconnects.
 
 Paste a `https://www.youtube.com/playlist?list=...` link and select Import Playlist.
 Links on `youtube.com` or `music.youtube.com` and watch links with both `v` and
-`list` also work. Import Playlist uses the playlist; Play URL and Add to queue
-use only the selected video. Pasting alone does nothing.
+`list` also work. Import Playlist uses the playlist; Play URL, Add to queue and
+Queue next use only the selected video. Pasting alone does nothing.
 
 Import reads metadata without joining voice or interrupting playback. It scans
 at most the first 100 playlist entries, skips known unavailable entries and
@@ -406,7 +409,7 @@ unwritable storage also produces a warning; playback can continue without saving
 | Playback stops after a disconnect       | Connectivity recovery does not restart interrupted audio. Once the gateway is ready, use Play URL or Play Queue. Fatal configuration/gateway startup failures require a restart.                                                                                                                              |
 
 Grajek controls one bot in one server and one ordinary voice channel, with one
-track at a time. It supports explicit YouTube search with at most five transient results and explicit Play now/Add to queue actions. It has no shuffle, playlist library, Discord commands or
+track at a time. It supports explicit YouTube search with at most five transient results and explicit Play now/Add to queue/Queue next actions. It has no shuffle, playlist library, Discord commands or
 drag and drop. Historical Linux native-window checks cover KWin Wayland and
 XWayland, not every compositor or display setup. Current platform verification
 and its outstanding Windows checks are recorded in the release report.

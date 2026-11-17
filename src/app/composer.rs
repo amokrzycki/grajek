@@ -12,7 +12,7 @@ use gpui_kit::{
 use super::help::HelpExt;
 use super::{PlayerApp, label};
 use crate::config::{playlist_url, video_url};
-use crate::player::{Command, ImportStatus, Phase};
+use crate::player::{Command, ImportStatus, Phase, Placement, RepeatMode};
 use crate::style::space;
 
 /// What the pasted text is, judged locally. Recognition never starts playback or import.
@@ -55,9 +55,9 @@ impl LinkKind {
         match self {
             Self::Empty | Self::Other | Self::Query => None,
             Self::Video => Some("Video link recognized."),
-            Self::VideoInPlaylist => {
-                Some("Video in a playlist · Play now and Add to queue use this video only.")
-            }
+            Self::VideoInPlaylist => Some(
+                "Video in a playlist · Play now, Add to queue and Queue next use this video only.",
+            ),
             Self::Playlist => Some("Playlist link · Import playlist adds up to 100 tracks."),
         }
     }
@@ -88,24 +88,43 @@ fn url_shaped(text: &str) -> bool {
         })
 }
 
-/// A submitted Add to queue that the controller has not answered yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Landing {
+    End,
+    Next,
+    Moved,
+}
+
+impl From<Placement> for Landing {
+    fn from(placement: Placement) -> Self {
+        match placement {
+            Placement::End => Self::End,
+            Placement::Next => Self::Next,
+        }
+    }
+}
+
+pub(super) const REPEAT_TRACK_NOTE: &str = "Repeat Track is on; press Next to play it.";
+
+/// An insert or move the controller has not answered yet. `text` is the composer text it was
+/// submitted from; `None` marks a list action, which typing must not cancel.
 pub(super) struct PendingEnqueue {
-    text: String,
+    pub(super) text: Option<String>,
     id: u64,
+    landing: Landing,
 }
 
 pub(super) enum Resolution {
-    /// The controller inserted this entry.
-    Added(u64),
+    Placed(u64, Landing),
     Failed,
 }
 
 impl PlayerApp {
-    /// Add to queue for the entered link. Feedback follows the controller's snapshots only.
-    pub(super) fn enqueue(&mut self, cx: &mut Context<Self>) {
+    /// Feedback follows the controller's snapshots only.
+    pub(super) fn enqueue(&mut self, placement: Placement, cx: &mut Context<Self>) {
         let text = self.input_text(cx);
         if LinkKind::of(&text) == LinkKind::Query {
-            self.local_hint = Some("Search, then select a result to add to queue.");
+            self.local_hint = Some("Search, then select a result to add or queue next.");
             cx.notify();
             return;
         }
@@ -115,24 +134,67 @@ impl PlayerApp {
             cx.notify();
             return;
         }
-        if !self.state.can_enqueue()
+        if !self.can_place(placement)
             || self
                 .enqueue_pending
                 .as_ref()
-                .is_some_and(|pending| pending.text == text)
+                .is_some_and(|pending| pending.text.as_ref() == Some(&text))
         {
             return;
         }
-        let id = self.enqueue_seq + 1;
-        if self.send(Command::EnqueueRequest {
-            id,
-            value: text.clone(),
+        if self.begin_request(Some(text.clone()), placement.into(), |id| {
+            Command::EnqueueRequest {
+                id,
+                value: text,
+                placement,
+            }
         }) {
-            self.enqueue_seq = id;
-            self.added = None;
             self.local_hint = None;
-            self.enqueue_pending = Some(PendingEnqueue { text, id });
             cx.notify();
+        }
+    }
+
+    /// Sends one insert or move request and holds the window's only pending slot for it.
+    fn begin_request(
+        &mut self,
+        text: Option<String>,
+        landing: Landing,
+        command: impl FnOnce(u64) -> Command,
+    ) -> bool {
+        let id = self.enqueue_seq + 1;
+        if !self.send(command(id)) {
+            return false;
+        }
+        self.enqueue_seq = id;
+        self.added = None;
+        self.enqueue_pending = Some(PendingEnqueue { text, id, landing });
+        true
+    }
+
+    pub(super) fn can_place(&self, placement: Placement) -> bool {
+        match placement {
+            Placement::End => self.state.can_enqueue(),
+            Placement::Next => self.state.can_queue_next(),
+        }
+    }
+
+    /// Queue next for a History entry; the acknowledgement does not depend on the composer.
+    pub(super) fn queue_url_next(&mut self, url: String) {
+        if self.enqueue_pending.is_none() && self.state.can_queue_next() {
+            self.begin_request(None, Landing::Next, |id| Command::EnqueueRequest {
+                id,
+                value: url,
+                placement: Placement::Next,
+            });
+        }
+    }
+
+    pub(super) fn move_to_next(&mut self, entry: u64) {
+        if self.enqueue_pending.is_none() && self.state.controller_ready {
+            self.begin_request(None, Landing::Moved, |request_id| Command::MoveToNext {
+                request_id,
+                id: entry,
+            });
         }
     }
 
@@ -142,7 +204,9 @@ impl PlayerApp {
         let result = next
             .enqueue_result
             .filter(|result| result.request_id == pending.id)?;
-        Some(result.item_id.map_or(Resolution::Failed, Resolution::Added))
+        Some(result.item_id.map_or(Resolution::Failed, |id| {
+            Resolution::Placed(id, pending.landing)
+        }))
     }
 
     pub(super) fn finish_enqueue(
@@ -154,10 +218,12 @@ impl PlayerApp {
         let Some(pending) = self.enqueue_pending.take() else {
             return;
         };
-        if let Resolution::Added(id) = resolution {
-            self.added = Some(*id);
+        if let Resolution::Placed(id, landing) = resolution {
+            self.added = Some((*id, *landing));
             // Only the text that was submitted is cleared; anything typed since stays.
-            if self.input_text(cx) == pending.text {
+            if let Some(text) = pending.text
+                && self.input_text(cx) == text
+            {
                 self.input
                     .update(cx, |input, cx| input.set_value("", window, cx));
             }
@@ -172,17 +238,30 @@ impl PlayerApp {
             let failed = matches!(self.state.import, ImportStatus::Failed(_));
             return Some((self.state.import.message(), failed));
         }
-        if let Some(id) = self.added
+        if let Some((id, landing)) = self.added
             && let Some(position) = self.state.queue.iter().position(|item| item.id == id)
         {
-            return Some((
-                format!(
-                    "Added to queue · #{} · {}",
-                    position + 1,
-                    self.state.queue[position].label()
-                ),
-                false,
-            ));
+            let title = self.state.queue[position].label();
+            let note = if self.state.preferences.repeat == RepeatMode::Track {
+                format!(" · {REPEAT_TRACK_NOTE}")
+            } else {
+                String::new()
+            };
+            match landing {
+                Landing::End => {
+                    return Some((
+                        format!("Added to queue · #{} · {title}", position + 1),
+                        false,
+                    ));
+                }
+                Landing::Next if position == 0 => {
+                    return Some((format!("Queued next · {title}{note}"), false));
+                }
+                Landing::Moved if position == 0 => {
+                    return Some((format!("Moved to next · {title}{note}"), false));
+                }
+                Landing::Next | Landing::Moved => {}
+            }
         }
         if let Some(hint) = self.local_hint {
             return Some((hint.into(), false));
@@ -275,9 +354,33 @@ impl PlayerApp {
                         },
                         &self.help,
                     )
-                    .on_click(cx.listener(|this, _, _, cx| this.enqueue(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.enqueue(Placement::End, cx))),
+            )
+            .child(
+                self.button("enqueue-next")
+                    .icon(AudioIcon::ListStart)
+                    .accessibility_label("Queue next")
+                    .ghost()
+                    .small()
+                    .flex_none()
+                    .disabled(!self.state.can_queue_next())
+                    .help(self.queue_next_help(), &self.help)
+                    .on_click(cx.listener(|this, _, _, cx| this.enqueue(Placement::Next, cx))),
             )
             .child(self.import_button(kind.is_playlist(), cx))
+    }
+
+    pub(super) fn queue_next_help(&self) -> String {
+        if self.state.queue.len() >= crate::queue::QUEUE_LIMIT {
+            return "Queue full · remove a track to queue another".into();
+        }
+        let mut help =
+            String::from("Queue next · plays after the current track. Replaces nothing.");
+        if self.state.preferences.repeat == RepeatMode::Track {
+            help.push(' ');
+            help.push_str(REPEAT_TRACK_NOTE);
+        }
+        help
     }
 
     /// Fixed height: recognition, confirmation and import feedback never move the list.

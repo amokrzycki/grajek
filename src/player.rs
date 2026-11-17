@@ -6,6 +6,7 @@ use songbird::tracks::{TrackResult, TrackState};
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, watch};
 
+pub use crate::queue::Placement;
 use crate::{config::Config, discord::Health, live::Live, media::Resolved, store};
 use controller::Controller;
 pub use state::{

@@ -21,7 +21,7 @@ use crate::{
     config::{playlist_url, video_url},
     discord::Health,
     media::{self, Resolved, TrackInfo},
-    queue::{Full, QUEUE_LIMIT, Queue},
+    queue::{Full, Placement, QUEUE_LIMIT, Queue},
     store::{HistoryEntry, Saved, SavedQueueItem},
 };
 
@@ -651,8 +651,9 @@ impl<B: Backend> Controller<B> {
                     origin: Origin::Queue,
                 }
             }
-            Start::Rotate(completed) => {
-                if let Some(next) = self.queue.pop_front() {
+            Start::Rotate { completed, next } => {
+                if let Some(next) = next {
+                    self.queue.remove(next.id);
                     if self.queue.push(completed.url, completed.title).is_err() {
                         self.report("Could not rotate the completed track: queue is full.".into());
                     }
@@ -714,17 +715,25 @@ impl<B: Backend> Controller<B> {
         match self.saved.repeat {
             RepeatMode::Track => self.start(Start::Track(request)).await,
             RepeatMode::Queue if request.origin == Origin::Queue => {
-                self.start(Start::Rotate(completed)).await;
+                let next = self.queue.snapshot().into_iter().next();
+                self.start(Start::Rotate { completed, next }).await;
             }
             RepeatMode::Off | RepeatMode::Queue => self.advance().await,
         }
     }
 
-    fn enqueue(&mut self, value: &str) -> Option<u64> {
+    fn answer(&mut self, request_id: u64, item_id: Option<u64>) {
+        self.enqueue_result = Some(super::EnqueueResult {
+            request_id,
+            item_id,
+        });
+    }
+
+    fn enqueue(&mut self, value: &str, placement: Placement) -> Option<u64> {
         match video_url(value) {
             Ok(url) => {
                 let title = self.known_title(&url);
-                match self.queue.push(url, title) {
+                match self.queue.insert(url, title, placement) {
                     Ok(id) => {
                         self.queue_changed();
                         return Some(id);
@@ -896,15 +905,21 @@ impl<B: Backend> Controller<B> {
                 }
             }
             Command::Enqueue(value) => {
-                self.enqueue(&value);
+                self.enqueue(&value, Placement::End);
             }
-            Command::EnqueueRequest { id, value } => {
-                let item_id = self.enqueue(&value);
-                self.enqueue_result = Some(super::EnqueueResult {
-                    request_id: id,
-                    item_id,
-                });
+            Command::EnqueueRequest {
+                id,
+                value,
+                placement,
+            } => {
+                let item_id = self.enqueue(&value, placement);
+                self.answer(id, item_id);
                 self.sync();
+            }
+            Command::MoveToNext { request_id, id } => {
+                let moved = self.queue.move_to_front(id).then_some(id);
+                self.answer(request_id, moved);
+                self.queue_changed();
             }
             Command::Next => {
                 self.failure_notice = None;

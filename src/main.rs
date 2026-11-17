@@ -34,6 +34,7 @@ gpui_kit::assets::icon_assets!(
         SkipForward,
         Square,
         ListPlus,
+        ListStart,
         CornerDownLeft,
         Import,
         Check

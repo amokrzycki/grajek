@@ -123,13 +123,13 @@ fn row_menu_keyboard_dismissal_restores_visible_focus(cx: &mut TestAppContext) {
     assert!(super::animation_fixes::focused(
         cx,
         window,
-        ("queue-up", 11_u64)
+        ("queue-next", 11_u64)
     ));
     act(cx, window, |window, cx| window.press("down", cx));
     assert!(super::animation_fixes::focused(
         cx,
         window,
-        ("queue-down", 11_u64)
+        ("queue-up", 11_u64)
     ));
     act(cx, window, |window, cx| window.press("escape", cx));
     assert!(super::animation_fixes::focused(

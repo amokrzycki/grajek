@@ -151,7 +151,7 @@ async fn seek_failure_keeps_position_queue_and_failure_budget() -> Result<()> {
         .context("no track")?
         .request
         .origin = Origin::Queue;
-    controller.enqueue(B);
+    controller.enqueue(B, crate::player::Placement::End);
     controller.emit(controller.track.as_ref().context("no track")?.state(None));
     let gate = track.seek_gate();
     controller.seek(0, Duration::from_secs(30));
@@ -443,7 +443,7 @@ async fn failed_range_end_never_repeats_or_rotates_and_only_opt_in_recovery_adva
                 .context("no track")?
                 .request
                 .origin = Origin::Queue;
-            controller.enqueue(B);
+            controller.enqueue(B, crate::player::Placement::End);
             let source = crate::media::SourceControl::default();
             source.record_failure();
             // Includes the MP4 path where seek succeeds before the following packet read fails.

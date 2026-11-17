@@ -29,7 +29,11 @@ pub(super) struct Request {
 pub(super) enum Start {
     Track(Request),
     Queue(Vec<QueueItem>),
-    Rotate(HistoryEntry),
+    /// `next` is bound when the track ends, so later queue edits cannot change who starts.
+    Rotate {
+        completed: HistoryEntry,
+        next: Option<QueueItem>,
+    },
 }
 
 /// The input and correctly typed task live together until cancellation or completion.

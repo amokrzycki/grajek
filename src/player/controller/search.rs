@@ -1,7 +1,7 @@
 use super::{Backend, Controller, JoinError, JoinHandle, pending, watch};
 use crate::{
     config::video_url,
-    player::{Command, EnqueueResult, SearchAction, SearchPhase, SearchState},
+    player::{Command, SearchAction, SearchPhase, SearchState},
     queue::QUEUE_LIMIT,
     search::{Error, Results, TIMEOUT, query},
 };
@@ -252,11 +252,8 @@ impl<B: Backend> Controller<B> {
         };
         if let Some(message) = refusal {
             self.search.state.status = Some(message.into());
-            if let SearchAction::Enqueue { id } = action {
-                self.enqueue_result = Some(EnqueueResult {
-                    request_id: id,
-                    item_id: None,
-                });
+            if let SearchAction::Enqueue { id, .. } = action {
+                self.answer(id, None);
             }
             return self.sync();
         }
@@ -264,12 +261,9 @@ impl<B: Backend> Controller<B> {
         self.search.state.status = None;
         match action {
             SearchAction::Play => Box::pin(self.command(Command::Play(url))).await,
-            SearchAction::Enqueue { id } => {
-                let item_id = self.enqueue(&url);
-                self.enqueue_result = Some(EnqueueResult {
-                    request_id: id,
-                    item_id,
-                });
+            SearchAction::Enqueue { id, placement } => {
+                let item_id = self.enqueue(&url, placement);
+                self.answer(id, item_id);
             }
         }
         self.sync();

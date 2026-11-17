@@ -328,3 +328,60 @@ async fn already_full_queue_rejects_import_before_spawning() -> Result<()> {
     assert!(!rig.saves.has_changed()?);
     Ok(())
 }
+
+#[tokio::test]
+async fn an_entry_queued_next_during_import_stays_in_front_of_the_imported_tracks() -> Result<()> {
+    const Z: &str = "https://www.youtube.com/watch?v=zzzzzzzzzzz";
+    let mut rig = Rig::new().await?;
+    rig.enqueue(A).await?;
+    rig.until(|s| s.queue.len() == 1).await?;
+    let reply = start(&mut rig).await?;
+    rig.send(Command::EnqueueRequest {
+        id: 1,
+        value: Z.into(),
+        placement: crate::player::Placement::Next,
+    })
+    .await?;
+    rig.until(|s| s.enqueue_result.is_some_and(|r| r.request_id == 1))
+        .await?;
+    complete(reply, metadata(&[B, C]))?;
+    rig.until(|s| matches!(s.import, ImportStatus::Finished { .. }))
+        .await?;
+    assert_eq!(rig.queued(), [Z, A, B, C]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn queue_next_filling_the_last_slot_makes_the_import_report_full_and_keeps_it() -> Result<()>
+{
+    const Z: &str = "https://www.youtube.com/watch?v=zzzzzzzzzzz";
+    let mut rig = Rig::start(Saved {
+        remember_queue: true,
+        queue: vec![
+            SavedQueueItem {
+                url: A.into(),
+                title: Some("Existing".into()),
+            };
+            QUEUE_LIMIT - 1
+        ],
+        ..Saved::default()
+    });
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    let reply = start(&mut rig).await?;
+    rig.send(Command::EnqueueRequest {
+        id: 1,
+        value: Z.into(),
+        placement: crate::player::Placement::Next,
+    })
+    .await?;
+    rig.until(|s| s.enqueue_result.is_some_and(|r| r.request_id == 1))
+        .await?;
+    complete(reply, metadata(&[B, B, B, B, B]))?;
+    let state = rig.until(|s| s.import != ImportStatus::Importing).await?;
+    assert!(
+        matches!(state.import, ImportStatus::Failed(ref message) if message.contains("Queue full"))
+    );
+    assert_eq!(state.queue.len(), QUEUE_LIMIT);
+    assert_eq!(state.queue[0].url, Z);
+    Ok(())
+}
