@@ -160,6 +160,7 @@ fn native_player_redesign_evidence() {
         cx.spawn(async move |cx| {
             let mut cases = vec!["idle", "playing", "playing-empty", "focused", "unfocused", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "setup", "settings", "destination", "credentials", "help", "options-hover", "server-selector", "channel-selector", "selector-keyboard", "permission", "setup-help", "auth-error", "idle-queued", "long-title", "link-video", "link-playlist", "added", "reordered", "removed", "removed-keyboard", "settings-long", "onboarding-player", "destination-player", "settings-scroll", "confirmation", "help-bottom", "idle-history", "playing-history", "queue-hover", "history-hover", "history-keyboard", "queue-menu", "history-menu", "focus-action-unfocused", "focus-action-hover", "focus-action-pressed", "focus-action-pointer", "focus-action-tab", "focus-action-activated", "focus-action-restored", "play-pointer", "play-keyboard", "focused-pointer", "focused-keyboard", "history-unicode"];
             cases.extend(super::native_search::CASES);
+            cases.extend(super::queue_next_native::CASES);
             cases.extend(["components-notice", "components-notice-long", "components-checking", "components-downloading", "components-broken", "components-success"]);
             if std::env::var_os("GRAJEK_CAPTURE_INTERACTIONS").is_some() {
                 cases.extend(["hover-input", "hover-button", "pressed-button", "keyboard-button", "keyboard-row"]);
@@ -200,16 +201,16 @@ fn native_player_redesign_evidence() {
                         let mut snapshot = super::experience::configured();
                         if matches!(name, "destination" | "destination-player") { snapshot.setup.destination = None; snapshot.available = false; snapshot.setup.status = crate::setup::Status::NeedsDestination; }
                         snapshot
-                    } else if matches!(name, "idle" | "idle-queued" | "idle-history" | "play-pointer" | "play-keyboard") || name.starts_with("focus-action-") {
+                    } else if matches!(name, "idle" | "idle-queued" | "idle-history" | "play-pointer" | "play-keyboard" | "qn-idle") || name.starts_with("focus-action-") {
                         let mut snapshot = super::experience::configured();
-                        if name == "idle-queued" { snapshot.queue = with_lists(Phase::Ready, 3, 0).queue; }
+                        if matches!(name, "idle-queued" | "qn-idle") { snapshot.queue = with_lists(Phase::Ready, 3, 0).queue; }
                         if name == "idle-history" { snapshot.history = with_lists(Phase::Ready, 0, 12).history; }
                         snapshot
                     } else {
                         let phase = match name {
-                            "paused" | "importing" => Phase::Paused,
-                            "resolving" => Phase::Resolving,
-                            "connecting" => Phase::Connecting,
+                            "paused" | "importing" | "qn-paused" => Phase::Paused,
+                            "resolving" | "qn-resolving" => Phase::Resolving,
+                            "connecting" | "qn-connecting" => Phase::Connecting,
                             "error" | "disconnected" => Phase::Error,
                             _ => Phase::Playing,
                         };
@@ -261,7 +262,9 @@ fn native_player_redesign_evidence() {
                     if name == "playing-empty" { snapshot.queue.clear(); }
                     if name == "long-title" { snapshot.track = playing(Phase::Playing, Some("Nils Frahm & Ólafur Arnalds — Collaborative Improvisation Sessions, Full Concert Recording (Live at the Funkhaus Berlin, 2019 — Remastered)"), 84).track; }
                     if name == "history-unicode" { snapshot.history[0].title = Some("Żółć · 音楽を楽しむ · Привет · A long Unicode track title ".repeat(12)); }
-                    if name == "full" { snapshot.queue = with_lists(Phase::Playing, 100, 0).queue; }
+                    if matches!(name, "full" | "qn-full") { snapshot.queue = with_lists(Phase::Playing, 100, 0).queue; }
+                    if name == "qn-move-deep" { snapshot.queue = with_lists(Phase::Playing, 60, 0).queue; }
+                    if name == "qn-repeat-track" { snapshot.preferences.repeat = RepeatMode::Track; }
                     if name == "options" { snapshot.preferences.repeat = RepeatMode::Queue; }
                     let expected_phase = snapshot.phase;
                     let mut expected_count = snapshot.queue.len();
@@ -298,7 +301,7 @@ fn native_player_redesign_evidence() {
                         app.settings_scroll.set_offset(gpui_kit::point(px(0.), px(0.)));
                         app.setup_help = matches!(name, "setup-help" | "settings-long" | "settings-scroll");
                         app.help.dismiss(cx);
-                        app.select_section(if matches!(name, "history" | "idle-history" | "playing-history" | "history-hover" | "history-keyboard" | "history-menu" | "history-unicode") { Section::History } else { Section::Queue }, cx);
+                        app.select_section(if matches!(name, "history" | "idle-history" | "playing-history" | "history-hover" | "history-keyboard" | "history-menu" | "history-unicode" | "qn-history" | "qn-keyboard-history") { Section::History } else { Section::Queue }, cx);
                         if matches!(name, "setup" | "setup-help" | "auth-error" | "credentials") {
                             window.focus(&app.token.read(cx).focus_handle(cx), cx);
                         } else if name == "focused" {
@@ -325,7 +328,7 @@ fn native_player_redesign_evidence() {
                         snapshots.send_replace(super::native_search::snapshot(name, snapshot.clone(), id));
                         executor.timer(Duration::from_millis(200)).await;
                         cx.update_window(window, |_, window, cx| {
-                            if name == "search-selected" { window.click("search-row-0", cx); }
+                            if matches!(name, "search-selected" | "search-queue-next") { window.click("search-row-0", cx); }
                             if name == "search-keyboard" {
                                 for _ in 0..30 {
                                     if window.find("search-row-0").focused() == Some(true) { break; }
@@ -351,7 +354,7 @@ fn native_player_redesign_evidence() {
                         }).expect("type a link");
                         if name == "added" {
                             executor.timer(Duration::from_millis(150)).await;
-                            let Command::EnqueueRequest { id: request_id, value } = receiver.try_recv().expect("enqueue intent") else { panic!("expected enqueue request"); };
+                            let Command::EnqueueRequest { id: request_id, value, .. } = receiver.try_recv().expect("enqueue intent") else { panic!("expected enqueue request"); };
                             assert_eq!(value, link);
                             let mut acknowledged = after_commands.clone();
                             let id = acknowledged.queue.iter().map(|item| item.id).max().unwrap_or(0) + 1;
@@ -360,6 +363,14 @@ fn native_player_redesign_evidence() {
                             expected_count = acknowledged.queue.len();
                             snapshots.send_replace(acknowledged);
                             executor.timer(Duration::from_millis(300)).await;
+                        }
+                    }
+                    if name.starts_with("qn-") {
+                        let mut fixture = super::queue_next_native::Fixture { view: &view, window, executor: &executor, snapshots: &snapshots, receiver: &mut receiver, directory: &directory, width };
+                        if name == "qn-full" {
+                            fixture.full(&after_commands, cx);
+                        } else {
+                            expected_count = fixture.drive(name, &after_commands, cx).await;
                         }
                     }
                     if matches!(name, "reordered" | "removed" | "removed-keyboard") {
@@ -508,7 +519,7 @@ fn native_player_redesign_evidence() {
                         let b = window.bounds();
                         geometry.insert("scale-factor".into(), serde_json::json!(window.scale_factor()));
                         geometry.insert("window-on-display".into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
-                        for id in ["search-region", "search-list", "search-row-0", "search-row-4", "search-actions", "search-cancel", "search-play", "search-enqueue", "components-content", "components-download", "components-later", "player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination", "audio-footer", "volume", "volume-percent", "queue-list", "history-list", "track-options-menu"] {
+                        for id in ["search-region", "search-list", "search-row-0", "search-row-4", "search-actions", "search-cancel", "search-play", "search-enqueue", "search-enqueue-next", "enqueue", "enqueue-next", "import-playlist", "link-status", "components-content", "components-download", "components-later", "player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination", "audio-footer", "volume", "volume-percent", "queue-list", "history-list", "track-options-menu"] {
                             if let Some(element) = window.try_find(id) {
                                 let b = element.bounds();
                                 geometry.insert(id.into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
@@ -549,22 +560,24 @@ fn native_player_redesign_evidence() {
                         }).expect("native notice focus recovery");
                         assert!(receiver.try_recv().is_err(), "notice dismissal sends no playback or repair command");
                     }
-                    if matches!(name, "search-selected" | "search-keyboard") {
+                    if matches!(name, "search-selected" | "search-keyboard" | "search-queue-next") {
                         let search_id = cx.update_window(window, |_, _, cx| view.read(cx).state.search.id).expect("current native search identity");
-                        cx.update_window(window, |_, window, cx| window.click(if name == "search-selected" { "search-enqueue" } else { "search-play" }, cx)).expect("explicit native selected action");
+                        cx.update_window(window, |_, window, cx| window.click(match name { "search-selected" => "search-enqueue", "search-queue-next" => "search-enqueue-next", _ => "search-play" }, cx)).expect("explicit native selected action");
                         executor.timer(Duration::from_millis(100)).await;
                         let mut accepted = super::native_search::snapshot(name, snapshot.clone(), search_id);
                         accepted.search.phase = crate::player::SearchPhase::Idle;
-                        if name == "search-selected" {
-                            let Command::SearchAction { search_id: selected_id, video_id, action: crate::player::SearchAction::Enqueue { id } } = receiver.try_recv().expect("selected enqueue intent") else { panic!("expected selected enqueue"); };
-                            assert_eq!(selected_id, search_id);
-                            assert_eq!(video_id, "aaaaaaaaaa0");
-                            accepted.queue.push(QueueItem { id: 900, url: "https://www.youtube.com/watch?v=aaaaaaaaaa0".into(), title: None, title_unavailable: false });
-                            accepted.enqueue_result = Some(crate::player::EnqueueResult { request_id: id, item_id: Some(900) });
-                        } else {
+                        if name == "search-keyboard" {
                             let Command::Transport { id, command } = receiver.try_recv().expect("selected play transport") else { panic!("expected selected play transport"); };
                             assert!(matches!(*command, Command::SearchAction { search_id: selected_id, video_id, action: crate::player::SearchAction::Play } if selected_id == search_id && video_id == "aaaaaaaaaa4"));
                             accepted.transport_ack = id;
+                        } else {
+                            let Command::SearchAction { search_id: selected_id, video_id, action: crate::player::SearchAction::Enqueue { id, placement } } = receiver.try_recv().expect("selected enqueue intent") else { panic!("expected selected enqueue"); };
+                            assert_eq!(placement, if name == "search-queue-next" { crate::player::Placement::Next } else { crate::player::Placement::End });
+                            assert_eq!(selected_id, search_id);
+                            assert_eq!(video_id, "aaaaaaaaaa0");
+                            let entry = QueueItem { id: 900, url: "https://www.youtube.com/watch?v=aaaaaaaaaa0".into(), title: None, title_unavailable: false };
+                            if placement == crate::player::Placement::Next { accepted.queue.insert(0, entry); } else { accepted.queue.push(entry); }
+                            accepted.enqueue_result = Some(crate::player::EnqueueResult { request_id: id, item_id: Some(900) });
                         }
                         assert!(receiver.try_recv().is_err(), "one selected action only");
                         cx.update_window(window, |_, window, _| assert!(window.try_find("search-region").is_some(), "action waits for controller acknowledgement")).expect("native pending search");
@@ -590,7 +603,7 @@ fn native_player_redesign_evidence() {
                         window.press("escape", cx);
                         if name.starts_with("search-") && view.read(cx).searching() { window.press("escape", cx); }
                     }).expect("dismiss menus and release pointer");
-                    if name.starts_with("search-") && !matches!(name, "search-selected" | "search-keyboard") {
+                    if name.starts_with("search-") && !matches!(name, "search-selected" | "search-keyboard" | "search-queue-next") {
                         assert!(matches!(receiver.try_recv(), Ok(Command::CancelSearch { .. })), "native Escape cancels only the current search");
                         assert!(receiver.try_recv().is_err(), "search fixture leaves no mutation commands");
                     }

@@ -2,7 +2,7 @@
 //! keyboard model, focus after removal, and the state-specific skeletons.
 use super::animation_fixes::focused;
 use super::*;
-use crate::app::composer::LinkKind;
+use crate::app::composer::{Landing, LinkKind};
 
 const CANONICAL: &str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
 const VIDEO: &str = "https://youtu.be/aqz-KE-bpKQ";
@@ -241,7 +241,7 @@ fn a_confirmed_add_clears_the_field_and_is_acknowledged(cx: &mut TestAppContext)
         "the submitted text is cleared on confirmation"
     );
     assert_eq!(status(cx, window), "Added to queue · #3 · Aqua");
-    cx.update(|cx| assert_eq!(view.read(cx).added, Some(99)));
+    cx.update(|cx| assert_eq!(view.read(cx).added, Some((99, Landing::End))));
     // Typing starts a new entry and retires the confirmation.
     type_link(cx, window, "x");
     assert_eq!(status(cx, window), "");
@@ -535,7 +535,7 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
     states.send_replace(other);
     settle(cx, window);
     assert_eq!(input(cx, &view), "");
-    cx.update(|cx| assert_eq!(view.read(cx).added, Some(51)));
+    cx.update(|cx| assert_eq!(view.read(cx).added, Some((51, Landing::End))));
 }
 
 #[gpui_kit::test]

@@ -2,7 +2,7 @@ use std::{fmt::Write as _, time::Duration};
 
 use crate::{
     media::TrackInfo,
-    queue::QueueItem,
+    queue::{Placement, QueueItem},
     store::{self, HistoryEntry},
 };
 
@@ -159,13 +159,15 @@ pub enum SearchPhase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchAction {
     Play,
-    Enqueue { id: u64 },
+    Enqueue { id: u64, placement: Placement },
 }
 
+/// Answer to an insert or move request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnqueueResult {
     pub request_id: u64,
-    /// None means the controller rejected the request; success remains visible after consumption.
+    /// The entry now at its requested place. None means the controller rejected or ignored the
+    /// request; success remains visible after consumption.
     pub item_id: Option<u64>,
 }
 
@@ -309,6 +311,10 @@ impl State {
     pub fn can_enqueue(&self) -> bool {
         self.available && self.phase != Phase::Initializing
     }
+    /// Queue next also needs a free slot; moving an existing entry never does.
+    pub fn can_queue_next(&self) -> bool {
+        self.can_enqueue() && self.queue.len() < crate::queue::QUEUE_LIMIT
+    }
     /// The track to show: only while audio is actually playing or paused.
     pub fn visible_track(&self) -> Option<&TrackInfo> {
         self.track
@@ -343,6 +349,12 @@ pub enum Command {
     EnqueueRequest {
         id: u64,
         value: String,
+        placement: Placement,
+    },
+    /// Makes an existing pending entry the next one; the answer is an [`EnqueueResult`].
+    MoveToNext {
+        request_id: u64,
+        id: u64,
     },
     ImportPlaylist(String),
     CancelImport,

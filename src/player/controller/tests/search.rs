@@ -79,7 +79,13 @@ async fn replacement_rejects_late_completion_and_keeps_transport_responsive() ->
     let mut old = calls.recv().await.context("Q1 missing")?;
     submit(&mut rig, 2, "Q2").await?;
     old.cancel.wait_for(|cancel| *cancel).await?;
-    for action in [SearchAction::Play, SearchAction::Enqueue { id: 1 }] {
+    for action in [
+        SearchAction::Play,
+        SearchAction::Enqueue {
+            id: 1,
+            placement: crate::player::Placement::End,
+        },
+    ] {
         rig.send(Command::SearchAction {
             search_id: 1,
             video_id: "aaaaaaaaaaa".into(),
@@ -171,7 +177,13 @@ async fn selected_actions_recheck_capacity_availability_and_consume_once() -> Re
         .await?;
         rig.fake.health.send_modify(|h| h.gateway = false);
         rig.until(|s| !s.available).await?;
-        for action in [SearchAction::Play, SearchAction::Enqueue { id: 1 }] {
+        for action in [
+            SearchAction::Play,
+            SearchAction::Enqueue {
+                id: 1,
+                placement: crate::player::Placement::End,
+            },
+        ] {
             rig.send(Command::SearchAction {
                 search_id: 1,
                 video_id: "aaaaaaaaaaa".into(),
@@ -191,7 +203,10 @@ async fn selected_actions_recheck_capacity_availability_and_consume_once() -> Re
         rig.send(Command::SearchAction {
             search_id: 1,
             video_id: "aaaaaaaaaaa".into(),
-            action: SearchAction::Enqueue { id: 2 },
+            action: SearchAction::Enqueue {
+                id: 2,
+                placement: crate::player::Placement::End,
+            },
         })
         .await?;
         rig.until(|s| s.enqueue_result.is_some_and(|r| r.request_id == 2))
@@ -203,7 +218,10 @@ async fn selected_actions_recheck_capacity_availability_and_consume_once() -> Re
             rig.send(Command::SearchAction {
                 search_id: 1,
                 video_id: "aaaaaaaaaaa".into(),
-                action: SearchAction::Enqueue { id },
+                action: SearchAction::Enqueue {
+                    id,
+                    placement: crate::player::Placement::End,
+                },
             })
             .await?;
         }
@@ -441,5 +459,105 @@ async fn completion_at_the_original_deadline_is_rejected_before_the_timer_branch
         controller.search.state.phase,
         SearchPhase::Failed(Error::Timeout)
     );
+    Ok(())
+}
+
+async fn queue_next_from(rig: &Rig, search_id: u64, video_id: &str, id: u64) -> Result<()> {
+    rig.send(Command::SearchAction {
+        search_id,
+        video_id: video_id.into(),
+        action: SearchAction::Enqueue {
+            id,
+            placement: crate::player::Placement::Next,
+        },
+    })
+    .await
+}
+
+fn unanswered(rig: &Rig, id: u64) -> bool {
+    rig.state()
+        .enqueue_result
+        .is_none_or(|result| result.request_id != id)
+}
+
+#[tokio::test]
+async fn stale_or_unknown_search_selections_cannot_queue_next() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.enqueue(B).await?;
+    rig.until(|s| s.queue.len() == 1).await?;
+    let mut calls = listen(&rig.fake);
+    submit(&mut rig, 1, "music").await?;
+    complete(
+        &mut rig,
+        calls.recv().await.context("search call missing")?,
+        1,
+        A,
+    )
+    .await?;
+    queue_next_from(&rig, 1, "bbbbbbbbbbb", 5).await?;
+    rig.send(Command::Transport {
+        id: 1,
+        command: Box::new(Command::Pause),
+    })
+    .await?;
+    rig.until(|s| s.transport_ack == 1).await?;
+    assert_eq!(rig.queued(), [B], "a video outside the results is inert");
+    assert!(unanswered(&rig, 5));
+    assert!(matches!(rig.state().search.phase, SearchPhase::Results(_)));
+
+    submit(&mut rig, 2, "other").await?;
+    queue_next_from(&rig, 1, "aaaaaaaaaaa", 6).await?;
+    rig.send(Command::Transport {
+        id: 2,
+        command: Box::new(Command::Pause),
+    })
+    .await?;
+    rig.until(|s| s.transport_ack == 2).await?;
+    assert_eq!(rig.queued(), [B], "a superseded session cannot act");
+    assert!(unanswered(&rig, 6));
+
+    rig.send(Command::CancelSearch { id: 2 }).await?;
+    rig.until(|s| s.search.phase == SearchPhase::Idle).await?;
+    queue_next_from(&rig, 2, "aaaaaaaaaaa", 7).await?;
+    rig.send(Command::Transport {
+        id: 3,
+        command: Box::new(Command::Pause),
+    })
+    .await?;
+    rig.until(|s| s.transport_ack == 3).await?;
+    assert_eq!(rig.queued(), [B], "a cancelled session cannot act");
+    assert!(unanswered(&rig, 7));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_live_search_session_queues_next_exactly_once() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.enqueue(B).await?;
+    rig.until(|s| s.queue.len() == 1).await?;
+    let mut calls = listen(&rig.fake);
+    submit(&mut rig, 1, "music").await?;
+    complete(
+        &mut rig,
+        calls.recv().await.context("search call missing")?,
+        1,
+        A,
+    )
+    .await?;
+    for id in [3, 4] {
+        queue_next_from(&rig, 1, "aaaaaaaaaaa", id).await?;
+    }
+    rig.until(|s| s.enqueue_result.is_some_and(|r| r.request_id == 3))
+        .await?;
+    rig.send(Command::Transport {
+        id: 1,
+        command: Box::new(Command::Pause),
+    })
+    .await?;
+    rig.until(|s| s.transport_ack == 1).await?;
+    assert_eq!(rig.queued(), [A, B]);
+    assert!(unanswered(&rig, 4));
+    assert_eq!(rig.state().search.phase, SearchPhase::Idle);
+    assert_eq!(rig.fake.started(), 0);
     Ok(())
 }

@@ -2742,7 +2742,7 @@ async fn missing_components_stop_recovery_without_skipping_more_queued_tracks() 
         continue_on_error: true,
         ..Saved::default()
     });
-    controller.enqueue(B);
+    controller.enqueue(B, crate::player::Placement::End);
     controller
         .finish_job(JobEvent::Checked {
             start: Start::Queue(Vec::new()),
@@ -2758,6 +2758,7 @@ async fn missing_components_stop_recovery_without_skipping_more_queued_tracks() 
 }
 
 mod native;
+mod queue_next;
 mod storage;
 
 #[tokio::test]
@@ -2807,6 +2808,7 @@ async fn enqueue_requests_retain_results_after_consumption_and_identical_errors(
         .command(Command::EnqueueRequest {
             id: 1,
             value: A.into(),
+            placement: crate::player::Placement::End,
         })
         .await;
     assert_eq!(
@@ -2830,6 +2832,7 @@ async fn enqueue_requests_retain_results_after_consumption_and_identical_errors(
             .command(Command::EnqueueRequest {
                 id,
                 value: "invalid".into(),
+                placement: crate::player::Placement::End,
             })
             .await;
         assert_eq!(
@@ -2865,6 +2868,7 @@ async fn slow_preflight_keeps_next_intents_and_stop_preserves_unattempted_entrie
         rig.send(Command::EnqueueRequest {
             id: 77,
             value: "invalid".into(),
+            placement: crate::player::Placement::End,
         })
         .await?;
         rig.until(|state| {
@@ -2915,6 +2919,7 @@ async fn preflight_queue_edits_keep_capacity_and_the_selected_track_identity() -
     rig.send(Command::EnqueueRequest {
         id: 1,
         value: B.into(),
+        placement: crate::player::Placement::End,
     })
     .await?;
     let full = rig
@@ -2935,6 +2940,7 @@ async fn preflight_queue_edits_keep_capacity_and_the_selected_track_identity() -
     rig.send(Command::EnqueueRequest {
         id: 2,
         value: C.into(),
+        placement: crate::player::Placement::End,
     })
     .await?;
     let edited = rig
@@ -3016,7 +3022,7 @@ async fn destination_switch_is_explicit_preserves_queue_and_never_repeats_interr
             repeat: RepeatMode::Queue,
             ..Saved::default()
         });
-        controller.enqueue(B);
+        controller.enqueue(B, crate::player::Placement::End);
         let track = track_of(&fake).await?;
         let mut playing = active(&track);
         playing.confirmed = true;
@@ -3059,7 +3065,7 @@ async fn failed_destination_switch_retains_previous_selection_and_pending_queue(
     fake.health
         .send_modify(|health| health.setup.destination = Some(destination(2)));
     fake.disconnect_failing.store(true, SeqCst);
-    controller.enqueue(B);
+    controller.enqueue(B, crate::player::Placement::End);
     controller
         .configure(crate::setup::Request::Select(destination(4)))
         .await;
@@ -3139,7 +3145,7 @@ async fn failed_or_credentialless_restore_preserves_saved_destination_but_explic
 #[tokio::test]
 async fn failed_discovery_disconnect_is_retried_after_setup_finishes() -> Result<()> {
     let (mut controller, fake, updates) = solo(Saved::default());
-    controller.enqueue(B);
+    controller.enqueue(B, crate::player::Placement::End);
     controller.setup_change = SetupChange::Discovery;
     controller.setup_job = Some(tokio::spawn(async { Ok(()) }));
     fake.ready.store(false, SeqCst);

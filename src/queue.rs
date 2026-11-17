@@ -42,6 +42,13 @@ pub fn video_id(url: &str) -> &str {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Full;
 
+/// Where a new pending entry lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    End,
+    Next,
+}
+
 /// FIFO of pending tracks. The controller owns the only instance.
 #[derive(Default)]
 pub struct Queue {
@@ -55,18 +62,43 @@ impl Queue {
     }
 
     pub fn push(&mut self, url: String, title: Option<String>) -> Result<u64, Full> {
+        self.insert(url, title, Placement::End)
+    }
+
+    pub fn insert(
+        &mut self,
+        url: String,
+        title: Option<String>,
+        placement: Placement,
+    ) -> Result<u64, Full> {
         if self.items.len() >= QUEUE_LIMIT {
             return Err(Full);
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.items.push_back(QueueItem {
+        let item = QueueItem {
             id,
             url,
             title,
             title_unavailable: false,
-        });
+        };
+        match placement {
+            Placement::End => self.items.push_back(item),
+            Placement::Next => self.items.push_front(item),
+        }
         Ok(id)
+    }
+
+    /// Makes an existing entry the first pending one. False only for an unknown ID; moving
+    /// never changes the length, so a full queue is no obstacle.
+    pub fn move_to_front(&mut self, id: u64) -> bool {
+        let Some(index) = self.position(id) else {
+            return false;
+        };
+        if let Some(item) = self.items.remove(index) {
+            self.items.push_front(item);
+        }
+        true
     }
 
     /// Appends a deterministic prefix against the latest capacity in one controller turn.
@@ -88,6 +120,7 @@ impl Queue {
             .and_then(|item| item.title.clone())
     }
 
+    #[cfg(test)]
     pub fn pop_front(&mut self) -> Option<QueueItem> {
         self.items.pop_front()
     }
@@ -138,7 +171,7 @@ impl Queue {
 
 #[cfg(test)]
 mod tests {
-    use super::{Full, QUEUE_LIMIT, Queue, QueueItem, video_id};
+    use super::{Full, Placement, QUEUE_LIMIT, Queue, QueueItem, video_id};
 
     fn urls(queue: &Queue) -> Vec<String> {
         queue.snapshot().into_iter().map(|item| item.url).collect()
@@ -228,6 +261,94 @@ mod tests {
         queue.resolve_titles(&[items[0].id], Some("Stale"));
         assert_ne!(new, Ok(items[0].id));
         assert_eq!(queue.snapshot()[0].title, None);
+    }
+
+    fn ids(queue: &Queue) -> Vec<u64> {
+        queue.snapshot().iter().map(|item| item.id).collect()
+    }
+
+    #[test]
+    fn next_inserts_at_the_front_with_a_new_id() {
+        let mut queue = filled(2);
+        let before = ids(&queue);
+        let id = queue.insert("x".into(), Some("X".into()), Placement::Next);
+        assert!(matches!(id, Ok(id) if !before.contains(&id)));
+        assert_eq!(urls(&queue), ["x", "u0", "u1"]);
+        assert_eq!(queue.snapshot()[0].title.as_deref(), Some("X"));
+        assert_eq!(
+            queue.insert("y".into(), None, Placement::End).map(|_| ()),
+            Ok(())
+        );
+        assert_eq!(urls(&queue), ["x", "u0", "u1", "y"]);
+    }
+
+    #[test]
+    fn next_keeps_duplicates_as_distinct_entries() {
+        let mut queue = filled(1);
+        let id = queue.insert("u0".into(), None, Placement::Next);
+        assert_eq!(urls(&queue), ["u0", "u0"]);
+        let ids = ids(&queue);
+        assert_ne!(ids[0], ids[1]);
+        assert_eq!(id, Ok(ids[0]));
+    }
+
+    #[test]
+    fn next_is_refused_at_the_limit_without_mutation() {
+        let mut queue = filled(QUEUE_LIMIT);
+        let before = queue.snapshot();
+        assert_eq!(queue.insert("x".into(), None, Placement::Next), Err(Full));
+        assert_eq!(queue.snapshot(), before);
+        queue.pop_front();
+        assert!(queue.insert("x".into(), None, Placement::Next).is_ok());
+        assert_eq!(queue.snapshot().len(), QUEUE_LIMIT);
+        assert_eq!(queue.snapshot()[0].url, "x");
+    }
+
+    #[test]
+    fn move_to_front_keeps_the_entry_and_the_order_of_the_rest() {
+        let mut queue = filled(4);
+        let items = queue.snapshot();
+        queue.resolve_titles(&[items[2].id], Some("Third"));
+        queue.resolve_titles(&[items[3].id], None);
+        let moved = queue.snapshot()[3].clone();
+        assert!(queue.move_to_front(moved.id));
+        assert_eq!(urls(&queue), ["u3", "u0", "u1", "u2"]);
+        assert_eq!(queue.snapshot()[0], moved);
+        assert!(moved.title_unavailable);
+        assert!(queue.move_to_front(items[2].id));
+        assert_eq!(urls(&queue), ["u2", "u3", "u0", "u1"]);
+        assert_eq!(queue.snapshot()[0].title.as_deref(), Some("Third"));
+    }
+
+    #[test]
+    fn move_to_front_of_the_first_or_an_unknown_entry_changes_nothing() {
+        let mut queue = filled(3);
+        let first = queue.snapshot()[0].id;
+        assert!(queue.move_to_front(first));
+        assert_eq!(urls(&queue), ["u0", "u1", "u2"]);
+        assert!(!queue.move_to_front(999));
+        queue.pop_front();
+        assert!(!queue.move_to_front(first), "a consumed ID is gone");
+        assert_eq!(urls(&queue), ["u1", "u2"]);
+    }
+
+    #[test]
+    fn move_to_front_works_when_the_queue_is_full() {
+        let mut queue = filled(QUEUE_LIMIT);
+        let last = queue.snapshot()[QUEUE_LIMIT - 1].id;
+        assert!(queue.move_to_front(last));
+        assert_eq!(queue.snapshot().len(), QUEUE_LIMIT);
+        assert_eq!(queue.snapshot()[0].id, last);
+    }
+
+    #[test]
+    fn a_late_title_follows_the_moved_entry() {
+        let mut queue = filled(3);
+        let last = queue.snapshot()[2].id;
+        queue.move_to_front(last);
+        queue.resolve_titles(&[last], Some("Moved"));
+        assert_eq!(queue.snapshot()[0].label(), "Moved");
+        assert_eq!(queue.snapshot()[1].title, None);
     }
 
     #[test]

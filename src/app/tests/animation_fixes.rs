@@ -511,9 +511,17 @@ fn every_row_action_remains_keyboard_accessible(cx: &mut TestAppContext) {
         });
         // The last row's enabled operations remain reachable through native menu buttons.
         let operations = if section == Section::Queue {
-            vec![("queue-up", 21_u64), ("queue-remove", 21)]
+            vec![
+                ("queue-next", 21_u64),
+                ("queue-up", 21),
+                ("queue-remove", 21),
+            ]
         } else {
-            vec![("history-queue", 11_u64), ("history-remove", 11)]
+            vec![
+                ("history-queue", 11_u64),
+                ("history-next", 11),
+                ("history-remove", 11),
+            ]
         };
         for (position, id) in operations.iter().enumerate() {
             assert!(focused(cx, window, *id));

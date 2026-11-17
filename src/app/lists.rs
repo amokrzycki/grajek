@@ -105,6 +105,31 @@ impl PlayerApp {
             .hover(|row| row.bg(theme.list_hover))
     }
 
+    fn menu_actions(
+        &self,
+        section: Section,
+        row: usize,
+    ) -> Vec<(&'static str, &'static str, bool)> {
+        let ready = self.state.controller_ready;
+        match section {
+            Section::Queue => vec![
+                ("queue-next", "Move to next", ready && row > 0),
+                ("queue-up", "Move up", ready && row > 0),
+                (
+                    "queue-down",
+                    "Move down",
+                    ready && row + 1 < self.state.queue.len(),
+                ),
+                ("queue-remove", "Remove from queue", ready),
+            ],
+            Section::History => vec![
+                ("history-queue", "Add to queue", self.state.can_enqueue()),
+                ("history-next", "Queue next", self.state.can_queue_next()),
+                ("history-remove", "Forget from History", ready),
+            ],
+        }
+    }
+
     pub(super) fn row_menu(
         &self,
         section: Section,
@@ -120,22 +145,7 @@ impl PlayerApp {
             Section::Queue => TrackTarget::Queue(key),
             Section::History => TrackTarget::History(self.state.history[row].url.clone()),
         };
-        let ready = self.state.controller_ready;
-        let actions: &[(&str, &str, bool)] = match section {
-            Section::Queue => &[
-                ("queue-up", "Move up", ready && row > 0),
-                (
-                    "queue-down",
-                    "Move down",
-                    ready && row + 1 < self.state.queue.len(),
-                ),
-                ("queue-remove", "Remove from queue", ready),
-            ],
-            Section::History => &[
-                ("history-queue", "Add to queue", self.state.can_enqueue()),
-                ("history-remove", "Forget from History", ready),
-            ],
-        };
+        let actions = self.menu_actions(section, row);
         let mut content = div()
             .id("track-options-menu")
             .role(gpui_kit::Role::Group)
@@ -145,7 +155,7 @@ impl PlayerApp {
             .w(px(200.))
             .gap_1()
             .on_key_down(Self::menu_key);
-        for &(name, title, enabled) in actions {
+        for (name, title, enabled) in actions {
             let keyboard_target = target.clone();
             let pointer_target = target.clone();
             content = content.child(
@@ -199,7 +209,7 @@ impl PlayerApp {
                         if section == Section::Queue {
                             "Track options · Alt+Up/Down to reorder · Delete to remove"
                         } else {
-                            "Track options · add to queue or forget from History"
+                            "Track options · add to queue, queue next or forget from History"
                         },
                         &self.help,
                     )
@@ -217,7 +227,7 @@ impl PlayerApp {
     fn track_menu_label(&self, section: Section, row: usize) -> String {
         match section {
             Section::Queue => format!(
-                "Track options for {}. Move up, move down, remove from queue",
+                "Track options for {}. Move to next, move up, move down, remove from queue",
                 self.state.queue[row].label()
             ),
             Section::History => {
@@ -226,7 +236,9 @@ impl PlayerApp {
                     .title
                     .as_deref()
                     .unwrap_or_else(|| crate::queue::video_id(&entry.url));
-                format!("Track options for {title}. Add to queue or forget from History")
+                format!(
+                    "Track options for {title}. Add to queue, queue next or forget from History"
+                )
             }
         }
     }
@@ -259,16 +271,26 @@ impl PlayerApp {
                     up: name == "queue-up",
                 });
             }
+            (TrackTarget::Queue(id), "queue-next") => self.move_to_next(*id),
             (TrackTarget::Queue(id), "queue-remove") => {
                 self.send(crate::player::Command::Dequeue(*id));
             }
             (TrackTarget::History(url), "history-queue") => self.enqueue_url(url.clone()),
+            (TrackTarget::History(url), "history-next") => self.queue_url_next(url.clone()),
             (TrackTarget::History(url), "history-remove") => {
                 self.send(crate::player::Command::ForgetHistory(url.clone()));
             }
             _ => {}
         }
         cx.notify();
+    }
+
+    pub(super) fn queue_row_focused(&self, id: u64, window: &Window, cx: &Context<Self>) -> bool {
+        let row: ElementId = ("queue-row", id).into();
+        self.queue_scroll
+            .rows
+            .iter()
+            .any(|(key, focus)| *key == row && focus.contains_focused(window, cx))
     }
 
     pub(super) fn list_focus(

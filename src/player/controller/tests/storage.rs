@@ -106,3 +106,61 @@ async fn save_failure_and_recovery_reach_playback_without_erasing_startup_notice
     assert!(!crate::store::load(Some(path)).saved.close_to_tray);
     Ok(())
 }
+
+#[tokio::test]
+async fn remembered_queue_order_follows_queue_next_and_move_and_restores() -> Result<()> {
+    const X: &str = "https://www.youtube.com/watch?v=xxxxxxxxxxx";
+    for remember in [true, false] {
+        let mut rig = Rig::start(Saved {
+            remember_queue: remember,
+            ..Saved::default()
+        });
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        rig.enqueue(A).await?;
+        rig.enqueue(B).await?;
+        rig.send(Command::EnqueueRequest {
+            id: 1,
+            value: X.into(),
+            placement: crate::player::Placement::Next,
+        })
+        .await?;
+        let state = rig
+            .until(|s| s.enqueue_result.is_some_and(|r| r.request_id == 1))
+            .await?;
+        let b = state.queue[2].id;
+        let saved = |rig: &Rig| -> Vec<String> {
+            rig.saves
+                .borrow()
+                .queue
+                .iter()
+                .map(|item| item.url.clone())
+                .collect()
+        };
+        let expected = |urls: [&str; 3]| -> Vec<String> {
+            if remember {
+                urls.map(String::from).to_vec()
+            } else {
+                Vec::new()
+            }
+        };
+        assert_eq!(saved(&rig), expected([X, A, B]));
+        rig.send(Command::MoveToNext {
+            request_id: 2,
+            id: b,
+        })
+        .await?;
+        rig.until(|s| s.enqueue_result.is_some_and(|r| r.request_id == 2))
+            .await?;
+        assert_eq!(rig.queued(), [B, X, A]);
+        assert_eq!(saved(&rig), expected([B, X, A]));
+        rig.shutdown.send_replace(true);
+        rig.task.await?;
+        let mut restored = Rig::start(rig.saves.borrow().clone());
+        restored.until(|s| s.phase == Phase::Ready).await?;
+        assert_eq!(
+            restored.queued(),
+            if remember { vec![B, X, A] } else { vec![] }
+        );
+    }
+    Ok(())
+}

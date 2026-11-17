@@ -1,7 +1,7 @@
 use super::*;
 use crate::player::{SearchPhase, SearchState};
 
-pub(super) const CASES: [&str; 8] = [
+pub(super) const CASES: [&str; 9] = [
     "search-loading",
     "search-results",
     "search-missing",
@@ -10,6 +10,7 @@ pub(super) const CASES: [&str; 8] = [
     "search-selected",
     "search-import-stress",
     "search-keyboard",
+    "search-queue-next",
 ];
 
 pub(super) fn snapshot(name: &str, mut state: State, id: u64) -> State {
@@ -59,9 +60,17 @@ pub(super) fn assert_geometry(name: &str, window: &gpui_kit::Window) {
             row.top() >= list.top() && row.bottom() <= list.bottom(),
             "{name}: {row:?}, {list:?}"
         );
-        assert!(
-            window.find("search-actions").bounds().bottom()
-                <= window.find("audio-footer").bounds().top()
-        );
+        let actions = window.find("search-actions").bounds();
+        assert!(actions.bottom() <= window.find("audio-footer").bounds().top());
+        for id in ["search-play", "search-enqueue", "search-enqueue-next"] {
+            let button = window.find(id).bounds();
+            assert!(
+                button.left() >= actions.left()
+                    && button.right() <= actions.right()
+                    && button.top() >= actions.top()
+                    && button.bottom() <= actions.bottom(),
+                "{name}: {id} {button:?} outside {actions:?}"
+            );
+        }
     }
 }

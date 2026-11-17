@@ -71,11 +71,10 @@ pub struct PlayerApp {
     setup_help: bool,
     input: Entity<InputState>,
     search_ui: search::SearchUi,
-    /// An Add to queue the controller has not answered yet.
     enqueue_pending: Option<composer::PendingEnqueue>,
     enqueue_seq: u64,
-    /// The entry the controller last inserted for this window's Add to queue.
-    added: Option<u64>,
+    /// The entry the controller last placed for this window, and how it got there.
+    added: Option<(u64, composer::Landing)>,
     local_hint: Option<&'static str>,
     retired_import: Option<crate::player::ImportStatus>,
     volume: Entity<SliderState>,
@@ -173,7 +172,7 @@ impl PlayerApp {
             cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
                 InputEvent::PressEnter { secondary, .. } => {
                     if *secondary {
-                        this.enqueue(cx);
+                        this.enqueue(crate::player::Placement::End, cx);
                     } else {
                         this.play(window, cx);
                     }
@@ -187,7 +186,13 @@ impl PlayerApp {
                     }
                     if !this.input_text(cx).is_empty() {
                         this.added = None;
-                        this.enqueue_pending = None;
+                        if this
+                            .enqueue_pending
+                            .as_ref()
+                            .is_some_and(|pending| pending.text.is_some())
+                        {
+                            this.enqueue_pending = None;
+                        }
                     }
                     cx.notify();
                 }
@@ -318,6 +323,7 @@ impl PlayerApp {
         }
         let list_focus = self.list_focus(&state, window, cx);
         let resolution = self.resolve_enqueue(&state);
+        let moved_focus = matches!(resolution, Some(composer::Resolution::Placed(id, composer::Landing::Moved)) if self.queue_row_focused(id, window, cx));
         if self.state.import != state.import {
             self.retired_import = None;
         }
@@ -341,6 +347,8 @@ impl PlayerApp {
         self.sync_lists(cx);
         if lost_gateway || lost_voice_control || import_finished || lost_progress {
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
+        } else if moved_focus {
+            self.focus_row_action(Section::Queue, 0, 1, window, cx);
         } else if !self.restore_list_focus(list_focus, window, cx) {
             self.rescue_focus(before, window, cx);
         }

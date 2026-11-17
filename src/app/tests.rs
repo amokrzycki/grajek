@@ -17,6 +17,8 @@ mod composition;
 mod experience;
 mod native_search;
 mod native_ui;
+mod queue_next;
+mod queue_next_native;
 mod search;
 mod seek;
 
@@ -57,7 +59,11 @@ impl TestCommands {
                 self.acknowledged.set(id);
                 Ok(*command)
             }
-            Command::EnqueueRequest { value, .. } => Ok(Command::Enqueue(value)),
+            Command::EnqueueRequest {
+                value,
+                placement: crate::player::Placement::End,
+                ..
+            } => Ok(Command::Enqueue(value)),
             command => Ok(command),
         }
     }
@@ -138,8 +144,8 @@ fn open(cx: &mut TestAppContext, initial: State) -> Harness {
 fn reveal_action(cx: &mut TestAppContext, window: AnyWindowHandle, id: &ElementId) -> ElementId {
     if let ElementId::NamedInteger(name, key) = id {
         let trigger = match name.as_ref() {
-            "queue-up" | "queue-down" | "queue-remove" => "queue-more",
-            "history-queue" | "history-remove" => "history-more",
+            "queue-next" | "queue-up" | "queue-down" | "queue-remove" => "queue-more",
+            "history-queue" | "history-next" | "history-remove" => "history-more",
             _ => return id.clone(),
         };
         if !present(cx, window, id.clone()) {
