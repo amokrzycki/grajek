@@ -163,6 +163,7 @@ fn removal_edges_dispatch_outside_the_scrollbar_lane(cx: &mut TestAppContext) {
                             ));
                         }
                     }
+                    Section::Favorites => {}
                 }
                 if control.right() > viewport.right() - px(16.) {
                     failures.push(format!(
@@ -230,6 +231,9 @@ fn scrolling_cpu_benchmark(cx: &mut TestAppContext) {
                                     Section::History => {
                                         black_box(app.history_list(cx).into_any_element())
                                     }
+                                    Section::Favorites => {
+                                        black_box(app.favorite_list(cx).into_any_element())
+                                    }
                                 };
                             });
                         });
@@ -270,6 +274,10 @@ fn scrolling_cpu_benchmark(cx: &mut TestAppContext) {
                                 Section::History => ElementId::from((
                                     "history-row",
                                     usize::try_from(index).expect("small count"),
+                                )),
+                                Section::Favorites => ElementId::from(format!(
+                                    "favorite-row:{}",
+                                    history_entry(usize::try_from(index).expect("small count")).url
                                 )),
                             };
                             if let Some(row) = window.try_find(id) {
@@ -535,6 +543,7 @@ fn every_row_action_remains_keyboard_accessible(cx: &mut TestAppContext) {
             Section::History => assert!(
                 matches!(received.try_recv(), Ok(Command::ForgetHistory(url)) if url == history_entry(11).url)
             ),
+            Section::Favorites => {}
         }
         act(cx, window, |window, cx| {
             window.simulate_next_frame(cx);
@@ -671,7 +680,11 @@ fn full_or_closed_command_channel_does_not_claim_play(cx: &mut TestAppContext) {
                 assert!(
                     view.read(cx)
                         .commands
-                        .try_send(Command::Enqueue("queued".into()))
+                        .try_send(Command::EnqueueRequest {
+                            id: 0,
+                            value: "queued".into(),
+                            placement: crate::player::Placement::End
+                        })
                         .is_ok()
                 );
             }
@@ -682,7 +695,13 @@ fn full_or_closed_command_channel_does_not_claim_play(cx: &mut TestAppContext) {
             "failed sends keep Play retryable"
         );
         for _ in 0..16 {
-            assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+            assert!(matches!(
+                received.try_recv(),
+                Ok(Command::EnqueueRequest {
+                    placement: crate::player::Placement::End,
+                    ..
+                })
+            ));
         }
         assert!(received.try_recv().is_err());
         states.send_replace(long_lists(phase, 5, 5));
@@ -703,6 +722,7 @@ fn scrollbar_lane_clicks_and_thumb_drags_do_not_remove_rows(cx: &mut TestAppCont
         let id = match section {
             Section::Queue => "queue-list",
             Section::History => "history-list",
+            Section::Favorites => "favorites-list",
         };
         let viewport = bounds(cx, window, id);
         act(cx, window, |window, cx| {
@@ -716,6 +736,7 @@ fn scrollbar_lane_clicks_and_thumb_drags_do_not_remove_rows(cx: &mut TestAppCont
         let offset = cx.update(|cx| match section {
             Section::Queue => view.read(cx).queue_scroll.state.logical_scroll_top(),
             Section::History => view.read(cx).history_scroll.state.logical_scroll_top(),
+            Section::Favorites => view.read(cx).favorites_scroll.state.logical_scroll_top(),
         });
         assert!(
             offset.item_ix > 0 || offset.offset_in_item > px(0.),
@@ -727,6 +748,7 @@ fn scrollbar_lane_clicks_and_thumb_drags_do_not_remove_rows(cx: &mut TestAppCont
                 match section {
                     Section::Queue => &app.queue_scroll.state,
                     Section::History => &app.history_scroll.state,
+                    Section::Favorites => &app.favorites_scroll.state,
                 }
                 .scroll_to(gpui_kit::ListOffset::default());
                 cx.notify();
@@ -772,6 +794,9 @@ fn scrollbar_lane_clicks_and_thumb_drags_do_not_remove_rows(cx: &mut TestAppCont
         let last = match section {
             Section::Queue => ElementId::from(("queue-row", 109_u64)),
             Section::History => ElementId::from(("history-row", 49_usize)),
+            Section::Favorites => {
+                ElementId::from(format!("favorite-row:{}", history_entry(49).url))
+            }
         };
         assert!(
             present(cx, window, last),

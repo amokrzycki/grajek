@@ -1,4 +1,5 @@
 use gpui_kit::component::ActiveTheme;
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     Context, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Styled,
     TestSupportExt, Window, div, px,
@@ -8,12 +9,6 @@ use super::{PlayerApp, Section, label_with_tooltip};
 use crate::{player::Command, queue::QueueItem};
 
 impl PlayerApp {
-    pub(super) fn enqueue_url(&self, url: String) {
-        if self.state.can_enqueue() {
-            self.send(Command::Enqueue(url));
-        }
-    }
-
     /// Alt+Up / Alt+Down move the entry holding focus; Delete removes it. Handles are keyed by
     /// entry id, so focus follows a moved entry.
     fn queue_key(&self, id: u64, position: usize, event: &KeyDownEvent) {
@@ -101,6 +96,9 @@ impl PlayerApp {
                     &self.help,
                 )),
         )
+        .when(self.is_favorite_url(&item.url), |row| {
+            row.child(Self::saved_label(("queue-saved", id), cx))
+        })
         .child(self.row_menu(Section::Queue, position, id, cx))
         .test_support()
     }

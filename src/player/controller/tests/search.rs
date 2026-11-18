@@ -1,6 +1,7 @@
 use super::*;
-use crate::player::{SearchAction, SearchPhase};
+use crate::player::{FavoriteRefusal, SearchAction, SearchPhase};
 use crate::search::{Error, ResultItem, Results};
+use crate::store::{FAVORITES_LIMIT, FavoriteEntry};
 
 pub(super) struct Call {
     query: String,
@@ -559,5 +560,324 @@ async fn a_live_search_session_queues_next_exactly_once() -> Result<()> {
     assert!(unanswered(&rig, 4));
     assert_eq!(rig.state().search.phase, SearchPhase::Idle);
     assert_eq!(rig.fake.started(), 0);
+    Ok(())
+}
+
+fn rich(url: &str) -> Results {
+    Results {
+        items: vec![ResultItem {
+            url: url.into(),
+            title: Some("Search title".into()),
+            channel: Some("Search channel".into()),
+            duration: Some(Duration::from_secs(77)),
+            live: false,
+        }],
+        rejected: 0,
+    }
+}
+
+async fn favorite(rig: &Rig, search_id: u64, video_id: &str, id: u64, saved: bool) -> Result<()> {
+    rig.send(Command::SearchAction {
+        search_id,
+        video_id: video_id.into(),
+        action: SearchAction::Favorite { id, saved },
+    })
+    .await
+}
+
+async fn favorite_ack(rig: &mut Rig, id: u64) -> Result<State> {
+    rig.until(|s| {
+        s.favorite_result
+            .as_ref()
+            .is_some_and(|r| r.request_id == id)
+    })
+    .await
+}
+
+fn ack_result(state: &State) -> Result<std::result::Result<(), FavoriteRefusal>> {
+    state
+        .favorite_result
+        .as_ref()
+        .context("favorite acknowledgement missing")
+        .map(|ack| ack.result)
+}
+
+#[tokio::test]
+async fn search_favorite_saves_and_removes_through_the_envelope_without_consuming_results()
+-> Result<()> {
+    let mut rig = Rig::new().await?;
+    let mut calls = listen(&rig.fake);
+    submit(&mut rig, 1, "music").await?;
+    calls
+        .recv()
+        .await
+        .context("search call missing")?
+        .reply
+        .send(Ok(rich(A)))
+        .map_err(|_| anyhow::anyhow!("search worker disappeared"))?;
+    rig.until(|s| matches!(s.search.phase, SearchPhase::Results(_)))
+        .await?;
+
+    favorite(&rig, 1, "aaaaaaaaaaa", 10, true).await?;
+    let state = favorite_ack(&mut rig, 10).await?;
+    assert_eq!(ack_result(&state)?, Ok(()));
+    assert!(
+        matches!(state.search.phase, SearchPhase::Results(_)),
+        "membership does not consume the search Results"
+    );
+    assert_eq!(state.favorites.len(), 1);
+    assert_eq!(state.favorites[0].url, A);
+    assert_eq!(state.favorites[0].title.as_deref(), Some("Search title"));
+    assert_eq!(
+        state.favorites[0].channel.as_deref(),
+        Some("Search channel")
+    );
+    assert_eq!(state.favorites[0].duration_secs, Some(77));
+    assert!(!state.favorites[0].live);
+    assert_eq!(rig.fake.started(), 0);
+    assert_eq!(rig.fake.connects.load(SeqCst), 0);
+
+    favorite(&rig, 1, "aaaaaaaaaaa", 11, false).await?;
+    let state = favorite_ack(&mut rig, 11).await?;
+    assert_eq!(ack_result(&state)?, Ok(()));
+    assert_eq!(state.favorites, Vec::new());
+    assert!(matches!(state.search.phase, SearchPhase::Results(_)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_favorite_prefers_selected_result_per_field_then_known_facts() -> Result<()> {
+    let mut saved = Saved::default();
+    saved.record(HistoryEntry {
+        url: A.into(),
+        title: Some("From history".into()),
+        duration_secs: Some(120),
+    });
+    let mut rig = Rig::start(saved);
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    let mut calls = listen(&rig.fake);
+    submit(&mut rig, 1, "music").await?;
+    calls
+        .recv()
+        .await
+        .context("search call missing")?
+        .reply
+        .send(Ok(Results {
+            items: vec![ResultItem {
+                url: A.into(),
+                title: None,
+                channel: Some("From search".into()),
+                duration: None,
+                live: true,
+            }],
+            rejected: 0,
+        }))
+        .map_err(|_| anyhow::anyhow!("search worker disappeared"))?;
+    rig.until(|s| matches!(s.search.phase, SearchPhase::Results(_)))
+        .await?;
+
+    favorite(&rig, 1, "aaaaaaaaaaa", 1, true).await?;
+    favorite_ack(&mut rig, 1).await?;
+    let entry = &rig.state().favorites[0];
+    assert_eq!(
+        entry.title.as_deref(),
+        Some("From history"),
+        "selected result has no title; fill from known facts"
+    );
+    assert_eq!(
+        entry.channel.as_deref(),
+        Some("From search"),
+        "channel comes from the selected result"
+    );
+    assert_eq!(
+        entry.duration_secs,
+        Some(120),
+        "duration fills from known history"
+    );
+    assert!(entry.live, "live comes from the selected result");
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_favorite_rejects_stale_sessions_and_missing_ids() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    let mut calls = listen(&rig.fake);
+    submit(&mut rig, 1, "music").await?;
+    calls
+        .recv()
+        .await
+        .context("search call missing")?
+        .reply
+        .send(Ok(rich(A)))
+        .map_err(|_| anyhow::anyhow!("search worker disappeared"))?;
+    rig.until(|s| matches!(s.search.phase, SearchPhase::Results(_)))
+        .await?;
+
+    // Missing video id in a live session.
+    favorite(&rig, 1, "bbbbbbbbbbb", 20, true).await?;
+    let state = favorite_ack(&mut rig, 20).await?;
+    assert_eq!(ack_result(&state)?, Err(FavoriteRefusal::StaleSearch));
+    assert_eq!(state.favorites, Vec::new());
+
+    // Replaced session: session 2 with a different result.
+    submit(&mut rig, 2, "other").await?;
+    calls
+        .recv()
+        .await
+        .context("second search call missing")?
+        .reply
+        .send(Ok(rich(B)))
+        .map_err(|_| anyhow::anyhow!("search worker disappeared"))?;
+    rig.until(|s| s.search.id == 2 && matches!(s.search.phase, SearchPhase::Results(_)))
+        .await?;
+    favorite(&rig, 1, "aaaaaaaaaaa", 21, true).await?;
+    let state = favorite_ack(&mut rig, 21).await?;
+    assert_eq!(ack_result(&state)?, Err(FavoriteRefusal::StaleSearch));
+    assert!(state.favorites.is_empty(), "neither result is favorited");
+
+    // Same video in a newer session still requires the correct session id.
+    submit(&mut rig, 3, "again").await?;
+    calls
+        .recv()
+        .await
+        .context("third search call missing")?
+        .reply
+        .send(Ok(rich(A)))
+        .map_err(|_| anyhow::anyhow!("search worker disappeared"))?;
+    rig.until(|s| s.search.id == 3 && matches!(s.search.phase, SearchPhase::Results(_)))
+        .await?;
+    favorite(&rig, 2, "aaaaaaaaaaa", 22, true).await?;
+    let state = favorite_ack(&mut rig, 22).await?;
+    assert_eq!(ack_result(&state)?, Err(FavoriteRefusal::StaleSearch));
+    assert!(
+        state.favorites.is_empty(),
+        "session validation is mandatory"
+    );
+
+    // Cancelled session cannot act.
+    rig.send(Command::CancelSearch { id: 3 }).await?;
+    rig.until(|s| s.search.phase == SearchPhase::Idle).await?;
+    favorite(&rig, 3, "aaaaaaaaaaa", 23, true).await?;
+    let state = favorite_ack(&mut rig, 23).await?;
+    assert_eq!(ack_result(&state)?, Err(FavoriteRefusal::StaleSearch));
+    assert_eq!(state.favorites, Vec::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_favorite_requires_a_completed_results_phase() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    let mut calls = listen(&rig.fake);
+    submit(&mut rig, 1, "music").await?;
+    favorite(&rig, 1, "aaaaaaaaaaa", 25, true).await?;
+    let state = favorite_ack(&mut rig, 25).await?;
+    assert_eq!(ack_result(&state)?, Err(FavoriteRefusal::StaleSearch));
+    assert_eq!(state.favorites, Vec::new());
+    assert!(
+        matches!(state.search.phase, SearchPhase::Loading),
+        "the loading search is untouched"
+    );
+    calls
+        .recv()
+        .await
+        .context("search call missing")?
+        .reply
+        .send(Ok(rich(A)))
+        .map_err(|_| anyhow::anyhow!("search worker disappeared"))?;
+    rig.until(|s| matches!(s.search.phase, SearchPhase::Results(_)))
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_favorite_works_without_discord_and_leaves_the_worker_alone() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    let mut calls = listen(&rig.fake);
+    submit(&mut rig, 1, "music").await?;
+    calls
+        .recv()
+        .await
+        .context("search call missing")?
+        .reply
+        .send(Ok(rich(A)))
+        .map_err(|_| anyhow::anyhow!("search worker disappeared"))?;
+    rig.until(|s| matches!(s.search.phase, SearchPhase::Results(_)))
+        .await?;
+
+    rig.fake.health.send_modify(|health| {
+        health.gateway = false;
+        health.voice = false;
+    });
+    rig.until(|s| !s.available).await?;
+
+    favorite(&rig, 1, "aaaaaaaaaaa", 30, true).await?;
+    let state = favorite_ack(&mut rig, 30).await?;
+    assert_eq!(ack_result(&state)?, Ok(()));
+    assert_eq!(state.favorites.len(), 1);
+    assert_eq!(rig.fake.started(), 0);
+    assert_eq!(rig.fake.connects.load(SeqCst), 0);
+    assert!(matches!(state.search.phase, SearchPhase::Results(_)));
+    assert!(
+        calls.try_recv().is_err(),
+        "no new search is started by membership"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_favorite_deduplicates_and_refuses_new_members_at_capacity() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    let mut calls = listen(&rig.fake);
+    submit(&mut rig, 1, "music").await?;
+    calls
+        .recv()
+        .await
+        .context("search call missing")?
+        .reply
+        .send(Ok(rich(A)))
+        .map_err(|_| anyhow::anyhow!("search worker disappeared"))?;
+    rig.until(|s| matches!(s.search.phase, SearchPhase::Results(_)))
+        .await?;
+    for id in [40, 41] {
+        favorite(&rig, 1, "aaaaaaaaaaa", id, true).await?;
+        favorite_ack(&mut rig, id).await?;
+    }
+    assert_eq!(
+        rig.state().favorites.len(),
+        1,
+        "duplicate Save is idempotent"
+    );
+
+    // Capacity: a full collection refuses a new member and nothing is evicted.
+    let full = Saved {
+        favorites: (0..FAVORITES_LIMIT)
+            .map(|i| FavoriteEntry {
+                url: format!("https://www.youtube.com/watch?v={i:0>11}"),
+                title: None,
+                channel: None,
+                duration_secs: None,
+                live: false,
+            })
+            .collect(),
+        ..Saved::default()
+    };
+    let mut rig = Rig::start(full);
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    let mut calls = listen(&rig.fake);
+    submit(&mut rig, 1, "music").await?;
+    calls
+        .recv()
+        .await
+        .context("search call missing")?
+        .reply
+        .send(Ok(rich(A)))
+        .map_err(|_| anyhow::anyhow!("search worker disappeared"))?;
+    rig.until(|s| matches!(s.search.phase, SearchPhase::Results(_)))
+        .await?;
+    favorite(&rig, 1, "aaaaaaaaaaa", 50, true).await?;
+    let state = favorite_ack(&mut rig, 50).await?;
+    assert_eq!(ack_result(&state)?, Err(FavoriteRefusal::Full));
+    assert_eq!(state.favorites.len(), FAVORITES_LIMIT);
+    assert!(matches!(state.search.phase, SearchPhase::Results(_)));
     Ok(())
 }

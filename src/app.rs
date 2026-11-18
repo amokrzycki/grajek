@@ -1,6 +1,8 @@
+mod collections;
 mod components;
 pub(super) mod composer;
 mod controls;
+mod favorites;
 mod focus;
 mod help;
 mod history;
@@ -12,11 +14,10 @@ mod settings;
 
 use gpui_kit::assets::IconName as AudioIcon;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, Sizable,
+    ActiveTheme, Disableable, Icon,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     slider::{SliderEvent, SliderState},
-    tab::{Tab, TabBar},
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
@@ -33,9 +34,10 @@ use crate::style::space;
 use help::HelpExt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Section {
+pub(super) enum Section {
     Queue,
     History,
+    Favorites,
 }
 
 #[derive(Clone, Copy)]
@@ -95,7 +97,12 @@ pub struct PlayerApp {
     transport_seq: u64,
     queue_scroll: lists::ListNavigation,
     history_scroll: lists::ListNavigation,
+    favorites_scroll: lists::ListNavigation,
     import_pending: bool,
+    favorite_pending: Option<u64>,
+    favorite_seq: u64,
+    collection_select: collections::CollectionSelect,
+    now_playing_favorite_focus: FocusHandle,
     /// The slider is being dragged; controller snapshots must not fight the pointer.
     dragging: bool,
     volume_seq: u64,
@@ -213,6 +220,7 @@ impl PlayerApp {
             }),
         ];
         let (server_select, channel_select) = settings::selectors(window, cx);
+        let collection_select = collections::selector(window, cx);
         let state = states.borrow_and_update().clone();
         let updates = cx.spawn_in(window, async move |entity, cx| {
             while states.changed().await.is_ok() {
@@ -228,6 +236,7 @@ impl PlayerApp {
             }
         });
         let transport_seq = state.transport_ack;
+        let favorite_seq = state.favorite_result.as_ref().map_or(0, |r| r.request_id);
         let mut app = Self {
             components: components::Panel::new(cx),
             help,
@@ -269,7 +278,12 @@ impl PlayerApp {
             transport_seq,
             queue_scroll: lists::ListNavigation::new(),
             history_scroll: lists::ListNavigation::new(),
+            favorites_scroll: lists::ListNavigation::new(),
             import_pending: false,
+            favorite_pending: None,
+            favorite_seq,
+            collection_select,
+            now_playing_favorite_focus: cx.focus_handle(),
             dragging: false,
             volume_seq: 0,
             volume_pending: None,
@@ -282,6 +296,8 @@ impl PlayerApp {
             media: None,
         };
         app.subscribe_selectors(window, cx);
+        app.subscribe_collection_selector(window, cx);
+        app.sync_collection_selector(window, cx);
         app.sync_lists(cx);
         app.sync_progress(window, cx);
         app
@@ -289,6 +305,7 @@ impl PlayerApp {
 
     fn accept_state(&mut self, state: State, window: &mut Window, cx: &mut Context<Self>) {
         self.observe_search(&state, window, cx);
+        self.observe_favorite(&state, window, cx);
         if state.components_request != self.state.components_request {
             self.open_components(cx);
         }
@@ -345,6 +362,7 @@ impl PlayerApp {
             self.pending = None;
         }
         self.sync_lists(cx);
+        self.sync_collection_selector(window, cx);
         if lost_gateway || lost_voice_control || import_finished || lost_progress {
             window.focus(&self.input.read(cx).focus_handle(cx), cx);
         } else if moved_focus {
@@ -369,30 +387,6 @@ impl PlayerApp {
 
     fn input_text(&self, cx: &Context<Self>) -> String {
         self.input.read(cx).value().to_string()
-    }
-
-    fn activate_section(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_search(window, cx);
-        let list_had_focus = self.queue_options_open
-            || self.row_menu.is_some()
-            || self
-                .queue_scroll
-                .rows
-                .iter()
-                .chain(&self.history_scroll.rows)
-                .any(|(_, focus)| focus.contains_focused(window, cx));
-        self.select_section(section, cx);
-        if list_had_focus {
-            window.focus(&self.input.read(cx).focus_handle(cx), cx);
-        }
-    }
-
-    fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
-        self.section = section;
-        self.row_menu = None;
-        self.queue_options_open = false;
-        self.confirm_clear = false;
-        cx.notify();
     }
 }
 
@@ -620,11 +614,14 @@ impl PlayerApp {
                 .child(
                     div()
                         .flex()
+                        .items_center()
+                        .gap_2()
                         .text_size(px(if compact { 20. } else { 24. }))
                         .line_height(relative(1.25))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(title_color)
-                        .child(label("title", title, &self.help)),
+                        .child(label("title", title, &self.help))
+                        .children(self.now_playing_favorite(cx)),
                 )
                 .child(
                     div()
@@ -802,75 +799,12 @@ impl PlayerApp {
         div()
             .id(id)
             .flex_1()
-            .flex()
-            .items_start()
             .pt_2()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
+            .aria_label(text)
             .child(text)
             .test_support()
-    }
-
-    fn sections(&self, cx: &Context<Self>) -> AnyElement {
-        if self.searching() {
-            return self.search_collection(cx);
-        }
-        let selected = match self.section {
-            Section::Queue => 0,
-            Section::History => 1,
-        };
-        div()
-            .id("queue-region")
-            .test_support()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        TabBar::new("sections")
-                            .underline()
-                            .small()
-                            .selected_index(selected)
-                            .on_click(cx.listener(|this, index: &usize, window, cx| {
-                                this.activate_section(
-                                    if *index == 0 {
-                                        Section::Queue
-                                    } else {
-                                        Section::History
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            }))
-                            .child(Tab::new().label(format!(
-                                "Up next · {}{}",
-                                self.state.queue.len(),
-                                if self.state.queue.len() >= crate::queue::QUEUE_LIMIT {
-                                    " · Full"
-                                } else {
-                                    ""
-                                }
-                            )))
-                            .child(
-                                Tab::new().label(format!("History · {}", self.state.history.len())),
-                            ),
-                    )
-                    .when(self.section == Section::History, |header| {
-                        header.child(self.history_header(cx))
-                    }),
-            )
-            .child(match self.section {
-                Section::Queue => self.queue_list(cx).into_any_element(),
-                Section::History => self.history_list(cx).into_any_element(),
-            })
-            .into_any_element()
     }
 }
 
@@ -935,6 +869,7 @@ impl Render for PlayerApp {
                     match event.keystroke.key.as_str() {
                         "1" => this.activate_section(Section::Queue, window, cx),
                         "2" => this.activate_section(Section::History, window, cx),
+                        "3" => this.activate_section(Section::Favorites, window, cx),
                         _ => {}
                     }
                 }
@@ -971,7 +906,7 @@ impl Render for PlayerApp {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .child(self.sections(cx)),
+                    .child(self.sections(window, cx)),
             )
             .child(self.audio_footer(window, cx))
             .child(self.help.overlay.clone())

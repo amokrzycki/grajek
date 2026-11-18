@@ -223,6 +223,16 @@ impl<B: Backend> Controller<B> {
     }
 
     pub(super) async fn search_action(&mut self, id: u64, video_id: &str, action: SearchAction) {
+        // Membership is validated and applied before any stale early return or Results
+        // consumption; the helper acknowledges a stale session/result explicitly.
+        if let SearchAction::Favorite {
+            id: request_id,
+            saved,
+        } = action
+        {
+            self.save_search_favorite(request_id, id, video_id, saved);
+            return;
+        }
         if id != self.search.state.id {
             return self.sync();
         }
@@ -265,6 +275,8 @@ impl<B: Backend> Controller<B> {
                 let item_id = self.enqueue(&url, placement);
                 self.answer(id, item_id);
             }
+            // Membership is routed before this match; see the guard above.
+            SearchAction::Favorite { .. } => {}
         }
         self.sync();
     }

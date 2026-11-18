@@ -1,5 +1,10 @@
 use super::*;
-use crate::{media::TrackInfo, player::SeekStatus, queue::QueueItem};
+use crate::{
+    media::TrackInfo,
+    player::{FavoriteRefusal, FavoriteResult, SeekStatus},
+    queue::QueueItem,
+    store::FavoriteEntry,
+};
 
 fn playing() -> State {
     State {
@@ -210,8 +215,22 @@ fn endpoint_is_bounded_and_reports_shutdown() {
 }
 
 #[test]
-fn search_snapshots_do_not_change_native_media_or_tray_projection() {
+fn search_and_favorites_snapshots_do_not_change_native_media_or_tray_projection() {
     let mut state = playing();
+    state.favorites.push(FavoriteEntry {
+        url: "https://www.youtube.com/watch?v=aaaaaaaaaaa".into(),
+        title: Some("Kept".into()),
+        channel: None,
+        duration_secs: Some(60),
+        live: false,
+    });
+    state.favorite_result = Some(FavoriteResult {
+        request_id: 1,
+        url: "https://www.youtube.com/watch?v=aaaaaaaaaaa".into(),
+        saved: true,
+        result: Ok(()),
+    });
+    state.current_url = Some("https://www.youtube.com/watch?v=aaaaaaaaaaa".into());
     let media = Snapshot::from(&state);
     let tray = crate::tray::menu(&state);
     for phase in [
@@ -232,4 +251,29 @@ fn search_snapshots_do_not_change_native_media_or_tray_projection() {
         assert_eq!(Snapshot::from(&state), media);
         assert_eq!(crate::tray::menu(&state), tray);
     }
+    assert_eq!(
+        state
+            .favorite_result
+            .as_ref()
+            .map(|result| result.request_id),
+        Some(1)
+    );
+    state.favorites.clear();
+    state.current_url = None;
+    state.favorite_result = Some(FavoriteResult {
+        request_id: 2,
+        url: "https://www.youtube.com/watch?v=bbbbbbbbbbb".into(),
+        saved: true,
+        result: Err(FavoriteRefusal::Full),
+    });
+    assert_eq!(Snapshot::from(&state), media);
+    assert_eq!(crate::tray::menu(&state), tray);
+    state.favorite_result = Some(FavoriteResult {
+        request_id: 3,
+        url: "https://www.youtube.com/watch?v=aaaaaaaaaaa".into(),
+        saved: false,
+        result: Ok(()),
+    });
+    assert_eq!(Snapshot::from(&state), media);
+    assert_eq!(crate::tray::menu(&state), tray);
 }

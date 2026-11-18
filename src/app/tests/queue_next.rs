@@ -175,7 +175,13 @@ fn queue_next_is_disabled_offline_or_full_while_add_to_queue_keeps_its_rule(
     click(cx, window, "enqueue-next");
     assert!(received.try_recv().is_err());
     click(cx, window, "enqueue");
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest {
+            placement: crate::player::Placement::End,
+            ..
+        })
+    ));
     states.send_replace(State {
         available: false,
         ..with_lists(Phase::Ready, 2, 0)
@@ -390,7 +396,13 @@ fn history_queue_next_is_unavailable_when_full_but_add_to_queue_still_sends(
     click(cx, window, ("history-next", 0_usize));
     assert!(received.try_recv().is_err());
     click(cx, window, ("history-queue", 0_usize));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest {
+            placement: crate::player::Placement::End,
+            ..
+        })
+    ));
 }
 
 #[gpui_kit::test]
