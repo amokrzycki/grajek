@@ -154,7 +154,7 @@ impl PlayerApp {
             Some(SearchAction::Enqueue { id, .. }) => next
                 .enqueue_result
                 .is_some_and(|result| result.request_id == id),
-            None => false,
+            Some(SearchAction::Favorite { .. }) | None => false,
         } {
             session.action = None;
         }
@@ -465,6 +465,7 @@ impl PlayerApp {
         &self,
         phase: Option<&SearchPhase>,
         message: String,
+        selected: Option<&ResultItem>,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         div()
@@ -497,6 +498,7 @@ impl PlayerApp {
                     ))
                     .test_support(),
             )
+            .child(self.search_favorite_control(selected, cx))
             .child(
                 self.button("search-cancel")
                     .label(if matches!(phase, None | Some(SearchPhase::Loading)) {
@@ -508,6 +510,58 @@ impl PlayerApp {
                     .small()
                     .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
             )
+    }
+
+    fn search_favorite_control(
+        &self,
+        selected: Option<&ResultItem>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let Some(item) = selected else {
+            return self
+                .button("search-favorite")
+                .label("Save")
+                .ghost()
+                .small()
+                .flex_none()
+                .disabled(true)
+                .help("Select a result, then save it to Favorites.", &self.help)
+                .into_any_element();
+        };
+        let saved = crate::config::video_url(&item.url)
+            .is_ok_and(|canonical| self.state.is_favorite(&canonical));
+        let title = item.title.clone().unwrap_or_else(|| "Untitled".into());
+        let session_id = self.search_ui.current.as_ref().map(|session| session.id);
+        let video_id = item.id().to_owned();
+        let label = if saved {
+            format!("Remove from Favorites: {title}")
+        } else {
+            format!("Save to Favorites: {title}")
+        };
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .when(saved, |row| {
+                row.child(Self::saved_label("search-saved", cx))
+            })
+            .child(
+                self.button("search-favorite")
+                    .label(if saved { "Remove" } else { "Save" })
+                    .ghost()
+                    .small()
+                    .flex_none()
+                    .accessibility_label(label.clone())
+                    .help(label, &self.help)
+                    .disabled(!self.state.controller_ready || self.favorite_pending.is_some())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(id) = session_id {
+                            this.send_search_favorite(id, video_id.clone(), !saved, cx);
+                        }
+                    })),
+            )
+            .into_any_element()
     }
 
     pub(super) fn search_collection(&self, cx: &Context<Self>) -> AnyElement {
@@ -550,7 +604,7 @@ impl PlayerApp {
             .flex()
             .flex_col()
             .gap_1()
-            .child(self.search_header(phase, message, cx))
+            .child(self.search_header(phase, message, selected, cx))
             .child(
                 body.vertical_scrollbar(&self.search_ui.scroll)
                     .test_support(),

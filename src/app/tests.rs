@@ -15,6 +15,8 @@ mod components;
 mod components_live;
 mod composition;
 mod experience;
+mod favorites;
+mod native_favorites;
 mod native_search;
 mod native_ui;
 mod queue_next;
@@ -59,11 +61,6 @@ impl TestCommands {
                 self.acknowledged.set(id);
                 Ok(*command)
             }
-            Command::EnqueueRequest {
-                value,
-                placement: crate::player::Placement::End,
-                ..
-            } => Ok(Command::Enqueue(value)),
             command => Ok(command),
         }
     }
@@ -144,8 +141,12 @@ fn open(cx: &mut TestAppContext, initial: State) -> Harness {
 fn reveal_action(cx: &mut TestAppContext, window: AnyWindowHandle, id: &ElementId) -> ElementId {
     if let ElementId::NamedInteger(name, key) = id {
         let trigger = match name.as_ref() {
-            "queue-next" | "queue-up" | "queue-down" | "queue-remove" => "queue-more",
-            "history-queue" | "history-next" | "history-remove" => "history-more",
+            "queue-next" | "queue-up" | "queue-down" | "queue-remove" | "queue-favorite" => {
+                "queue-more"
+            }
+            "history-queue" | "history-next" | "history-remove" | "history-favorite" => {
+                "history-more"
+            }
             _ => return id.clone(),
         };
         if !present(cx, window, id.clone()) {
@@ -156,6 +157,25 @@ fn reveal_action(cx: &mut TestAppContext, window: AnyWindowHandle, id: &ElementI
             });
         }
         return id.clone();
+    }
+    if let ElementId::Name(name) = id {
+        const FAVORITE_MENU_ACTIONS: [&str; 3] =
+            ["favorite-queue", "favorite-next", "favorite-remove"];
+        let menu_trigger = FAVORITE_MENU_ACTIONS.iter().find_map(|action| {
+            name.as_ref()
+                .strip_prefix(&format!("{action}:"))
+                .map(|url| format!("favorite-more:{url}"))
+        });
+        if let Some(trigger) = menu_trigger {
+            if !present(cx, window, id.clone()) {
+                act(cx, window, |window, cx| window.press("escape", cx));
+                act(cx, window, |window, cx| {
+                    window.render_frame(cx);
+                    window.click(trigger, cx);
+                });
+            }
+            return id.clone();
+        }
     }
     let menu = match id {
         ElementId::Name(name)
@@ -544,9 +564,15 @@ fn add_to_queue_button_and_ctrl_enter_do_not_play(cx: &mut TestAppContext) {
     })
     .expect("test window should accept a URL and Add to queue");
     assert!(
-        matches!(received.try_recv(), Ok(Command::Enqueue(url)) if url == "https://youtu.be/aqz-KE-bpKQ")
+        matches!(received.try_recv(), Ok(Command::EnqueueRequest { value: url, placement: crate::player::Placement::End, .. }) if url == "https://youtu.be/aqz-KE-bpKQ")
     );
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest {
+            placement: crate::player::Placement::End,
+            ..
+        })
+    ));
     assert!(received.try_recv().is_err());
     // Queueing never changes what the window believes about playback.
     cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Ready));
@@ -685,7 +711,9 @@ fn history_rows_play_queue_and_forget(cx: &mut TestAppContext) {
     show(cx, &view, Section::History);
     let url = history_entry(1).url;
     click(cx, window, ("history-queue", 1_usize));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(sent)) if sent == url));
+    assert!(
+        matches!(received.try_recv(), Ok(Command::EnqueueRequest { value: sent, placement: crate::player::Placement::End, .. }) if sent == url)
+    );
     click(cx, window, ("history-remove", 1_usize));
     assert!(matches!(received.try_recv(), Ok(Command::ForgetHistory(sent)) if sent == url));
     click(cx, window, ("history-play", 1_usize));
@@ -1487,7 +1515,9 @@ fn playlist_import_is_explicit_and_cancellation_recovers_focus(cx: &mut TestAppC
         Some(true)
     );
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(url)) if url.contains("list=")));
+    assert!(
+        matches!(received.try_recv(), Ok(Command::EnqueueRequest { value: url, placement: crate::player::Placement::End, .. }) if url.contains("list="))
+    );
     act(cx, window, |window, cx| window.press("enter", cx));
     assert!(matches!(received.try_recv(), Ok(Command::Play(url)) if url.contains("list=")));
     cx.update(|cx| assert_eq!(view.read(cx).state.position, Duration::from_secs(27)));

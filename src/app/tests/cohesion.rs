@@ -56,7 +56,7 @@ fn history_actions_are_explicit_and_secondary_operations_are_contextual(cx: &mut
     assert!(present(cx, window, ("history-queue", 0_usize)));
     click(cx, window, ("history-queue", 0_usize));
     assert!(
-        matches!(received.try_recv(), Ok(Command::Enqueue(url)) if url == history_entry(0).url)
+        matches!(received.try_recv(), Ok(Command::EnqueueRequest { value: url, placement: crate::player::Placement::End, .. }) if url == history_entry(0).url)
     );
     assert!(!present(cx, window, ("history-remove", 0_usize)));
     assert!(

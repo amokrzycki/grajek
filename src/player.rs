@@ -10,9 +10,9 @@ pub use crate::queue::Placement;
 use crate::{config::Config, discord::Health, live::Live, media::Resolved, store};
 use controller::Controller;
 pub use state::{
-    Command, EnqueueResult, ImportStatus, Phase, Preferences, RepeatMode, SearchAction,
-    SearchPhase, SearchState, SeekStatus, State, VolumeRequest, percent_from, seek_target,
-    volume_factor,
+    Command, EnqueueResult, FavoriteRefusal, FavoriteResult, ImportStatus, Phase, Preferences,
+    RepeatMode, SearchAction, SearchPhase, SearchState, SeekStatus, State, VolumeRequest,
+    percent_from, seek_target, volume_factor,
 };
 
 /// How a track ended, as reported by its own event mailbox.

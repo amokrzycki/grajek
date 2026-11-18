@@ -17,6 +17,9 @@ use crate::{
     queue::{QUEUE_LIMIT, Queue},
 };
 
+mod favorites;
+pub use favorites::{FAVORITES_LIMIT, FavoriteEntry};
+
 pub const HISTORY_LIMIT: usize = 50;
 pub const DEFAULT_VOLUME: u8 = 100;
 const MAX_TITLE_CHARS: usize = 200;
@@ -106,6 +109,9 @@ pub struct Saved {
     /// Newest first, unique by URL, at most [`HISTORY_LIMIT`] entries.
     #[serde(default)]
     pub history: Vec<HistoryEntry>,
+    /// Newest first, unique by canonical URL, at most [`FAVORITES_LIMIT`] entries.
+    #[serde(default, deserialize_with = "favorites::read_favorites")]
+    pub favorites: Vec<FavoriteEntry>,
 }
 
 impl Default for Saved {
@@ -119,6 +125,7 @@ impl Default for Saved {
             repeat: RepeatMode::Off,
             queue: Vec::new(),
             history: Vec::new(),
+            favorites: Vec::new(),
         }
     }
 }
@@ -157,9 +164,11 @@ impl Saved {
     }
 
     /// The file is user-editable input: clamp what is out of range and drop what is not a
-    /// playable video, rather than trusting it.
-    fn sanitized(mut self) -> Self {
+    /// playable video, rather than trusting it. Returns the number of valid unique
+    /// favorites dropped beyond [`FAVORITES_LIMIT`].
+    fn sanitized(mut self) -> (Self, usize) {
         self.volume = self.volume.min(100);
+        let (favorites, dropped) = favorites::sanitize(self.favorites);
         let mut clean = Self {
             close_to_tray: self.close_to_tray,
             destination: self.destination,
@@ -167,6 +176,7 @@ impl Saved {
             continue_on_error: self.continue_on_error,
             remember_queue: self.remember_queue,
             repeat: self.repeat,
+            favorites,
             queue: if self.remember_queue {
                 self.queue
                     .into_iter()
@@ -191,7 +201,7 @@ impl Saved {
             entry.title = entry.title.as_deref().and_then(safe_title);
             clean.record(entry);
         }
-        clean
+        (clean, dropped)
     }
 }
 
@@ -247,7 +257,7 @@ pub fn load(path: Option<PathBuf>) -> Loaded {
             saved: Saved::default(),
             path: None,
             warning: Some(
-                "No data directory found; history and settings will not be saved.".into(),
+                "No data directory found; local data and settings will not be saved.".into(),
             ),
         };
     };
@@ -266,18 +276,44 @@ pub fn load(path: Option<PathBuf>) -> Loaded {
                 saved: Saved::default(),
                 path: None,
                 warning: Some(format!(
-                    "Could not read {}; history and settings will not be saved.",
+                    "Could not read {}; local data and settings will not be saved.",
                     file.display()
                 )),
             };
         }
     };
     match serde_json::from_slice::<Saved>(&text) {
-        Ok(saved) => Loaded {
-            saved: saved.sanitized(),
-            path: Some(file),
-            warning: None,
-        },
+        Ok(saved) => {
+            let (saved, dropped) = saved.sanitized();
+            if dropped == 0 {
+                return Loaded {
+                    saved,
+                    path: Some(file),
+                    warning: None,
+                };
+            }
+            match backup_exact(&file, &text) {
+                Ok(backup) => Loaded {
+                    saved,
+                    path: Some(file),
+                    warning: Some(format!(
+                        "The favorites list was too large; kept the first {FAVORITES_LIMIT} favorites and backed up the original to {}.",
+                        backup.display()
+                    )),
+                },
+                Err(error) => {
+                    tracing::warn!(%error, path = %file.display(), "Could not back up oversized favorites");
+                    Loaded {
+                        saved,
+                        path: None,
+                        warning: Some(format!(
+                            "The favorites list was too large and could not be backed up; the file at {} was left unchanged and saving is disabled this session.",
+                            file.display()
+                        )),
+                    }
+                }
+            }
+        }
         Err(error) => {
             tracing::warn!(%error, path = %file.display(), "Saved state is malformed");
             // Keep the damaged file for inspection; the next save must not replace it.
@@ -302,6 +338,30 @@ pub fn load(path: Option<PathBuf>) -> Loaded {
                 path: kept.then_some(file),
                 warning: Some(warning),
             }
+        }
+    }
+}
+
+/// Copies the original file bytes to a distinct, previously-unused name in the same
+/// directory, so an oversized-favorites recovery never overwrites an earlier backup.
+fn backup_exact(original: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    loop {
+        let backup = original.with_extension(format!(
+            "json.favorites-{seconds}-{}",
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match File::create_new(&backup) {
+            Ok(mut file) => {
+                file.write_all(bytes)?;
+                file.sync_all()?;
+                return Ok(backup);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
         }
     }
 }
@@ -376,7 +436,7 @@ pub fn spawn_saver(path: PathBuf, mut snapshots: watch::Receiver<Saved>) -> Save
                 result => {
                     tracing::warn!(?result, "Could not save application state");
                     Some(
-                        "Could not save history and settings. Check disk space and file permissions; changes may be lost when Grajek closes.",
+                        "Could not save local data and settings. Check disk space and file permissions; changes may be lost when Grajek closes.",
                     )
                 }
             };
@@ -398,7 +458,8 @@ pub fn spawn_saver(path: PathBuf, mut snapshots: watch::Receiver<Saved>) -> Save
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_VOLUME, HISTORY_LIMIT, HistoryEntry, Saved, data_dir, load, spawn_saver, write,
+        DEFAULT_VOLUME, FAVORITES_LIMIT, FavoriteEntry, HISTORY_LIMIT, HistoryEntry, Saved,
+        data_dir, load, spawn_saver, write,
     };
     use anyhow::{Context, Result, ensure};
     use std::{
@@ -799,6 +860,8 @@ mod tests {
         assert_eq!(saved.history[0].title.as_deref(), Some("Kept"));
         Ok(())
     }
+
+    mod favorites;
 }
 
 #[cfg(test)]
@@ -831,7 +894,7 @@ mod queue_tests {
         let saved: Saved = serde_json::from_value(serde_json::json!({
             "remember_queue":true, "repeat":"queue", "queue":entries, "volume":42
         }))?;
-        let saved = saved.sanitized();
+        let saved = saved.sanitized().0;
         assert_eq!(saved.queue.len(), 2);
         assert_eq!(saved.queue[0].url, saved.queue[1].url);
         assert_eq!(
@@ -846,10 +909,10 @@ mod queue_tests {
         assert_eq!(saved.repeat, RepeatMode::Queue);
         let mut huge = saved.clone();
         huge.queue = vec![saved.queue[0].clone(); QUEUE_LIMIT + 5];
-        assert_eq!(huge.sanitized().queue.len(), QUEUE_LIMIT);
+        assert_eq!(huge.sanitized().0.queue.len(), QUEUE_LIMIT);
         let mut disabled = saved;
         disabled.remember_queue = false;
-        assert_eq!(disabled.sanitized().queue.len(), 0);
+        assert_eq!(disabled.sanitized().0.queue.len(), 0);
         Ok(())
     }
 

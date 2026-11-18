@@ -118,6 +118,7 @@ fn native_offline_animation_check() {
     clippy::expect_used,
     clippy::too_many_lines,
     clippy::panic,
+    clippy::print_stderr,
     reason = "opt-in native state matrix keeps compositor and capture lifecycle together and fails on capture errors"
 )]
 fn native_player_redesign_evidence() {
@@ -136,8 +137,8 @@ fn native_player_redesign_evidence() {
         gpui_kit::init(cx);
         crate::style::init(cx);
         std::fs::write(directory.join("renderer.txt"), format!(
-            "OS: {}\nFont: {}\nMono: {}\nRem: {:?}\nOffline snapshots; no Discord audio.\n",
-            std::env::consts::OS, cx.theme().font_family, cx.theme().mono_font_family, cx.theme().font_size,
+            "OS: {}\nPID: {}\nFont: {}\nMono: {}\nRem: {:?}\nOffline snapshots; no Discord audio.\n",
+            std::env::consts::OS, std::process::id(), cx.theme().font_family, cx.theme().mono_font_family, cx.theme().font_size,
         )).expect("renderer metadata");
         let dimensions = if std::env::var("GRAJEK_CAPTURE_WIDTH").is_ok_and(|width| width == "420") { size(px(420.), px(480.)) } else { size(px(520.), px(560.)) };
         let mut initial_bounds = Bounds::centered(None, dimensions, cx);
@@ -160,6 +161,7 @@ fn native_player_redesign_evidence() {
         cx.spawn(async move |cx| {
             let mut cases = vec!["idle", "playing", "playing-empty", "focused", "unfocused", "paused", "connecting", "resolving", "importing", "error", "disconnected", "full", "history", "options", "setup", "settings", "destination", "credentials", "help", "options-hover", "server-selector", "channel-selector", "selector-keyboard", "permission", "setup-help", "auth-error", "idle-queued", "long-title", "link-video", "link-playlist", "added", "reordered", "removed", "removed-keyboard", "settings-long", "onboarding-player", "destination-player", "settings-scroll", "confirmation", "help-bottom", "idle-history", "playing-history", "queue-hover", "history-hover", "history-keyboard", "queue-menu", "history-menu", "focus-action-unfocused", "focus-action-hover", "focus-action-pressed", "focus-action-pointer", "focus-action-tab", "focus-action-activated", "focus-action-restored", "play-pointer", "play-keyboard", "focused-pointer", "focused-keyboard", "history-unicode"];
             cases.extend(super::native_search::CASES);
+            cases.extend(super::native_favorites::CASES);
             cases.extend(super::queue_next_native::CASES);
             cases.extend(["components-notice", "components-notice-long", "components-checking", "components-downloading", "components-broken", "components-success"]);
             if std::env::var_os("GRAJEK_CAPTURE_INTERACTIONS").is_some() {
@@ -192,6 +194,7 @@ fn native_player_redesign_evidence() {
                     executor.timer(Duration::from_millis(250)).await;
                 }
                 for name in cases.iter().copied() {
+                    eprintln!("NATIVE CASE {name} {width:.0}x{height:.0}");
                     let mut snapshot = if matches!(name, "setup" | "setup-help" | "auth-error" | "onboarding-player") {
                         let mut snapshot = State::default();
                         if matches!(name, "auth-error" | "onboarding-player") { snapshot.controller_ready = true; snapshot.phase = Phase::Ready; }
@@ -266,6 +269,10 @@ fn native_player_redesign_evidence() {
                     if name == "qn-move-deep" { snapshot.queue = with_lists(Phase::Playing, 60, 0).queue; }
                     if name == "qn-repeat-track" { snapshot.preferences.repeat = RepeatMode::Track; }
                     if name == "options" { snapshot.preferences.repeat = RepeatMode::Queue; }
+                    if snapshot.track.is_some() || matches!(snapshot.phase, Phase::Connecting | Phase::Resolving) {
+                        snapshot.current_url = Some("https://www.youtube.com/watch?v=aqz-KE-bpKQ".into());
+                    }
+                    if name.starts_with("fav-") { snapshot = super::native_favorites::snapshot(name, snapshot); }
                     let expected_phase = snapshot.phase;
                     let mut expected_count = snapshot.queue.len();
                     let after_commands = snapshot.clone();
@@ -297,6 +304,12 @@ fn native_player_redesign_evidence() {
                         app.pending = None;
                         app.added = None;
                         app.enqueue_pending = None;
+                        app.favorite_pending = None;
+                        app.favorite_seq = 0;
+                        app.search_ui = super::super::search::SearchUi::default();
+                        app.queue_scroll.state.scroll_to_reveal_item(0);
+                        app.history_scroll.state.scroll_to_reveal_item(0);
+                        app.favorites_scroll.state.scroll_to_reveal_item(0);
                         app.local_hint = None;
                         app.settings_scroll.set_offset(gpui_kit::point(px(0.), px(0.)));
                         app.setup_help = matches!(name, "setup-help" | "settings-long" | "settings-scroll");
@@ -364,6 +377,10 @@ fn native_player_redesign_evidence() {
                             snapshots.send_replace(acknowledged);
                             executor.timer(Duration::from_millis(300)).await;
                         }
+                    }
+                    if name.starts_with("fav-") {
+                        let mut fixture = super::native_favorites::Fixture { view: &view, window, executor: &executor, snapshots: &snapshots, receiver: &mut receiver, directory: &directory, width };
+                        expected_count = fixture.drive(name, &after_commands, cx).await;
                     }
                     if name.starts_with("qn-") {
                         let mut fixture = super::queue_next_native::Fixture { view: &view, window, executor: &executor, snapshots: &snapshots, receiver: &mut receiver, directory: &directory, width };
@@ -519,7 +536,7 @@ fn native_player_redesign_evidence() {
                         let b = window.bounds();
                         geometry.insert("scale-factor".into(), serde_json::json!(window.scale_factor()));
                         geometry.insert("window-on-display".into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
-                        for id in ["search-region", "search-list", "search-row-0", "search-row-4", "search-actions", "search-cancel", "search-play", "search-enqueue", "search-enqueue-next", "enqueue", "enqueue-next", "import-playlist", "link-status", "components-content", "components-download", "components-later", "player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination", "audio-footer", "volume", "volume-percent", "queue-list", "history-list", "track-options-menu"] {
+                        for id in ["favorites-list", "collection-selector", "sections", "now-playing-favorite", "now-playing-saved", "search-favorite", "search-saved", "history-clear", "history-clear-cancel", "search-region", "search-list", "search-row-0", "search-row-4", "search-actions", "search-cancel", "search-play", "search-enqueue", "search-enqueue-next", "enqueue", "enqueue-next", "import-playlist", "link-status", "components-content", "components-download", "components-later", "player-header", "active-player", "idle-player", "link-entry", "url", "play", "pause-resume", "next", "queue-region", "queue-options-menu", "help-popup", "discord-settings", "server-selector", "channel-selector", "active-destination", "audio-footer", "volume", "volume-percent", "queue-list", "history-list", "track-options-menu"] {
                             if let Some(element) = window.try_find(id) {
                                 let b = element.bounds();
                                 geometry.insert(id.into(), serde_json::json!({ "x": b.origin.x.as_f32(), "y": b.origin.y.as_f32(), "width": b.size.width.as_f32(), "height": b.size.height.as_f32() }));
@@ -548,6 +565,9 @@ fn native_player_redesign_evidence() {
                     }
                     #[cfg(not(target_os = "linux"))]
                     cx.update_window(window, |_, window, _| window.render_to_image().expect("native pixels").save(&path).expect("save native image")).expect("capture window");
+                    if name.starts_with("fav-") {
+                        cx.update_window(window, |_, window, cx| super::native_favorites::assert_after_capture(name, window, &view.read(cx).state)).expect("Favorites captured acceptance");
+                    }
                     if name.starts_with("components-") {
                         cx.update_window(window, |_, window, cx| {
                             if name == "components-notice" { window.press("escape", cx); }
@@ -601,10 +621,11 @@ fn native_player_redesign_evidence() {
                             }.to_platform_input(), cx);
                         }
                         window.press("escape", cx);
-                        if name.starts_with("search-") && view.read(cx).searching() { window.press("escape", cx); }
+                        if (name.starts_with("search-") || name == "fav-search") && view.read(cx).searching() { window.press("escape", cx); }
                     }).expect("dismiss menus and release pointer");
-                    if name.starts_with("search-") && !matches!(name, "search-selected" | "search-keyboard" | "search-queue-next") {
-                        assert!(matches!(receiver.try_recv(), Ok(Command::CancelSearch { .. })), "native Escape cancels only the current search");
+                    if (name.starts_with("search-") || name == "fav-search") && !matches!(name, "search-selected" | "search-keyboard" | "search-queue-next") {
+                        let expected_id = cx.update_window(window, |_, _, cx| view.read(cx).state.search.id).expect("captured search identity");
+                        assert!(matches!(receiver.try_recv(), Ok(Command::CancelSearch { id }) if id == expected_id), "native Escape cancels only the current search");
                         assert!(receiver.try_recv().is_err(), "search fixture leaves no mutation commands");
                     }
                     if name == "confirmation" { assert!(matches!(receiver.try_recv(), Ok(Command::ConfirmSetup(false))), "fixture confirmation cancellation"); }

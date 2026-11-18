@@ -80,6 +80,9 @@ impl PlayerApp {
                 .text_color(theme.muted_foreground)
                 .child(clock(duration))
         }))
+        .when(self.is_favorite_url(&entry.url), |row| {
+            row.child(Self::saved_label(("history-saved", index), cx))
+        })
         .child(self.row_menu(Section::History, index, index as u64, cx))
         .test_support()
     }

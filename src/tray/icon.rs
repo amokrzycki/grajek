@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn progress_import_failure_and_stale_error_do_not_change_the_icon() {
+    fn local_collection_feedback_and_progress_do_not_change_the_icon() {
         let mut state = State {
             phase: Phase::Playing,
             ..State::default()
@@ -97,6 +97,23 @@ mod tests {
         state.position = std::time::Duration::from_secs(42);
         state.import = ImportStatus::Failed("Import failed".into());
         state.error = Some("Previous track failed".into());
+        state.favorites.push(crate::store::FavoriteEntry {
+            url: "https://www.youtube.com/watch?v=aaaaaaaaaaa".into(),
+            title: Some("Saved track".into()),
+            channel: None,
+            duration_secs: None,
+            live: false,
+        });
+        for result in [Ok(()), Err(crate::player::FavoriteRefusal::Full)] {
+            state.favorite_result = Some(crate::player::FavoriteResult {
+                request_id: 1,
+                url: state.favorites[0].url.clone(),
+                saved: true,
+                result,
+            });
+            assert_eq!(Visual::from(&state), Visual::Playing);
+        }
+        state.favorites.clear();
         assert_eq!(Visual::from(&state), Visual::Playing);
         state.phase = Phase::Paused;
         assert_eq!(Visual::from(&state), Visual::Paused);

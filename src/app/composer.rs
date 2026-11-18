@@ -178,13 +178,12 @@ impl PlayerApp {
         }
     }
 
-    /// Queue next for a History entry; the acknowledgement does not depend on the composer.
-    pub(super) fn queue_url_next(&mut self, url: String) {
-        if self.enqueue_pending.is_none() && self.state.can_queue_next() {
-            self.begin_request(None, Landing::Next, |id| Command::EnqueueRequest {
+    pub(super) fn enqueue_url(&mut self, url: String, placement: Placement) {
+        if self.enqueue_pending.is_none() && self.can_place(placement) {
+            self.begin_request(None, placement.into(), |id| Command::EnqueueRequest {
                 id,
                 value: url,
-                placement: Placement::Next,
+                placement,
             });
         }
     }

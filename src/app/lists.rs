@@ -17,11 +17,13 @@ use gpui_kit::prelude::FluentBuilder;
 pub(super) enum TrackTarget {
     Queue(u64),
     History(String),
+    Favorite(String),
 }
 
 pub(super) struct ListFocus {
     queue: Option<(usize, u64)>,
     history: Option<(usize, String)>,
+    favorites: Option<(usize, String)>,
 }
 
 pub(super) const ROW_HEIGHT: gpui_kit::Pixels = px(44.);
@@ -105,27 +107,52 @@ impl PlayerApp {
             .hover(|row| row.bg(theme.list_hover))
     }
 
-    fn menu_actions(
-        &self,
-        section: Section,
-        row: usize,
-    ) -> Vec<(&'static str, &'static str, bool)> {
+    fn menu_actions(&self, section: Section, row: usize) -> Vec<(&'static str, String, bool)> {
         let ready = self.state.controller_ready;
         match section {
-            Section::Queue => vec![
-                ("queue-next", "Move to next", ready && row > 0),
-                ("queue-up", "Move up", ready && row > 0),
+            Section::Queue => {
+                let favorite = self.favorite_action_title(&self.state.queue[row].url);
+                vec![
+                    ("queue-next", "Move to next".into(), ready && row > 0),
+                    ("queue-up", "Move up".into(), ready && row > 0),
+                    (
+                        "queue-down",
+                        "Move down".into(),
+                        ready && row + 1 < self.state.queue.len(),
+                    ),
+                    ("queue-remove", "Remove from queue".into(), ready),
+                    ("queue-favorite", favorite, ready),
+                ]
+            }
+            Section::History => {
+                let favorite = self.favorite_action_title(&self.state.history[row].url);
+                vec![
+                    (
+                        "history-queue",
+                        "Add to queue".into(),
+                        self.state.can_enqueue(),
+                    ),
+                    (
+                        "history-next",
+                        "Queue next".into(),
+                        self.state.can_queue_next(),
+                    ),
+                    ("history-remove", "Forget from History".into(), ready),
+                    ("history-favorite", favorite, ready),
+                ]
+            }
+            Section::Favorites => vec![
                 (
-                    "queue-down",
-                    "Move down",
-                    ready && row + 1 < self.state.queue.len(),
+                    "favorite-queue",
+                    "Add to queue".into(),
+                    self.state.can_enqueue(),
                 ),
-                ("queue-remove", "Remove from queue", ready),
-            ],
-            Section::History => vec![
-                ("history-queue", "Add to queue", self.state.can_enqueue()),
-                ("history-next", "Queue next", self.state.can_queue_next()),
-                ("history-remove", "Forget from History", ready),
+                (
+                    "favorite-next",
+                    "Queue next".into(),
+                    self.state.can_queue_next(),
+                ),
+                ("favorite-remove", "Remove from Favorites".into(), ready),
             ],
         }
     }
@@ -140,10 +167,19 @@ impl PlayerApp {
         let prefix = match section {
             Section::Queue => "queue-more",
             Section::History => "history-more",
+            Section::Favorites => "favorite-more",
         };
         let target = match section {
             Section::Queue => TrackTarget::Queue(key),
             Section::History => TrackTarget::History(self.state.history[row].url.clone()),
+            Section::Favorites => TrackTarget::Favorite(self.state.favorites[row].url.clone()),
+        };
+        let id = |name: &'static str| -> ElementId {
+            if section == Section::Favorites {
+                format!("{name}:{}", self.state.favorites[row].url).into()
+            } else {
+                (name, key).into()
+            }
         };
         let actions = self.menu_actions(section, row);
         let mut content = div()
@@ -159,7 +195,7 @@ impl PlayerApp {
             let keyboard_target = target.clone();
             let pointer_target = target.clone();
             content = content.child(
-                self.button((name, key))
+                self.button(id(name))
                     .label(title)
                     .child(div().flex_1())
                     .ghost()
@@ -182,46 +218,51 @@ impl PlayerApp {
             );
         }
         let open = self.row_menu.as_ref() == Some(&target);
-        Popover::new((prefix, key))
-            .open(open)
-            .anchor(gpui_kit::Anchor::TopRight)
-            .on_open_change(cx.listener(move |this, open: &bool, window, cx| {
-                this.row_menu = open.then(|| target.clone());
-                this.queue_options_open = false;
-                this.help.dismiss(cx);
-                if *open && window.last_input_was_keyboard() {
-                    let target = target.clone();
-                    cx.on_next_frame(window, move |this, window, cx| {
-                        if this.row_menu.as_ref() == Some(&target) {
-                            window.focus_next(cx);
-                        }
-                    });
-                }
-                cx.notify();
-            }))
-            .trigger(
-                self.button((prefix, key))
-                    .icon(gpui_kit::assets::IconName::Ellipsis)
-                    .ghost()
-                    .small()
-                    .accessibility_label(self.track_menu_label(section, row))
-                    .help(
-                        if section == Section::Queue {
-                            "Track options · Alt+Up/Down to reorder · Delete to remove"
-                        } else {
-                            "Track options · add to queue, queue next or forget from History"
-                        },
-                        &self.help,
-                    )
-                    .key_context("PlayerList")
-                    .on_action(cx.listener(move |this, _: &Tab, window, cx| {
-                        this.list_tab(section, row, 1, false, window, cx);
-                    }))
-                    .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
-                        this.list_tab(section, row, 1, true, window, cx);
-                    })),
-            )
-            .child(content.test_support())
+        let label = self.track_menu_label(section, row);
+        let help = match section {
+            Section::Queue => "Track options · Alt+Up/Down to reorder · Delete to remove".into(),
+            Section::History => {
+                "Track options · add to queue, queue next or forget from History".into()
+            }
+            Section::Favorites => label.clone(),
+        };
+        Popover::new(id(if section == Section::Favorites {
+            "favorite-popover"
+        } else {
+            prefix
+        }))
+        .open(open)
+        .anchor(gpui_kit::Anchor::TopRight)
+        .on_open_change(cx.listener(move |this, open: &bool, window, cx| {
+            this.row_menu = open.then(|| target.clone());
+            this.queue_options_open = false;
+            this.help.dismiss(cx);
+            if *open && window.last_input_was_keyboard() {
+                let target = target.clone();
+                cx.on_next_frame(window, move |this, window, cx| {
+                    if this.row_menu.as_ref() == Some(&target) {
+                        window.focus_next(cx);
+                    }
+                });
+            }
+            cx.notify();
+        }))
+        .trigger(
+            self.button(id(prefix))
+                .icon(gpui_kit::assets::IconName::Ellipsis)
+                .ghost()
+                .small()
+                .accessibility_label(label)
+                .help(help, &self.help)
+                .key_context("PlayerList")
+                .on_action(cx.listener(move |this, _: &Tab, window, cx| {
+                    this.list_tab(section, row, 1, false, window, cx);
+                }))
+                .on_action(cx.listener(move |this, _: &TabPrev, window, cx| {
+                    this.list_tab(section, row, 1, true, window, cx);
+                })),
+        )
+        .child(content.test_support())
     }
 
     fn track_menu_label(&self, section: Section, row: usize) -> String {
@@ -240,10 +281,21 @@ impl PlayerApp {
                     "Track options for {title}. Add to queue, queue next or forget from History"
                 )
             }
+            Section::Favorites => {
+                let entry = &self.state.favorites[row];
+                let title = entry
+                    .title
+                    .as_deref()
+                    .unwrap_or_else(|| crate::queue::video_id(&entry.url));
+                format!(
+                    "Track options for {title}. {}. Add to queue, queue next or remove from Favorites",
+                    entry.url
+                )
+            }
         }
     }
 
-    fn track_operation(
+    pub(super) fn track_operation(
         &mut self,
         target: &TrackTarget,
         name: &str,
@@ -260,6 +312,13 @@ impl PlayerApp {
                 Section::History,
                 self.state.history.iter().position(|item| item.url == *url),
             ),
+            TrackTarget::Favorite(url) => (
+                Section::Favorites,
+                self.state
+                    .favorites
+                    .iter()
+                    .position(|entry| entry.url == *url),
+            ),
         };
         if let Some(row) = row {
             self.focus_row_action(section, row, 1, window, cx);
@@ -275,10 +334,35 @@ impl PlayerApp {
             (TrackTarget::Queue(id), "queue-remove") => {
                 self.send(crate::player::Command::Dequeue(*id));
             }
-            (TrackTarget::History(url), "history-queue") => self.enqueue_url(url.clone()),
-            (TrackTarget::History(url), "history-next") => self.queue_url_next(url.clone()),
+            (TrackTarget::Queue(id), "queue-favorite") => {
+                if let Some(url) = self
+                    .state
+                    .queue
+                    .iter()
+                    .find(|item| item.id == *id)
+                    .map(|item| item.url.clone())
+                {
+                    let saved = !self.is_favorite_url(&url);
+                    self.send_set_favorite(url, saved, cx);
+                }
+            }
+            (
+                TrackTarget::History(url) | TrackTarget::Favorite(url),
+                "history-queue" | "favorite-queue",
+            ) => self.enqueue_url(url.clone(), crate::player::Placement::End),
+            (
+                TrackTarget::History(url) | TrackTarget::Favorite(url),
+                "history-next" | "favorite-next",
+            ) => self.enqueue_url(url.clone(), crate::player::Placement::Next),
+            (TrackTarget::History(url), "history-favorite") => {
+                let saved = !self.is_favorite_url(url);
+                self.send_set_favorite(url.clone(), saved, cx);
+            }
             (TrackTarget::History(url), "history-remove") => {
                 self.send(crate::player::Command::ForgetHistory(url.clone()));
+            }
+            (TrackTarget::Favorite(url), "favorite-remove") => {
+                self.send_set_favorite(url.clone(), false, cx);
             }
             _ => {}
         }
@@ -337,7 +421,29 @@ impl PlayerApp {
                     _ => None,
                 })
         };
-        ListFocus { queue, history }
+        let favorites = if next.favorites == self.state.favorites {
+            None
+        } else {
+            self.favorites_scroll
+                .rows
+                .iter()
+                .position(|(_, focus)| focus.contains_focused(window, cx))
+                .map(|index| (index, self.state.favorites[index].url.clone()))
+                .or_else(|| match &self.row_menu {
+                    Some(TrackTarget::Favorite(url)) => self
+                        .state
+                        .favorites
+                        .iter()
+                        .position(|entry| entry.url == *url)
+                        .map(|index| (index, url.clone())),
+                    _ => None,
+                })
+        };
+        ListFocus {
+            queue,
+            history,
+            favorites,
+        }
     }
 
     pub(super) fn restore_list_focus(
@@ -365,6 +471,20 @@ impl PlayerApp {
         {
             self.row_menu = None;
             Some((Section::Queue, index, self.state.queue.len()))
+        } else if let Some((index, url)) = focus.favorites
+            && self.section == Section::Favorites
+        {
+            if let Some(row) = self
+                .state
+                .favorites
+                .iter()
+                .position(|entry| entry.url == url)
+            {
+                self.favorites_scroll.state.scroll_to_reveal_item(row);
+                return true;
+            }
+            self.row_menu = None;
+            Some((Section::Favorites, index, self.state.favorites.len()))
         } else {
             None
         };
@@ -396,6 +516,7 @@ impl PlayerApp {
         let navigation = match section {
             Section::Queue => &self.queue_scroll,
             Section::History => &self.history_scroll,
+            Section::Favorites => &self.favorites_scroll,
         };
         let target = match event.keystroke.key.as_str() {
             "up" => row.saturating_sub(1),
@@ -437,6 +558,13 @@ impl PlayerApp {
             (0..self.state.history.len()).map(|index| ("history-row", index).into()),
             cx,
         );
+        self.favorites_scroll.sync(
+            self.state
+                .favorites
+                .iter()
+                .map(|entry| format!("favorite-row:{}", entry.url).into()),
+            cx,
+        );
     }
 
     pub(super) fn scroll_list(&self, section: Section, cx: &Context<Self>) -> impl IntoElement {
@@ -444,6 +572,7 @@ impl PlayerApp {
         let (id, scroll) = match section {
             Section::Queue => ("queue-list", &self.queue_scroll.state),
             Section::History => ("history-list", &self.history_scroll.state),
+            Section::Favorites => ("favorites-list", &self.favorites_scroll.state),
         };
         div()
             .id(id)
@@ -467,6 +596,9 @@ impl PlayerApp {
                         Section::History => app
                             .history_row(position, &app.state.history[position], window, cx)
                             .into_any_element(),
+                        Section::Favorites => app
+                            .favorite_row(position, &app.state.favorites[position], window, cx)
+                            .into_any_element(),
                     })
                 })
                 .with_sizing_behavior(ListSizingBehavior::Auto)
@@ -482,7 +614,7 @@ impl PlayerApp {
     pub(super) fn row_actions(&self, section: Section, _row: usize) -> [bool; 2] {
         match section {
             Section::Queue => [false, true],
-            Section::History => [self.play_enabled(), true],
+            Section::History | Section::Favorites => [self.play_enabled(), true],
         }
     }
 
@@ -498,6 +630,7 @@ impl PlayerApp {
         let navigation = match section {
             Section::Queue => &self.queue_scroll,
             Section::History => &self.history_scroll,
+            Section::Favorites => &self.favorites_scroll,
         };
         navigation.state.scroll_to_reveal_item(row);
         cx.notify();
@@ -530,6 +663,7 @@ impl PlayerApp {
         let navigation = match section {
             Section::Queue => &self.queue_scroll,
             Section::History => &self.history_scroll,
+            Section::Favorites => &self.favorites_scroll,
         };
         let mut next = row * 2 + action;
         loop {

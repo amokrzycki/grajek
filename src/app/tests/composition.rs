@@ -89,7 +89,13 @@ fn enqueue_result_releases_a_repeated_refusal(cx: &mut TestAppContext) {
     refused.error = Some("The queue is full (100 tracks).".into());
     for request_id in 1..=2 {
         act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-        assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+        assert!(matches!(
+            received.try_recv(),
+            Ok(Command::EnqueueRequest {
+                placement: crate::player::Placement::End,
+                ..
+            })
+        ));
         refused.enqueue_result = Some(crate::player::EnqueueResult {
             request_id,
             item_id: None,
@@ -106,7 +112,13 @@ fn enqueue_result_survives_consumption_before_the_ui_reads_it(cx: &mut TestAppCo
     let (window, view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest {
+            placement: crate::player::Placement::End,
+            ..
+        })
+    ));
     let mut consumed = initial;
     consumed.queue.clear();
     consumed.enqueue_result = Some(crate::player::EnqueueResult {
@@ -204,7 +216,9 @@ fn a_confirmed_add_clears_the_field_and_is_acknowledged(cx: &mut TestAppContext)
     let (window, view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(url)) if url == VIDEO));
+    assert!(
+        matches!(received.try_recv(), Ok(Command::EnqueueRequest { value: url, placement: crate::player::Placement::End, .. }) if url == VIDEO)
+    );
     // Nothing is claimed before the controller answers; the text stays and a repeat is ignored.
     assert_eq!(input(cx, &view), VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
@@ -253,7 +267,13 @@ fn a_refused_add_keeps_the_text_and_can_be_retried(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, "https://youtu.be/zzzzzzzzzzz");
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest {
+            placement: crate::player::Placement::End,
+            ..
+        })
+    ));
     states.send_replace(State {
         error: Some("Could not add that link.".into()),
         enqueue_result: Some(crate::player::EnqueueResult {
@@ -271,7 +291,13 @@ fn a_refused_add_keeps_the_text_and_can_be_retried(cx: &mut TestAppContext) {
     cx.update(|cx| assert!(view.read(cx).added.is_none()));
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(
-        matches!(received.try_recv(), Ok(Command::Enqueue(_))),
+        matches!(
+            received.try_recv(),
+            Ok(Command::EnqueueRequest {
+                placement: crate::player::Placement::End,
+                ..
+            })
+        ),
         "retry is allowed after a refusal"
     );
 }
@@ -282,7 +308,13 @@ fn text_typed_after_submitting_survives_the_acknowledgement(cx: &mut TestAppCont
     let (window, view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest {
+            placement: crate::player::Placement::End,
+            ..
+        })
+    ));
     act(cx, window, |window, cx| window.input("&t=30", cx));
     let mut acknowledged = initial;
     acknowledged.enqueue_result = Some(crate::player::EnqueueResult {
@@ -465,7 +497,13 @@ fn another_command_retires_the_added_line(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest {
+            placement: crate::player::Placement::End,
+            ..
+        })
+    ));
     let mut acknowledged = initial;
     acknowledged.enqueue_result = Some(crate::player::EnqueueResult {
         request_id: 1,
@@ -492,7 +530,13 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest {
+            placement: crate::player::Placement::End,
+            ..
+        })
+    ));
     // A playlist import or History add lands first: someone else's entry.
     let mut other = initial;
     other.queue.push(QueueItem {
@@ -521,7 +565,13 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
     assert_eq!(input(cx, &view), VIDEO);
     // A retry that is accepted is confirmed by its own entry only.
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-    assert!(matches!(received.try_recv(), Ok(Command::Enqueue(_))));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest {
+            placement: crate::player::Placement::End,
+            ..
+        })
+    ));
     other.queue.push(QueueItem {
         id: 51,
         url: CANONICAL.into(),

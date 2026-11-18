@@ -58,7 +58,31 @@ pub(super) enum Job {
     },
 }
 
+impl Start {
+    /// The exact URL being started, when a single one is known. A queued preflight holds
+    /// several candidates and its chosen entry is not exact until extraction begins.
+    pub(super) fn current_url(&self) -> Option<&str> {
+        match self {
+            Start::Track(request) => Some(&request.url),
+            Start::Queue(_) => None,
+            Start::Rotate { next, completed } => Some(
+                next.as_ref()
+                    .map_or(completed.url.as_str(), |item| item.url.as_str()),
+            ),
+        }
+    }
+}
+
 impl Job {
+    /// The one canonical URL the controller is preparing, when it owns an exact request.
+    pub(super) fn current_url(&self) -> Option<&str> {
+        match self {
+            Job::Preflight { start, .. } => start.current_url(),
+            Job::Prepare { request, .. } => Some(&request.url),
+            Job::Rejoin { .. } | Job::Disconnect { .. } => None,
+        }
+    }
+
     pub fn preparing(&self) -> bool {
         matches!(self, Self::Preflight { .. } | Self::Prepare { .. })
     }

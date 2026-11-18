@@ -1,3 +1,4 @@
+mod favorites;
 mod jobs;
 mod search;
 #[cfg(test)]
@@ -14,8 +15,8 @@ use tokio::{
 };
 
 use super::{
-    Backend, Command, Handle, ImportStatus, Outcome, Phase, Preferences, RepeatMode, SeekStatus,
-    State, VolumeRequest, seek_target, volume_factor,
+    Backend, Command, FavoriteResult, Handle, ImportStatus, Outcome, Phase, Preferences,
+    RepeatMode, SeekStatus, State, VolumeRequest, seek_target, volume_factor,
 };
 use crate::{
     config::{playlist_url, video_url},
@@ -251,6 +252,7 @@ pub(super) struct Controller<B: Backend> {
     seek_job: Option<SeekJob>,
     track_id: u64,
     search: search::Search,
+    favorite_result: Option<FavoriteResult>,
 }
 
 impl<B: Backend> Controller<B> {
@@ -292,6 +294,7 @@ impl<B: Backend> Controller<B> {
             seek_job: None,
             track_id: 0,
             search: search::Search::default(),
+            favorite_result: None,
         }
     }
 
@@ -333,6 +336,17 @@ impl<B: Backend> Controller<B> {
         state.import.clone_from(&self.import);
         state.search.clone_from(&self.search.state);
         state.history.clone_from(&self.saved.history);
+        state.favorites.clone_from(&self.saved.favorites);
+        state.favorite_result.clone_from(&self.favorite_result);
+        state.current_url = self
+            .track
+            .as_ref()
+            .map(|track| track.request.url.clone())
+            .or_else(|| {
+                self.job
+                    .as_ref()
+                    .and_then(|job| job.current_url().map(str::to_owned))
+            });
         let save_notice = self
             .saver_status
             .as_ref()
@@ -595,12 +609,12 @@ impl<B: Backend> Controller<B> {
         self.cancel_job().await;
         self.stop_track();
         self.backend.clear_error();
-        self.publish(Phase::Connecting, None);
         let backend = self.backend.clone();
         self.job = Some(Job::Preflight {
             task: tokio::spawn(async move { backend.check_tools().await }),
             start,
         });
+        self.publish(Phase::Connecting, None);
     }
 
     fn prepare(&mut self, request: Request) {
@@ -860,6 +874,7 @@ impl<B: Backend> Controller<B> {
                 video_id,
                 action,
             } => self.search_action(search_id, &video_id, action).await,
+            Command::SetFavorite { id, url, saved } => self.set_favorite(id, &url, saved),
             Command::CancelImport => {
                 self.cancel_import().await;
                 self.sync();
@@ -903,9 +918,6 @@ impl<B: Backend> Controller<B> {
                     // A bad URL must not disturb the track that is still playing or paused.
                     Err(error) => self.report(error.to_string()),
                 }
-            }
-            Command::Enqueue(value) => {
-                self.enqueue(&value, Placement::End);
             }
             Command::EnqueueRequest {
                 id,

@@ -7,6 +7,7 @@ to start a single audio stream.
 - Pause, resume, skip tracks, seek in compatible streams and adjust output volume.
 - Manage up to 100 pending tracks or import a public YouTube playlist.
 - Repeat a track or the queue, keep playback history and optionally save the queue.
+- Save up to 500 favorites from playback, Up next, History or YouTube search.
 - Stop playback or leave voice without closing the window.
 - Use Linux MPRIS or Windows system media controls for the bot's Discord playback.
 
@@ -228,7 +229,8 @@ Remove saved token removes the local credential, not the token on Discord.
 Settings can be reopened at any time. Retry connection reauthenticates without
 restarting. Switching while playing, paused or preparing requires confirmation,
 stops the current track and leaves the old voice connection. Pending queue,
-history and preferences remain. A switch or restored selection never starts audio.
+history, favorites and preferences remain. A switch or restored selection never
+starts audio.
 
 ### Tray and closing
 
@@ -313,6 +315,36 @@ The bot leaves voice after ten idle minutes and on normal window close. Paused
 playback counts as active; pending queue entries alone do not prevent idle leave.
 The window stays open after idle leave. Play URL or Play Queue reconnects.
 
+### Favorites
+
+The Favorites tab holds up to 500 unique videos you deliberately save, newest
+first. Save or Remove is offered beside the current track, in the Up next and
+History More menus, and for the selected YouTube search result. It is available for
+the exact requested video while joining or preparing audio, without affecting
+preparation or implying that playback succeeds. Saving never joins voice,
+prepares or starts audio, reorders the queue, changes repeat or records History;
+Play now remains the action that replaces playback. Save and Remove also work
+while Discord is unavailable or the queue is full.
+
+Favorites use the canonical video URL, so different link forms for one video
+produce one entry. Saving the same video again keeps its entry and position. A
+later Save can fill a missing title, channel, duration or live fact from metadata
+Grajek already knows; it never overwrites known facts, and saving never looks up
+metadata. Favorites survive queue consumption, clearing the queue or history,
+turning off Remember queue, changing destination and restarting. Restoring them
+starts no playback.
+
+Save and Remove change only membership and display it after the controller
+confirms it. A full collection refuses a new video with "Favorites full (500
+tracks). Remove a favorite and try again." and never evicts an entry. Favorites
+rows offer Play now, Add to queue and Queue next under the same rules as other
+collections: Add to queue is still requested at a full queue and refused by the
+controller, while Queue next is disabled. There is no clear-all action.
+
+Wider windows show Up next, History and Favorites as three tabs; narrower
+windows use a collection chooser with the same entries. Ctrl+1, Ctrl+2 and
+Ctrl+3 select them. Clear history stays in History with its confirmation.
+
 ### Import a public playlist
 
 Paste a `https://www.youtube.com/playlist?list=...` link and select Import Playlist.
@@ -338,8 +370,9 @@ Volume ranges from 0 to 100% and applies to current and subsequent tracks,
 including while paused. It cannot override server mute or a listener's volume
 for the bot in Discord.
 
-Use Tab to focus controls and Enter or Space to activate buttons. Ctrl+1 and
-Ctrl+2 select Queue and History. Slider shortcuts apply only while focused:
+Use Tab to focus controls and Enter or Space to activate buttons. Ctrl+1,
+Ctrl+2 and Ctrl+3 select Up next, History and Favorites. Slider shortcuts apply
+only while focused:
 
 | Slider            | Arrow keys                                    | Page Down / Page Up         | Home / End                                                     |
 | ----------------- | --------------------------------------------- | --------------------------- | -------------------------------------------------------------- |
@@ -374,13 +407,23 @@ instance's MPRIS name. No reconnect loop or system service is installed.
 
 ## Local data and settings
 
-Grajek saves history, volume, repeat mode, Continue on error and the Remember queue
-preference in `$XDG_DATA_HOME/grajek/state.json`, or
+Grajek saves history, favorites, volume, repeat mode, Continue on error and the
+Remember queue preference in `$XDG_DATA_HOME/grajek/state.json`, or
 `$HOME/.local/share/grajek/state.json` if an absolute `XDG_DATA_HOME` is not set.
 On Windows the same JSON format lives at `%LOCALAPPDATA%\Grajek\state.json`;
-it never goes in the executable directory. Existing v0.3.2 files stay compatible.
+it never goes in the executable directory. Existing v0.3.2 files stay compatible,
+and files without favorites load with an empty collection.
 It stores canonical video URLs and metadata, not bot credentials, expiring stream
 URLs or audio files.
+
+Favorites persist independently of Remember queue. An older Grajek release that
+rewrites `state.json` can drop favorites, so downgrading is not lossless. If an
+edited file holds more than 500 valid unique favorites, Grajek keeps the first
+500 and writes the full original bytes to a
+`state.json.favorites-<unix time>-<counter>` backup before saving the reduced
+list. If that backup cannot be written, the original file stays untouched,
+saving is disabled for the session with a warning, and favorites remain manageable
+in the window.
 
 Remember queue defaults to Off. Turning it on saves pending entries and their
 titles. Turning it off removes the saved queue and keeps the current session's
@@ -409,10 +452,14 @@ unwritable storage also produces a warning; playback can continue without saving
 | Playback stops after a disconnect       | Connectivity recovery does not restart interrupted audio. Once the gateway is ready, use Play URL or Play Queue. Fatal configuration/gateway startup failures require a restart.                                                                                                                              |
 
 Grajek controls one bot in one server and one ordinary voice channel, with one
-track at a time. It supports explicit YouTube search with at most five transient results and explicit Play now/Add to queue/Queue next actions. It has no shuffle, playlist library, Discord commands or
-drag and drop. Historical Linux native-window checks cover KWin Wayland and
-XWayland, not every compositor or display setup. Current platform verification
-and its outstanding Windows checks are recorded in the release report.
+track at a time. It supports explicit YouTube search with at most five transient
+results and explicit Play now/Add to queue/Queue next actions. Favorites is a
+flat local list of at most 500 saved videos: it has no folders, named playlists,
+sync, artwork, recommendations or automatic saving. There is no shuffle,
+playlist library, Discord commands or drag and drop. Historical Linux
+native-window checks cover KWin Wayland and XWayland, not every compositor or
+display setup. Current platform verification and its outstanding Windows checks
+are recorded in the release report.
 
 Grajek ignores user yt-dlp configuration and does not load browser cookies or
 authentication options. Private, age-restricted or region-blocked videos,

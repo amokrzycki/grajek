@@ -495,7 +495,12 @@ impl Rig {
         self.send(Command::Play(url.into())).await
     }
     async fn enqueue(&self, url: &str) -> Result<()> {
-        self.send(Command::Enqueue(url.into())).await
+        self.send(Command::EnqueueRequest {
+            id: 0,
+            value: url.into(),
+            placement: Placement::End,
+        })
+        .await
     }
     fn set_volume(&mut self, percent: u8, commit: bool) {
         self.seq += 1;
@@ -1697,7 +1702,13 @@ async fn a_rejoin_result_classifies_failure_before_the_driver_callback() -> Resu
             health.voice = false;
             health.voice_error = terminal_error.map(str::to_owned);
         });
-        controller.command(Command::Enqueue(B.into())).await;
+        controller
+            .command(Command::EnqueueRequest {
+                id: 0,
+                value: B.into(),
+                placement: Placement::End,
+            })
+            .await;
         controller.job = Some(Job::Rejoin {
             task: tokio::spawn(async move {
                 Err(anyhow::Error::new(error).context("Cannot join Discord voice."))
@@ -2757,6 +2768,7 @@ async fn missing_components_stop_recovery_without_skipping_more_queued_tracks() 
     Ok(())
 }
 
+mod favorites;
 mod native;
 mod queue_next;
 mod storage;
@@ -2843,7 +2855,7 @@ async fn enqueue_requests_retain_results_after_consumption_and_identical_errors(
             })
         );
     }
-    controller.command(Command::Enqueue(B.into())).await;
+    controller.enqueue(B, Placement::End);
     assert_eq!(
         updates.borrow().enqueue_result,
         Some(crate::player::EnqueueResult {
@@ -3110,7 +3122,13 @@ async fn unauthenticated_controller_keeps_local_queue_and_preferences_usable() {
         health.gateway = false;
         health.voice = false;
     });
-    controller.command(Command::Enqueue(B.into())).await;
+    controller
+        .command(Command::EnqueueRequest {
+            id: 0,
+            value: B.into(),
+            placement: Placement::End,
+        })
+        .await;
     controller.command(Command::RememberQueue(true)).await;
     controller.command(Command::CloseToTray(true)).await;
     assert!(updates.borrow().controller_ready);

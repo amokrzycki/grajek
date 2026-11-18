@@ -3,7 +3,7 @@ use std::{fmt::Write as _, time::Duration};
 use crate::{
     media::TrackInfo,
     queue::{Placement, QueueItem},
-    store::{self, HistoryEntry},
+    store::{self, FavoriteEntry, HistoryEntry},
 };
 
 /// Completion policy; preferences from older releases default to ordinary FIFO.
@@ -159,7 +159,16 @@ pub enum SearchPhase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchAction {
     Play,
-    Enqueue { id: u64, placement: Placement },
+    Enqueue {
+        id: u64,
+        placement: Placement,
+    },
+    /// Desired-state membership for the selected search result; the controller routes it
+    /// before consuming Results.
+    Favorite {
+        id: u64,
+        saved: bool,
+    },
 }
 
 /// Answer to an insert or move request.
@@ -169,6 +178,24 @@ pub struct EnqueueResult {
     /// The entry now at its requested place. None means the controller rejected or ignored the
     /// request; success remains visible after consumption.
     pub item_id: Option<u64>,
+}
+
+/// Why a favorites membership request was refused. Independent of playback phase and errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FavoriteRefusal {
+    InvalidUrl,
+    StaleSearch,
+    Full,
+}
+
+/// Answer to a favorites membership request. `result` is `Ok` when the desired state was
+/// applied; `Err` carries a refusal without changing membership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FavoriteResult {
+    pub request_id: u64,
+    pub url: String,
+    pub saved: bool,
+    pub result: Result<(), FavoriteRefusal>,
 }
 
 /// A snapshot of everything the window shows. The controller owns the truth; the GUI
@@ -212,6 +239,12 @@ pub struct State {
     pub import: ImportStatus,
     pub search: SearchState,
     pub history: Vec<HistoryEntry>,
+    /// Newest-first favorites, unique by canonical URL.
+    pub favorites: Vec<FavoriteEntry>,
+    /// The latest favorites acknowledgement, retained across unrelated snapshots.
+    pub favorite_result: Option<FavoriteResult>,
+    /// The canonical URL of the active track or the exact request being prepared.
+    pub current_url: Option<String>,
     /// A non-fatal remark from startup, such as a recovered history file.
     pub notice: Option<String>,
 }
@@ -243,6 +276,9 @@ impl Default for State {
             import: ImportStatus::Ready,
             search: SearchState::default(),
             history: Vec::new(),
+            favorites: Vec::new(),
+            favorite_result: None,
+            current_url: None,
             notice: None,
         }
     }
@@ -321,6 +357,10 @@ impl State {
             .as_ref()
             .filter(|_| matches!(self.phase, Phase::Playing | Phase::Paused))
     }
+    /// Whether this snapshot holds a favorite with the given canonical URL.
+    pub fn is_favorite(&self, url: &str) -> bool {
+        self.favorites.iter().any(|entry| entry.url == url)
+    }
     pub fn can_pause(&self) -> bool {
         self.available && self.phase == Phase::Playing
     }
@@ -345,7 +385,6 @@ pub enum Command {
     },
     /// Plays now, replacing the current track. The pending queue is untouched.
     Play(String),
-    Enqueue(String),
     EnqueueRequest {
         id: u64,
         value: String,
@@ -369,6 +408,12 @@ pub enum Command {
         search_id: u64,
         video_id: String,
         action: SearchAction,
+    },
+    /// Desired-state membership for a non-search Save/Remove. `url` is canonicalized.
+    SetFavorite {
+        id: u64,
+        url: String,
+        saved: bool,
     },
     Next,
     Pause,
