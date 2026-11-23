@@ -211,6 +211,32 @@ fn an_idle_pending_queue_starts_above_the_collection_with_footer_volume(cx: &mut
 }
 
 #[gpui_kit::test]
+fn the_idle_headline_matches_the_title_scale_and_fits_the_minimum_window(cx: &mut TestAppContext) {
+    for (width, height, headline) in [(420., 480., 25.), (520., 560., 30.)] {
+        let ((window, _, _, _), _) = open_at(
+            cx,
+            State {
+                available: false,
+                ..state(Phase::Error)
+            },
+            width,
+            height,
+        );
+        let title = bounds(cx, window, "title");
+        assert_eq!(
+            title.size.height,
+            px(headline),
+            "{width}x{height}: the idle headline follows the title scale"
+        );
+        assert!(
+            bounds(cx, window, "setup-next-step").bottom()
+                <= bounds(cx, window, "audio-footer").top(),
+            "{width}x{height}: idle guidance stays above the footer"
+        );
+    }
+}
+
+#[gpui_kit::test]
 fn a_confirmed_add_clears_the_field_and_is_acknowledged(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Ready, 2, 0);
     let (window, view, mut received, states) = open(cx, initial.clone());

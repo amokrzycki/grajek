@@ -16,6 +16,7 @@ mod components_live;
 mod composition;
 mod experience;
 mod favorites;
+mod motion;
 mod native_favorites;
 mod native_search;
 mod native_ui;

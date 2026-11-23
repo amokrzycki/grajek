@@ -144,6 +144,9 @@ impl PlayerApp {
                 && let Some(result) = next.enqueue_result.filter(|result| result.request_id == id)
             {
                 self.added = result.item_id.map(|id| (id, placement.into()));
+                if let Some(added) = result.item_id {
+                    self.motion.added(added, cx.background_executor().now());
+                }
             }
             self.search_ui.current = None;
             if !self.settings_open && !self.components.open {
@@ -300,9 +303,15 @@ impl PlayerApp {
             .flex_col()
             .justify_center()
             .rounded(theme.radius)
+            .border_1()
+            .border_color(if selected {
+                theme.primary
+            } else {
+                theme.transparent
+            })
             .when(selected, |row| row.bg(theme.accent))
             .hover(|row| row.bg(theme.muted))
-            .focus_visible(|row| row.border_1().border_color(theme.ring))
+            .focus_visible(|row| row.border_color(theme.ring))
             .help(full, &self.help)
             .child(
                 div()
@@ -544,7 +553,10 @@ impl PlayerApp {
             .items_center()
             .gap_1()
             .when(saved, |row| {
-                row.child(Self::saved_label("search-saved", cx))
+                row.child(Self::saved_label(
+                    "search-saved",
+                    self.saved_label_color(&item.url, cx),
+                ))
             })
             .child(
                 self.button("search-favorite")

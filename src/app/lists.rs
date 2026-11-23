@@ -325,6 +325,10 @@ impl PlayerApp {
         }
         match (target, name) {
             (TrackTarget::Queue(id), "queue-up" | "queue-down") => {
+                if let Some(row) = row {
+                    self.motion
+                        .asked_to_move(*id, row, cx.background_executor().now());
+                }
                 self.send(crate::player::Command::Shift {
                     id: *id,
                     up: name == "queue-up",

@@ -219,6 +219,7 @@ impl PlayerApp {
         };
         if let Resolution::Placed(id, landing) = resolution {
             self.added = Some((*id, *landing));
+            self.motion.added(*id, cx.background_executor().now());
             // Only the text that was submitted is cleared; anything typed since stays.
             if let Some(text) = pending.text
                 && self.input_text(cx) == text
@@ -242,7 +243,7 @@ impl PlayerApp {
         {
             let title = self.state.queue[position].label();
             let note = if self.state.preferences.repeat == RepeatMode::Track {
-                format!(" · {REPEAT_TRACK_NOTE}")
+                format!("{REPEAT_TRACK_NOTE} · ")
             } else {
                 String::new()
             };
@@ -254,10 +255,10 @@ impl PlayerApp {
                     ));
                 }
                 Landing::Next if position == 0 => {
-                    return Some((format!("Queued next · {title}{note}"), false));
+                    return Some((format!("Queued next · {note}{title}"), false));
                 }
                 Landing::Moved if position == 0 => {
-                    return Some((format!("Moved to next · {title}{note}"), false));
+                    return Some((format!("Moved to next · {note}{title}"), false));
                 }
                 Landing::Next | Landing::Moved => {}
             }

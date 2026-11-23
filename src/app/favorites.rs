@@ -93,8 +93,13 @@ impl PlayerApp {
                 .filter(|result| result.request_id == pending_id)
         {
             self.favorite_pending = None;
-            if let Err(refusal) = result.result {
-                self.local_hint = Some(refusal_text(refusal));
+            match result.result {
+                Err(refusal) => self.local_hint = Some(refusal_text(refusal)),
+                Ok(()) if result.saved => {
+                    self.motion
+                        .saved(result.url.clone(), cx.background_executor().now());
+                }
+                Ok(()) => {}
             }
         }
         if self.state.current_url.is_some()
@@ -128,7 +133,10 @@ impl PlayerApp {
                 .track_focus(&self.now_playing_favorite_focus)
                 .tab_stop(false)
                 .when(saved, |row| {
-                    row.child(Self::saved_label("now-playing-saved", cx))
+                    row.child(Self::saved_label(
+                        "now-playing-saved",
+                        self.saved_label_color(&url, cx),
+                    ))
                 })
                 .child(
                     self.button("now-playing-favorite")
@@ -146,17 +154,24 @@ impl PlayerApp {
         )
     }
 
-    pub(super) fn saved_label(id: impl Into<ElementId>, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn saved_label(id: impl Into<ElementId>, color: gpui_kit::Hsla) -> impl IntoElement {
         div()
             .id(id)
             .flex_none()
             .text_xs()
             .line_height(px(16.))
-            .text_color(cx.theme().primary)
+            .text_color(color)
             .role(gpui_kit::Role::Status)
             .aria_label("Saved to Favorites")
             .child("Saved")
             .test_support()
+    }
+
+    pub(super) fn saved_label_color(&self, url: &str, cx: &Context<Self>) -> gpui_kit::Hsla {
+        let canonical = crate::config::video_url(url).unwrap_or_else(|_| url.to_owned());
+        let theme = cx.theme();
+        self.frame
+            .saved(&canonical, theme.muted_foreground, theme.primary)
     }
 
     fn favorite_title(entry: &FavoriteEntry) -> String {
