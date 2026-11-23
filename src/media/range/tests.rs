@@ -273,9 +273,9 @@ async fn failed_probes_keep_safe_diagnostics_and_allow_songbird_fallback() -> Re
                 .await
                 .err()
                 .context("network fixture succeeded")?;
-            let error = super::super::stream_error(songbird::input::AudioStreamError::Fail(
-                Box::new(error),
-            ));
+            let error = super::super::resolve::stream_error(
+                songbird::input::AudioStreamError::Fail(Box::new(error)),
+            );
             let message = error.to_string();
             assert!(message.contains("sending request"));
             assert!(!message.contains("private-test-token"));

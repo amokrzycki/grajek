@@ -58,7 +58,7 @@ choose a new placement on remap; focus remains compositor-controlled.
   invalid token and do not prove live audio continuity or native Windows behavior.
 
 Retire this copy when a chosen upstream version exposes equivalent supported
-APIs and passes the native checks. Change `src/window.rs`, the root Cargo
+APIs and passes the native checks. Change `src/platform/window.rs`, the root Cargo
 dependency/patch configuration and lockfile together before removing the
 directory. Moving the patch to a fork pinned to an immutable commit is another
 possible future migration; it still requires an available, maintained remote.

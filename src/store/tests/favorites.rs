@@ -1,12 +1,19 @@
 use super::*;
+use crate::{
+    favorites::{FAVORITES_LIMIT, FavoriteEntry},
+    history,
+    test_support::{Scratch, history_entry},
+};
 
 fn favorite(index: usize) -> FavoriteEntry {
     FavoriteEntry {
-        url: format!("https://www.youtube.com/watch?v={index:0>11}"),
         title: Some(format!("Favorite {index}")),
         channel: Some("Channel".into()),
         duration_secs: Some(index as u64),
-        live: false,
+        ..crate::test_support::favorite(
+            &format!("https://www.youtube.com/watch?v={index:0>11}"),
+            None,
+        )
     }
 }
 
@@ -17,6 +24,48 @@ fn legacy_files_load_with_empty_favorites() -> Result<()> {
     )?;
     assert_eq!(saved.favorites.len(), 0);
     assert_eq!(saved.volume, 37);
+    Ok(())
+}
+
+#[test]
+fn missing_metadata_and_live_default_to_absent_or_false() -> anyhow::Result<()> {
+    let saved: Saved = serde_json::from_value(serde_json::json!({
+        "favorites": [
+            {"url": "https://www.youtube.com/watch?v=aaaaaaaaaaa"},
+            {"url": "https://www.youtube.com/watch?v=bbbbbbbbbbb", "title": "Known"}
+        ]
+    }))?;
+    assert_eq!(saved.favorites.len(), 2);
+    assert!(saved.favorites[0].title.is_none());
+    assert!(saved.favorites[0].channel.is_none());
+    assert!(saved.favorites[0].duration_secs.is_none());
+    assert!(!saved.favorites[0].live);
+    assert_eq!(saved.favorites[1].title.as_deref(), Some("Known"));
+    Ok(())
+}
+
+#[test]
+fn a_malformed_favorite_does_not_discard_siblings() -> anyhow::Result<()> {
+    let saved: Saved = serde_json::from_value(serde_json::json!({
+        "volume": 42,
+        "favorites": [
+            null,
+            {"title": "no url"},
+            {"url": 42},
+            {"url": "https://www.youtube.com/watch?v=aaaaaaaaaaa", "title": "Kept"}
+        ]
+    }))?;
+    assert_eq!(saved.volume, 42);
+    assert_eq!(saved.favorites.len(), 1);
+    assert_eq!(saved.favorites[0].title.as_deref(), Some("Kept"));
+    Ok(())
+}
+
+#[test]
+fn a_non_array_favorites_field_loads_empty() -> anyhow::Result<()> {
+    let saved: Saved = serde_json::from_str(r#"{"volume":42,"favorites":{"url":"x"}}"#)?;
+    assert_eq!(saved.volume, 42);
+    assert_eq!(saved.favorites.len(), 0);
     Ok(())
 }
 
@@ -43,8 +92,8 @@ fn favorites_round_trip() -> Result<()> {
         ],
         ..Saved::default()
     };
-    write(&scratch.file(), &saved)?;
-    let loaded = load(Some(scratch.file()));
+    write(&scratch.file("grajek/state.json"), &saved)?;
+    let loaded = load(Some(scratch.file("grajek/state.json")));
     ensure!(loaded.warning.is_none());
     assert_eq!(loaded.saved, saved);
     Ok(())
@@ -53,15 +102,15 @@ fn favorites_round_trip() -> Result<()> {
 #[test]
 fn oversized_favorites_are_backed_up_and_bounded() -> Result<()> {
     let scratch = Scratch::new()?;
-    let file = scratch.file();
+    let file = scratch.file("grajek/state.json");
     let mut saved = Saved {
         volume: 42,
         remember_queue: true,
         ..Saved::default()
     };
-    saved.record(entry("a"));
+    history::record(&mut saved.history, history_entry("a"));
     saved.queue = vec![crate::store::SavedQueueItem {
-        url: entry("b").url,
+        url: history_entry("b").url,
         title: Some("Queued".into()),
     }];
     saved.favorites = (0..FAVORITES_LIMIT + 5).map(favorite).collect();
@@ -106,7 +155,7 @@ fn oversized_favorites_are_backed_up_and_bounded() -> Result<()> {
 fn failed_favorites_backup_disables_saving_and_preserves_original() -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     let scratch = Scratch::new()?;
-    let file = scratch.file();
+    let file = scratch.file("grajek/state.json");
     let dir = file.parent().context("no parent")?.to_path_buf();
     fs::create_dir_all(&dir)?;
     let mut saved = Saved {
@@ -143,7 +192,7 @@ fn failed_favorites_backup_disables_saving_and_preserves_original() -> Result<()
 async fn saver_flushes_favorites_on_close() -> Result<()> {
     let scratch = Scratch::new()?;
     let (sender, receiver) = watch::channel(Saved::default());
-    let saver = spawn_saver(scratch.file(), receiver);
+    let saver = spawn_saver(scratch.file("grajek/state.json"), receiver);
     let last = Saved {
         volume: 9,
         favorites: vec![FavoriteEntry {
@@ -158,14 +207,14 @@ async fn saver_flushes_favorites_on_close() -> Result<()> {
     sender.send_replace(last.clone());
     drop(sender);
     saver.task.await?;
-    assert_eq!(load(Some(scratch.file())).saved, last);
+    assert_eq!(load(Some(scratch.file("grajek/state.json"))).saved, last);
     Ok(())
 }
 
 #[test]
 fn failed_write_preserves_prior_favorites_data() -> Result<()> {
     let scratch = Scratch::new()?;
-    let file = scratch.file();
+    let file = scratch.file("grajek/state.json");
     let saved = Saved {
         favorites: vec![FavoriteEntry {
             url: "https://www.youtube.com/watch?v=aaaaaaaaaaa".into(),
@@ -178,7 +227,7 @@ fn failed_write_preserves_prior_favorites_data() -> Result<()> {
     };
     write(&file, &saved)?;
     let dir = file.parent().context("no parent")?.to_path_buf();
-    let backup = scratch.0.join("dir-as-file");
+    let backup = scratch.file("dir-as-file");
     fs::rename(&dir, &backup)?;
     fs::write(&dir, b"block")?;
     assert!(write(&file, &Saved::default()).is_err());

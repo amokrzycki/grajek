@@ -1,8 +1,9 @@
-use super::{Active, Controller, HistoryEntry, Resolved};
-use crate::queue::QueueItem;
+use super::{Active, Controller};
 use crate::{
-    media,
+    history::HistoryEntry,
+    media::{self, Resolved},
     player::{Backend, Phase, volume_factor},
+    queue::QueueItem,
 };
 use anyhow::{Context as _, Result};
 use std::future::pending;
@@ -103,16 +104,18 @@ impl Job {
     pub async fn cancel(mut self) {
         self.abort();
         match &mut self {
-            Self::Prepare { task, .. } => {
-                let _ = task.await;
-            }
+            Self::Prepare { task, .. } => settle(task).await,
             Self::Preflight { task, .. }
             | Self::Rejoin { task, .. }
             | Self::Disconnect { task, .. } => {
-                let _ = task.await;
+                settle(task).await;
             }
         }
     }
+}
+
+async fn settle<T>(task: &mut JoinHandle<Result<T>>) {
+    let _ = task.await;
 }
 
 impl Drop for Job {
@@ -300,5 +303,63 @@ impl<B: Backend> Controller<B> {
                 self.publish(Phase::Error, Some("Could not restore Discord voice. Check the network and permissions, then press Next or Play URL.".into()));
             }
         }
+    }
+
+    pub(super) fn finish_preflight(&mut self, start: Start, result: Result<()>) {
+        if let Err(error) = result {
+            tracing::warn!(%error, "Playback tool preflight failed");
+            if error
+                .downcast_ref::<media::components::MissingComponents>()
+                .is_some()
+            {
+                self.components_request = self.components_request.wrapping_add(1);
+                self.failure_notice = None;
+                self.publish(Phase::Ready, None);
+            } else {
+                self.fail(&media::user_error(&error));
+            }
+            return;
+        }
+        if !self.gateway() {
+            self.fail(
+                "Discord destination is no longer available. Select it again before playing.",
+            );
+            return;
+        }
+        let request = match start {
+            Start::Track(request) => request,
+            Start::Queue(mut selected) => {
+                for item in &selected {
+                    self.queue.remove(item.id);
+                }
+                self.queue_changed();
+                let Some(item) = selected.pop() else {
+                    return self.publish(Phase::Ready, None);
+                };
+                Request {
+                    url: item.url,
+                    origin: Origin::Queue,
+                }
+            }
+            Start::Rotate { completed, next } => {
+                if let Some(next) = next {
+                    self.queue.remove(next.id);
+                    if self.queue.push(completed.url, completed.title).is_err() {
+                        self.report("Could not rotate the completed track: queue is full.".into());
+                    }
+                    self.queue_changed();
+                    Request {
+                        url: next.url,
+                        origin: Origin::Queue,
+                    }
+                } else {
+                    Request {
+                        url: completed.url,
+                        origin: Origin::Queue,
+                    }
+                }
+            }
+        };
+        self.prepare(request);
     }
 }

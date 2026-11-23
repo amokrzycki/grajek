@@ -1,7 +1,7 @@
+use super::support::{focused, results, settle, snapshot, tab_until};
 use super::*;
-use crate::app::composer::Landing;
-use crate::player::{SearchAction, SearchPhase, SearchState};
-use crate::search::{ResultItem, Results};
+use crate::search::SearchAction;
+use crate::search::SearchPhase;
 
 fn edit(cx: &mut TestAppContext, window: AnyWindowHandle, value: &str) {
     act(cx, window, |window, cx| {
@@ -9,44 +9,6 @@ fn edit(cx: &mut TestAppContext, window: AnyWindowHandle, value: &str) {
         window.press("ctrl-a", cx);
         window.input(value, cx);
     });
-}
-
-pub(super) fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
-    cx.run_until_parked();
-    act(cx, window, |window, cx| {
-        window.simulate_next_frame(cx);
-        window.render_frame(cx);
-    });
-}
-
-pub(super) fn snapshot(phase: Phase, search: SearchPhase) -> State {
-    State {
-        search: SearchState {
-            id: 1,
-            query: "Bach cello".into(),
-            phase: search,
-            status: None,
-        },
-        ..state(phase)
-    }
-}
-
-pub(super) fn results() -> SearchPhase {
-    SearchPhase::Results(Results {
-        items: (0..5)
-            .map(|index| ResultItem {
-                url: format!("https://www.youtube.com/watch?v=aaaaaaaaaa{index}"),
-                title: Some(format!(
-                    "巴赫 · Żółć 🎵 {index} {}",
-                    "Factual title ".repeat(28)
-                )),
-                channel: Some("Channel · 大提琴".into()),
-                duration: Some(Duration::from_secs(225)),
-                live: false,
-            })
-            .collect(),
-        rejected: 0,
-    })
 }
 
 fn submit(cx: &mut TestAppContext, window: AnyWindowHandle, received: &mut TestCommands) {
@@ -62,7 +24,7 @@ fn submit(cx: &mut TestAppContext, window: AnyWindowHandle, received: &mut TestC
 
 #[gpui_kit::test]
 fn explicit_submission_selection_and_acknowledged_enqueue(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, states) = open(cx, state(Phase::Ready));
     submit(cx, window, &mut received);
     assert!(present(cx, window, "search-cancel"));
     assert!(!present(cx, window, "search-row-0"));
@@ -98,12 +60,16 @@ fn explicit_submission_selection_and_acknowledged_enqueue(cx: &mut TestAppContex
     states.send_replace(accepted);
     settle(cx, window);
     assert!(!present(cx, window, "search-cancel"));
-    cx.update(|cx| assert_eq!(view.read(cx).added, Some((42, Landing::End))));
+    assert_eq!(
+        status(cx, window),
+        "Added to queue · #1 · Loading title…",
+        "the accepted result is confirmed in the composer"
+    );
 }
 
 #[gpui_kit::test]
 fn edit_cancel_and_stale_snapshots_never_restore_results(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, state(Phase::Playing));
+    let (window, _view, mut received, states) = open(cx, state(Phase::Playing));
     submit(cx, window, &mut received);
     states.send_replace(snapshot(Phase::Playing, results()));
     settle(cx, window);
@@ -117,12 +83,7 @@ fn edit_cancel_and_stale_snapshots_never_restore_results(cx: &mut TestAppContext
     states.send_replace(snapshot(Phase::Playing, results()));
     settle(cx, window);
     assert!(!present(cx, window, "search-row-0"));
-    cx.update(|cx| {
-        assert_eq!(
-            view.read(cx).input.read(cx).value().as_str(),
-            "New query continued"
-        );
-    });
+    assert_eq!(input(cx, window), "New query continued");
 }
 
 #[gpui_kit::test]
@@ -138,7 +99,7 @@ fn geometry_and_keyboard_selection_stay_inside_the_clipped_list(cx: &mut TestApp
         let mut next = snapshot(Phase::Paused, results());
         next.track = playing(Phase::Paused, Some("Playing music"), 40).track;
         next.error = Some("Playback recovery message wraps at the minimum window size.".into());
-        next.import = crate::player::ImportStatus::Importing;
+        next.import = crate::playlist::ImportStatus::Importing;
         states.send_replace(next);
         settle(cx, window);
         let list = bounds(cx, window, "search-list");
@@ -149,7 +110,7 @@ fn geometry_and_keyboard_selection_stay_inside_the_clipped_list(cx: &mut TestApp
             bounds(cx, window, "search-actions").bottom()
                 <= bounds(cx, window, "audio-footer").top()
         );
-        super::composition::tab_until(cx, window, "search-row-0");
+        tab_until(cx, window, "search-row-0");
         act(cx, window, |window, cx| {
             window.press("end", cx);
             window.press("enter", cx);
@@ -196,7 +157,7 @@ fn action_refusal_retains_selection_and_retry_uses_a_new_acknowledgement(cx: &mu
         })
     ));
     let mut rejected = snapshot(Phase::Ready, results());
-    rejected.search.status = Some("Queue full (100 tracks). Remove an entry and try again.".into());
+    rejected.search.status = Some(crate::queue::full_message("Remove an entry and try again."));
     rejected.enqueue_result = Some(crate::player::EnqueueResult {
         request_id: 1,
         item_id: None,
@@ -263,7 +224,7 @@ fn invalid_queries_and_saturated_channels_do_not_claim_submission(cx: &mut TestA
 
 #[gpui_kit::test]
 fn errors_missing_metadata_and_section_exits_preserve_input_and_focus(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, states) = open(cx, state(Phase::Ready));
     submit(cx, window, &mut received);
     for phase in [
         SearchPhase::Empty { rejected: 0 },
@@ -272,7 +233,7 @@ fn errors_missing_metadata_and_section_exits_preserve_input_and_focus(cx: &mut T
     ] {
         states.send_replace(snapshot(Phase::Ready, phase));
         settle(cx, window);
-        assert!(super::animation_fixes::focused(cx, window, "url-editor"));
+        assert!(focused(cx, window, "url-editor"));
     }
     assert!(present(cx, window, "search-components"));
     assert!(
@@ -284,11 +245,10 @@ fn errors_missing_metadata_and_section_exits_preserve_input_and_focus(cx: &mut T
         received.try_recv(),
         Ok(Command::CancelSearch { id: 1 })
     ));
-    cx.update(|cx| {
-        assert_eq!(view.read(cx).section, Section::History);
-        assert_eq!(view.read(cx).input.read(cx).value().as_str(), "Bach  cello");
-    });
-    assert!(super::animation_fixes::focused(cx, window, "url-editor"));
+    assert!(present(cx, window, "history-empty"));
+    assert!(!present(cx, window, "queue-empty"));
+    assert_eq!(input(cx, window), "Bach  cello");
+    assert!(focused(cx, window, "url-editor"));
 }
 
 #[gpui_kit::test]
@@ -337,7 +297,7 @@ fn selected_action_channel_saturation_remains_retryable(cx: &mut TestAppContext)
     settle(cx, window);
     click(cx, window, "search-row-0");
     let mut importing = snapshot(Phase::Ready, results());
-    importing.import = crate::player::ImportStatus::Importing;
+    importing.import = crate::playlist::ImportStatus::Importing;
     states.send_replace(importing);
     settle(cx, window);
     cx.update(|cx| {
@@ -346,7 +306,6 @@ fn selected_action_channel_saturation_remains_retryable(cx: &mut TestAppContext)
         }
     });
     click(cx, window, "search-play");
-    cx.update(|cx| assert!(view.read(cx).pending.is_none()));
     assert!(
         present(cx, window, "search-action-status"),
         "busy search action remains visible during import"
@@ -368,5 +327,5 @@ fn selected_action_channel_saturation_remains_retryable(cx: &mut TestAppContext)
     states.send_replace(snapshot(Phase::Connecting, SearchPhase::Idle));
     settle(cx, window);
     assert!(!present(cx, window, "search-region"));
-    assert!(super::animation_fixes::focused(cx, window, "url-editor"));
+    assert!(focused(cx, window, "url-editor"));
 }

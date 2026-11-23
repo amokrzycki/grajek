@@ -1,4 +1,5 @@
 mod controller;
+mod media;
 mod state;
 
 use anyhow::Result;
@@ -6,13 +7,18 @@ use songbird::tracks::{TrackResult, TrackState};
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, watch};
 
+pub use crate::preferences::RepeatMode;
 pub use crate::queue::Placement;
-use crate::{config::Config, discord::Health, live::Live, media::Resolved, store};
+
+/// Consecutive queued-track failures before automatic recovery stops.
+pub(crate) const FAILURE_LIMIT: u8 = 3;
+
+use crate::{config::Config, discord::Health, discord::live::Live, media::Resolved, store};
 use controller::Controller;
+pub use media::{MediaCommand, Status};
 pub use state::{
-    Command, EnqueueResult, FavoriteRefusal, FavoriteResult, ImportStatus, Phase, Preferences,
-    RepeatMode, SearchAction, SearchPhase, SearchState, SeekStatus, State, VolumeRequest,
-    percent_from, seek_target, volume_factor,
+    Command, EnqueueResult, Phase, SeekStatus, State, VolumeRequest, percent_from, seek_target,
+    volume_factor,
 };
 
 /// How a track ended, as reported by its own event mailbox.
@@ -35,7 +41,10 @@ pub trait Handle: Clone + Send + Sync + 'static {
 /// The Discord and yt-dlp side of the controller, replaceable in tests.
 pub trait Backend: Send + Sync + 'static {
     type Handle: Handle;
-    fn setup(&self, request: crate::setup::Request) -> impl Future<Output = Result<()>> + Send;
+    fn setup(
+        &self,
+        request: crate::discord::setup::Request,
+    ) -> impl Future<Output = Result<()>> + Send;
     fn ready(&self) -> bool;
     fn health(&self) -> watch::Receiver<Health>;
     fn clear_error(&self);
@@ -80,12 +89,12 @@ pub async fn run(
     if let Some(warning) = &loaded.warning {
         tracing::warn!(%warning, "Saved state");
     }
-    let Ok(http) = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .read_timeout(Duration::from_secs(15))
-        .build()
-    else {
-        return;
+    let http = match crate::media::components::download::http_builder().build() {
+        Ok(http) => http,
+        Err(error) => {
+            tracing::error!(%error, "Could not build the HTTP client");
+            return;
+        }
     };
     let external = config.token.is_some();
     let backend = Arc::new(Live::new(http, external));
@@ -97,7 +106,7 @@ pub async fn run(
     let mut controller =
         Controller::new(backend, loaded.saved, notice, states, persist, saver_status);
     controller
-        .configure(crate::setup::Request::Restore {
+        .configure(crate::discord::setup::Request::Restore {
             config,
             saved: destination,
         })

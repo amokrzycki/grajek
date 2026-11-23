@@ -1,21 +1,10 @@
 use super::*;
-use crate::player::{FavoriteRefusal, SearchPhase, SearchState};
+use crate::favorites::FAVORITES_LIMIT;
+use crate::favorites::FavoriteRefusal;
 use crate::search::{ResultItem, Results};
-use crate::store::{FAVORITES_LIMIT, FavoriteEntry};
-use std::{fs, path::PathBuf};
-
-fn results(url: &str) -> Results {
-    Results {
-        items: vec![ResultItem {
-            url: url.into(),
-            title: Some("Factual title".into()),
-            channel: None,
-            duration: None,
-            live: false,
-        }],
-        rejected: 0,
-    }
-}
+use crate::search::{SearchPhase, SearchState};
+use crate::test_support::{Scratch, favorite, results};
+use std::fs;
 
 fn search_state(id: u64, results: Results) -> SearchState {
     SearchState {
@@ -26,45 +15,11 @@ fn search_state(id: u64, results: Results) -> SearchState {
     }
 }
 
-fn favorite(url: &str, title: Option<&str>) -> FavoriteEntry {
-    FavoriteEntry {
-        url: url.into(),
-        title: title.map(str::to_owned),
-        channel: None,
-        duration_secs: None,
-        live: false,
-    }
-}
-
 fn favorite_ack(state: &State) -> Result<FavoriteResult> {
     state
         .favorite_result
         .clone()
         .context("favorite acknowledgement missing")
-}
-
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Result<Self> {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "grajek-fav-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, SeqCst)
-        ));
-        fs::create_dir_all(&dir)?;
-        Ok(Self(dir))
-    }
-    fn file(&self) -> PathBuf {
-        self.0.join("state.json")
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
 }
 
 #[tokio::test]
@@ -74,11 +29,14 @@ impl Drop for Scratch {
 )]
 async fn the_cheapest_disproving_check_saves_and_restores_favorites() -> Result<()> {
     let mut saved = Saved::default();
-    saved.record(HistoryEntry {
-        url: B.into(),
-        title: Some("Known Y".into()),
-        duration_secs: Some(123),
-    });
+    crate::history::record(
+        &mut saved.history,
+        HistoryEntry {
+            url: B.into(),
+            title: Some("Known Y".into()),
+            duration_secs: Some(123),
+        },
+    );
     let mut rig = Rig::start(saved);
     rig.until(|s| s.phase == Phase::Ready).await?;
     rig.play(A).await?;
@@ -148,8 +106,8 @@ async fn the_cheapest_disproving_check_saves_and_restores_favorites() -> Result<
     );
 
     let scratch = Scratch::new()?;
-    crate::store::write(&scratch.file(), &rig.saves.borrow())?;
-    let reloaded = crate::store::load(Some(scratch.file()));
+    crate::store::write(&scratch.file("state.json"), &rig.saves.borrow())?;
+    let reloaded = crate::store::load(Some(scratch.file("state.json")));
     assert_eq!(reloaded.saved.favorites.len(), 1);
     assert_eq!(reloaded.saved.favorites[0].url, B);
 
@@ -179,9 +137,11 @@ async fn the_cheapest_disproving_check_saves_and_restores_favorites() -> Result<
         })
         .await?;
     assert_eq!(restored.state().favorites, Vec::new());
-    crate::store::write(&scratch.file(), &restored.saves.borrow())?;
+    crate::store::write(&scratch.file("state.json"), &restored.saves.borrow())?;
     assert_eq!(
-        crate::store::load(Some(scratch.file())).saved.favorites,
+        crate::store::load(Some(scratch.file("state.json")))
+            .saved
+            .favorites,
         Vec::new()
     );
     Ok(())
@@ -195,7 +155,7 @@ async fn stale_search_sessions_are_refused_and_change_nothing() -> Result<()> {
     let result = favorite_ack(&updates.borrow())?;
     assert_eq!(result.result, Ok(()));
     assert_eq!(result.url, A);
-    assert_eq!(controller.saved.favorites.len(), 1);
+    assert_eq!(updates.borrow().favorites.len(), 1);
 
     controller.search.state = search_state(2, results(B));
     controller.save_search_favorite(11, 1, "aaaaaaaaaaa", true);
@@ -203,7 +163,7 @@ async fn stale_search_sessions_are_refused_and_change_nothing() -> Result<()> {
     assert_eq!(result.request_id, 11);
     assert_eq!(result.result, Err(FavoriteRefusal::StaleSearch));
     assert_eq!(
-        controller.saved.favorites.len(),
+        updates.borrow().favorites.len(),
         1,
         "neither result is favorited"
     );
@@ -213,7 +173,7 @@ async fn stale_search_sessions_are_refused_and_change_nothing() -> Result<()> {
     let result = favorite_ack(&updates.borrow())?;
     assert_eq!(result.result, Err(FavoriteRefusal::StaleSearch));
     assert_eq!(
-        controller.saved.favorites.len(),
+        updates.borrow().favorites.len(),
         1,
         "session validation is mandatory"
     );
@@ -221,18 +181,22 @@ async fn stale_search_sessions_are_refused_and_change_nothing() -> Result<()> {
     controller.save_search_favorite(13, 2, "aaaaaaaaaaa", true);
     let result = favorite_ack(&updates.borrow())?;
     assert_eq!(result.result, Ok(()));
-    assert_eq!(controller.saved.favorites.len(), 1);
+    assert_eq!(updates.borrow().favorites.len(), 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn search_save_copies_result_facts_and_fills_missing_from_known() -> Result<()> {
-    let (mut controller, _fake, updates) = solo(Saved::default());
-    controller.saved.record(HistoryEntry {
-        url: A.into(),
-        title: Some("From history".into()),
-        duration_secs: None,
-    });
+    let mut saved = Saved::default();
+    crate::history::record(
+        &mut saved.history,
+        HistoryEntry {
+            url: A.into(),
+            title: Some("From history".into()),
+            duration_secs: None,
+        },
+    );
+    let (mut controller, _fake, updates) = solo(saved);
     controller.search.state = SearchState {
         id: 1,
         query: "q".into(),
@@ -249,7 +213,7 @@ async fn search_save_copies_result_facts_and_fills_missing_from_known() -> Resul
         status: None,
     };
     controller.save_search_favorite(1, 1, "aaaaaaaaaaa", true);
-    let entry = &controller.saved.favorites[0];
+    let entry = &updates.borrow().favorites[0];
     assert_eq!(entry.url, A);
     assert_eq!(
         entry.title.as_deref(),
@@ -267,12 +231,12 @@ async fn search_save_copies_result_facts_and_fills_missing_from_known() -> Resul
 async fn save_canonicalizes_aliases_and_remove_is_harmless_when_absent() -> Result<()> {
     let (mut controller, _fake, updates) = solo(Saved::default());
     controller.set_favorite(1, "https://youtu.be/aaaaaaaaaaa", true);
-    assert_eq!(controller.saved.favorites.len(), 1);
-    assert_eq!(controller.saved.favorites[0].url, A);
+    assert_eq!(updates.borrow().favorites.len(), 1);
+    assert_eq!(updates.borrow().favorites[0].url, A);
 
     controller.set_favorite(2, "https://www.youtube.com/watch?v=aaaaaaaaaaa&t=5", true);
     assert_eq!(
-        controller.saved.favorites.len(),
+        updates.borrow().favorites.len(),
         1,
         "canonical identity deduplicates"
     );
@@ -283,7 +247,7 @@ async fn save_canonicalizes_aliases_and_remove_is_harmless_when_absent() -> Resu
         Ok(()),
         "removing an absent entry succeeds"
     );
-    assert_eq!(controller.saved.favorites.len(), 1);
+    assert_eq!(updates.borrow().favorites.len(), 1);
     let phase = updates.borrow().phase;
     controller.set_favorite(4, "not a video", true);
     assert_eq!(
@@ -294,37 +258,44 @@ async fn save_canonicalizes_aliases_and_remove_is_harmless_when_absent() -> Resu
     controller.set_favorite(5, B, true);
     controller.set_favorite(6, A, false);
     controller.set_favorite(7, A, true);
-    assert_eq!(controller.saved.favorites[0].url, A);
-    assert_eq!(controller.saved.favorites[1].url, B);
+    assert_eq!(updates.borrow().favorites[0].url, A);
+    assert_eq!(updates.borrow().favorites[1].url, B);
     Ok(())
 }
 
 #[tokio::test]
 async fn save_enriches_missing_facts_without_reordering_or_overwriting() -> Result<()> {
-    let (mut controller, _fake, _updates) = solo(Saved::default());
-    controller.saved.record(HistoryEntry {
-        url: A.into(),
-        title: Some("First title".into()),
-        duration_secs: None,
-    });
+    let mut saved = Saved::default();
+    crate::history::record(
+        &mut saved.history,
+        HistoryEntry {
+            url: A.into(),
+            title: Some("First title".into()),
+            duration_secs: None,
+        },
+    );
+    let (mut controller, _fake, updates) = solo(saved);
     controller.set_favorite(1, A, true);
     assert_eq!(
-        controller.saved.favorites[0].title.as_deref(),
+        updates.borrow().favorites[0].title.as_deref(),
         Some("First title")
     );
-    assert!(controller.saved.favorites[0].duration_secs.is_none());
+    assert!(updates.borrow().favorites[0].duration_secs.is_none());
 
     controller.set_favorite(2, B, true);
-    assert_eq!(controller.saved.favorites[0].url, B);
-    assert_eq!(controller.saved.favorites[1].url, A);
+    assert_eq!(updates.borrow().favorites[0].url, B);
+    assert_eq!(updates.borrow().favorites[1].url, A);
 
-    controller.saved.record(HistoryEntry {
-        url: A.into(),
-        title: Some("Conflicting".into()),
-        duration_secs: Some(90),
-    });
+    crate::history::record(
+        &mut controller.saved.history,
+        HistoryEntry {
+            url: A.into(),
+            title: Some("Conflicting".into()),
+            duration_secs: Some(90),
+        },
+    );
     controller.set_favorite(3, A, true);
-    let known = &controller.saved.favorites[1];
+    let known = &updates.borrow().favorites[1];
     assert_eq!(known.url, A, "position is preserved");
     assert_eq!(
         known.title.as_deref(),
@@ -337,15 +308,14 @@ async fn save_enriches_missing_facts_without_reordering_or_overwriting() -> Resu
 
 #[tokio::test]
 async fn source_disappearance_still_saves_the_captured_url() -> Result<()> {
-    let (mut controller, _fake, _updates) = solo(Saved::default());
+    let (mut controller, _fake, updates) = solo(Saved::default());
     controller.enqueue(A, Placement::End);
-    controller.queue.clear();
-    controller.queue_changed();
+    controller.command(Command::ClearQueue).await;
     controller.set_favorite(1, A, true);
-    assert_eq!(controller.saved.favorites.len(), 1);
-    assert_eq!(controller.saved.favorites[0].url, A);
+    assert_eq!(updates.borrow().favorites.len(), 1);
+    assert_eq!(updates.borrow().favorites[0].url, A);
     assert!(
-        controller.saved.favorites[0].title.is_none(),
+        updates.borrow().favorites[0].title.is_none(),
         "no fabricated metadata after the source disappears"
     );
     Ok(())
@@ -353,14 +323,18 @@ async fn source_disappearance_still_saves_the_captured_url() -> Result<()> {
 
 #[tokio::test]
 async fn per_field_metadata_precedence_prefers_playback_then_history_then_queue() -> Result<()> {
-    let (mut controller, fake, _updates) = solo(Saved::default());
-    controller.enqueue(A, Placement::End);
-    let id = controller.queue.snapshot()[0].id;
-    controller.queue.resolve_titles(&[id], Some("From queue"));
-    controller.saved.record(HistoryEntry {
-        url: A.into(),
-        title: Some("From history".into()),
-        duration_secs: Some(100),
+    let (mut controller, fake, updates) = solo(Saved {
+        remember_queue: true,
+        queue: vec![SavedQueueItem {
+            url: A.into(),
+            title: Some("From queue".into()),
+        }],
+        history: vec![HistoryEntry {
+            url: A.into(),
+            title: Some("From history".into()),
+            duration_secs: Some(100),
+        }],
+        ..Saved::default()
     });
     let track = track_of(&fake).await?;
     let mut current = active(&track);
@@ -372,7 +346,7 @@ async fn per_field_metadata_precedence_prefers_playback_then_history_then_queue(
     controller.track = Some(current);
 
     controller.set_favorite(1, A, true);
-    let entry = &controller.saved.favorites[0];
+    let entry = updates.borrow().favorites[0].clone();
     assert_eq!(entry.title.as_deref(), Some("From playback"));
     assert_eq!(entry.duration_secs, Some(200));
 
@@ -385,10 +359,10 @@ async fn per_field_metadata_precedence_prefers_playback_then_history_then_queue(
         .duration = None;
     controller.set_favorite(2, A, true);
     assert_eq!(
-        controller.saved.favorites[0].title.as_deref(),
+        updates.borrow().favorites[0].title.as_deref(),
         Some("From playback")
     );
-    assert_eq!(controller.saved.favorites[0].duration_secs, Some(100));
+    assert_eq!(updates.borrow().favorites[0].duration_secs, Some(100));
 
     controller.saved.favorites.clear();
     controller.search.state = search_state(
@@ -404,22 +378,22 @@ async fn per_field_metadata_precedence_prefers_playback_then_history_then_queue(
     );
     controller.save_search_favorite(3, 1, "aaaaaaaaaaa", true);
     assert_eq!(
-        controller.saved.favorites[0].title.as_deref(),
+        updates.borrow().favorites[0].title.as_deref(),
         Some("Selected title")
     );
-    assert_eq!(controller.saved.favorites[0].duration_secs, Some(45));
+    assert_eq!(updates.borrow().favorites[0].duration_secs, Some(45));
 
     controller.track = None;
     controller.saved.favorites.clear();
     controller.set_favorite(4, A, true);
-    let entry = &controller.saved.favorites[0];
+    let entry = updates.borrow().favorites[0].clone();
     assert_eq!(entry.title.as_deref(), Some("From history"));
     assert_eq!(entry.duration_secs, Some(100));
-    controller.saved.history.clear();
     controller.saved.favorites.clear();
+    controller.saved.history.clear();
     controller.set_favorite(5, A, true);
     assert_eq!(
-        controller.saved.favorites[0].title.as_deref(),
+        updates.borrow().favorites[0].title.as_deref(),
         Some("From queue")
     );
     Ok(())
@@ -428,13 +402,12 @@ async fn per_field_metadata_precedence_prefers_playback_then_history_then_queue(
 #[tokio::test]
 async fn membership_preserves_duplicate_queue_and_paused_seek_through_history_eviction()
 -> Result<()> {
-    let (mut controller, fake, _) = solo(Saved {
+    let (mut controller, fake, updates) = solo(Saved {
         repeat: RepeatMode::Queue,
         ..Saved::default()
     });
     controller.enqueue(A, Placement::End);
     controller.enqueue(A, Placement::End);
-    let queue = controller.queue.snapshot();
     let track = track_of(&fake).await?;
     let calls = track.calls();
     let mut current = active(&track);
@@ -443,30 +416,37 @@ async fn membership_preserves_duplicate_queue_and_paused_seek_through_history_ev
     current.position = Duration::from_secs(17);
     current.seek = SeekStatus::Complete(Duration::from_secs(17));
     controller.track = Some(current);
+    let emitted = controller
+        .track
+        .as_ref()
+        .context("active track")?
+        .state(None);
+    let track_id = emitted.track_id;
+    controller.emit(emitted);
     controller.set_favorite(1, A, true);
     controller.set_favorite(2, A, true);
-    controller.saved.record(HistoryEntry {
-        url: A.into(),
-        title: Some("Played A".into()),
-        duration_secs: None,
-    });
-    for i in 0..=crate::store::HISTORY_LIMIT {
-        controller.saved.record(HistoryEntry {
-            url: format!("https://www.youtube.com/watch?v={i:011}"),
-            title: None,
-            duration_secs: None,
-        });
+    for i in 0..=crate::history::HISTORY_LIMIT {
+        crate::history::record(
+            &mut controller.saved.history,
+            HistoryEntry {
+                url: format!("https://www.youtube.com/watch?v={i:011}"),
+                title: None,
+                duration_secs: None,
+            },
+        );
     }
-    assert_eq!(controller.saved.favorites.len(), 1);
-    assert!(controller.saved.history.iter().all(|entry| entry.url != A));
-    assert_eq!(controller.queue.snapshot(), queue);
-    assert_eq!(controller.saved.repeat, RepeatMode::Queue);
-    let current = controller.track.as_ref().context("active track retained")?;
-    assert_eq!(current.request.url, A);
-    assert!(current.request.origin == Origin::Direct);
-    assert!(current.paused);
-    assert_eq!(current.position, Duration::from_secs(17));
-    assert_eq!(current.seek, SeekStatus::Complete(Duration::from_secs(17)));
+    controller.sync();
+    let state = updates.borrow().clone();
+    assert_eq!(state.favorites.len(), 1);
+    assert_eq!(state.favorites[0].url, A);
+    assert!(state.history.iter().all(|entry| entry.url != A));
+    assert_eq!(state.queue.len(), 2);
+    assert!(state.queue.iter().all(|item| item.url == A));
+    assert_eq!(state.preferences.repeat, RepeatMode::Queue);
+    assert_eq!(state.phase, Phase::Paused);
+    assert_eq!(state.track_id, track_id);
+    assert_eq!(state.position, Duration::from_secs(17));
+    assert_eq!(state.seek, SeekStatus::Complete(Duration::from_secs(17)));
     assert_eq!(track.calls(), calls);
     assert!(!track.stopped.load(SeqCst));
     Ok(())
@@ -563,23 +543,26 @@ async fn membership_works_while_discord_is_unavailable() -> Result<()> {
 #[tokio::test]
 async fn favorites_survive_queue_changes_and_destination_switch() -> Result<()> {
     let seeded = favorite(A, Some("Kept"));
-    let (mut controller, fake, _updates) = solo(Saved {
+    let mut rig = Rig::start(Saved {
         favorites: vec![seeded.clone()],
         ..Saved::default()
     });
-    controller.enqueue(B, Placement::End);
-    controller.queue.clear();
-    controller.queue_changed();
-    controller.saved.history.clear();
-
-    controller
-        .configure(crate::setup::Request::Select(destination(4)))
-        .await;
-    let job = controller.setup_job.take().context("switch job")?;
-    controller.finish_setup(&job.await).await;
-
-    assert_eq!(controller.saved.favorites, vec![seeded]);
-    assert_eq!(fake.connects.load(SeqCst), 0);
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    rig.enqueue(B).await?;
+    rig.until(|s| s.queue.len() == 1).await?;
+    rig.send(Command::ClearQueue).await?;
+    rig.until(|s| s.queue.is_empty()).await?;
+    rig.send(Command::Setup(crate::discord::setup::Request::Select(
+        destination(4),
+    )))
+    .await?;
+    let state = rig
+        .until(|s| s.setup.destination == Some(destination(4)))
+        .await?;
+    assert_eq!(state.favorites, vec![seeded]);
+    assert_eq!(rig.fake.connects.load(SeqCst), 0);
+    rig.shutdown.send_replace(true);
+    rig.task.await?;
     Ok(())
 }
 
@@ -623,7 +606,7 @@ async fn save_during_preparation_does_not_cancel_or_restart() -> Result<()> {
 #[tokio::test]
 async fn save_failure_is_reported_visibly_without_losing_membership() -> Result<()> {
     let scratch = Scratch::new()?;
-    let path = scratch.file();
+    let path = scratch.file("state.json");
     crate::store::write(&path, &Saved::default())?;
     let loaded = crate::store::load(Some(path.clone()));
     let fake = Fake::new();
@@ -656,7 +639,7 @@ async fn save_failure_is_reported_visibly_without_losing_membership() -> Result<
     )
     .await??;
 
-    let backup = scratch.0.join("previous.json");
+    let backup = scratch.file("previous.json");
     fs::rename(&path, &backup)?;
     fs::create_dir(&path)?;
     commands
@@ -750,20 +733,20 @@ async fn older_or_duplicate_request_ids_are_ignored() -> Result<()> {
     let (mut controller, _fake, updates) = solo(Saved::default());
     controller.set_favorite(1, A, true);
     controller.set_favorite(1, B, true);
-    assert_eq!(controller.saved.favorites.len(), 1);
-    assert_eq!(controller.saved.favorites[0].url, A);
+    assert_eq!(updates.borrow().favorites.len(), 1);
+    assert_eq!(updates.borrow().favorites[0].url, A);
     assert_eq!(favorite_ack(&updates.borrow())?.request_id, 1);
 
     controller.set_favorite(3, B, true);
-    assert_eq!(controller.saved.favorites.len(), 2);
+    assert_eq!(updates.borrow().favorites.len(), 2);
 
     controller.set_favorite(2, A, false);
     assert_eq!(
-        controller.saved.favorites.len(),
+        updates.borrow().favorites.len(),
         2,
         "an older id cannot undo a later request"
     );
-    assert!(controller.saved.favorites.iter().any(|f| f.url == A));
+    assert!(updates.borrow().favorites.iter().any(|f| f.url == A));
     assert_eq!(favorite_ack(&updates.borrow())?.request_id, 3);
     Ok(())
 }
@@ -782,7 +765,7 @@ fn snapshot_membership_lookup_uses_canonical_urls() {
 #[tokio::test]
 async fn accepted_no_op_remove_persists_to_retry_an_earlier_failed_write() -> Result<()> {
     let fake = Fake::new();
-    let (states, _) = watch::channel(State::default());
+    let (states, updates) = watch::channel(State::default());
     let (persist, mut saves) = watch::channel(Saved::default());
     let mut controller = Controller::new(fake, Saved::default(), None, states, persist, None);
     saves.borrow_and_update();
@@ -791,14 +774,14 @@ async fn accepted_no_op_remove_persists_to_retry_an_earlier_failed_write() -> Re
         saves.has_changed().unwrap_or(false),
         "an accepted no-op Remove must persist so a later saver retries the write"
     );
-    assert_eq!(controller.saved.favorites, Vec::new());
+    assert_eq!(updates.borrow().favorites, Vec::new());
     Ok(())
 }
 
 #[tokio::test]
 async fn runtime_titles_and_channels_obey_safe_title_bounds() -> Result<()> {
     // Controller-owned playback facts are sanitized before storing.
-    let (mut controller, fake, _updates) = solo(Saved::default());
+    let (mut controller, fake, updates) = solo(Saved::default());
     let track = track_of(&fake).await?;
     let mut current = active(&track);
     let raw_title = format!("  Hello\u{1}\u{0}\nWorld\t{}  ", "ż".repeat(300));
@@ -809,8 +792,8 @@ async fn runtime_titles_and_channels_obey_safe_title_bounds() -> Result<()> {
     };
     controller.track = Some(current);
     controller.set_favorite(1, A, true);
-    let entry = &controller.saved.favorites[0];
-    assert_eq!(entry.title, crate::store::safe_title(&raw_title));
+    let entry = updates.borrow().favorites[0].clone();
+    assert_eq!(entry.title, crate::youtube::safe_title(&raw_title));
     assert!(
         entry
             .title
@@ -836,12 +819,12 @@ async fn runtime_titles_and_channels_obey_safe_title_bounds() -> Result<()> {
         },
     );
     controller.save_search_favorite(2, 1, "aaaaaaaaaaa", true);
-    let entry = &controller.saved.favorites[0];
+    let entry = &updates.borrow().favorites[0];
     assert_eq!(
         entry.title.as_deref(),
-        crate::store::safe_title("  \u{3}Search\tTitle  ").as_deref()
+        crate::youtube::safe_title("  \u{3}Search\tTitle  ").as_deref()
     );
-    assert_eq!(entry.channel, crate::store::safe_title(&raw_channel));
+    assert_eq!(entry.channel, crate::youtube::safe_title(&raw_channel));
     assert!(
         entry
             .channel

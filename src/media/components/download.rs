@@ -54,13 +54,15 @@ impl Drop for Download {
     }
 }
 
-pub(crate) fn start(runtime: &tokio::runtime::Handle, directory: PathBuf) -> Result<Download> {
-    let pins = super::pins()?;
-    let client = reqwest::Client::builder()
-        .https_only(true)
+pub(crate) fn http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .read_timeout(Duration::from_secs(15))
-        .build()?;
+}
+
+pub(crate) fn start(runtime: &tokio::runtime::Handle, directory: PathBuf) -> Result<Download> {
+    let pins = super::pins()?;
+    let client = http_builder().https_only(true).build()?;
     let (progress, updates) = watch::channel(Progress::Ready);
     let (cancel, cancelled) = watch::channel(false);
     let task = runtime.spawn(async move {

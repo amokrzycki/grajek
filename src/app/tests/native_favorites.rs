@@ -2,8 +2,9 @@ mod geometry;
 mod navigation;
 
 use super::*;
-use crate::player::{EnqueueResult, FavoriteRefusal, FavoriteResult, Placement, SearchAction};
-use crate::store::FavoriteEntry;
+use crate::favorites::{FavoriteEntry, FavoriteRefusal, FavoriteResult};
+use crate::player::{EnqueueResult, Placement};
+use crate::search::SearchAction;
 use gpui_kit::{AsyncApp, BackgroundExecutor};
 use std::path::Path;
 
@@ -32,7 +33,6 @@ pub(super) const CASES: [&str; 22] = [
     "fav-breakpoint",
 ];
 const CURRENT: &str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
-const FULL: &str = "Favorites full (500 tracks). Remove a favorite and try again.";
 
 fn entry(url: &str, title: Option<&str>) -> FavoriteEntry {
     FavoriteEntry {
@@ -589,7 +589,10 @@ impl Fixture<'_> {
                     result: Err(FavoriteRefusal::Full),
                 });
                 self.publish(&state).await;
-                assert_eq!(self.label(cx, "link-status"), FULL);
+                assert_eq!(
+                    self.label(cx, "link-status"),
+                    crate::favorites::full_message()
+                );
                 assert!(!self.present(cx, "now-playing-saved"));
                 self.ui(cx, |_, cx| {
                     assert_eq!(self.view.read(cx).state.favorites, base.favorites);
@@ -774,7 +777,7 @@ impl Fixture<'_> {
                     self.view.read(cx).input.read(cx).value().as_str(),
                     "Bach cello"
                 );
-                let crate::player::SearchPhase::Results(results) = &state.search.phase else {
+                let crate::search::SearchPhase::Results(results) = &state.search.phase else {
                     panic!("Results retained");
                 };
                 assert!(

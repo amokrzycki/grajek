@@ -1,3 +1,4 @@
+use super::support::focused;
 use super::*;
 
 #[gpui_kit::test]
@@ -28,14 +29,14 @@ fn volume_has_a_permanent_home_outside_the_scrolling_collection(cx: &mut TestApp
 
 #[gpui_kit::test]
 fn empty_submission_feedback_retires_on_every_edit(cx: &mut TestAppContext) {
-    let (window, view, mut received, _) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, _) = open(cx, state(Phase::Ready));
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
-    assert!(cx.update(|cx| view.read(cx).local_hint.is_some()));
+    assert_eq!(status(cx, window), "Paste a link first.");
     act(cx, window, |window, cx| {
         window.input(" ", cx);
         window.press("backspace", cx);
     });
-    assert!(cx.update(|cx| view.read(cx).local_hint.is_none()));
+    assert_eq!(status(cx, window), "", "any edit retires the feedback");
     assert!(received.try_recv().is_err());
 }
 
@@ -71,16 +72,16 @@ fn native_modality_changes_emphasis_without_clearing_real_focus(cx: &mut TestApp
     let (window, view, _, _) = open(cx, state(Phase::Ready));
     let keyboard_ring = |cx: &mut TestAppContext| {
         act(cx, window, TestWindowExt::render_frame);
-        cx.update(|cx| view.read(cx).button("probe").is_focus_ring_enabled())
+        cx.update(|cx| view.read(cx).focus.button("probe").is_focus_ring_enabled())
     };
     act(cx, window, |window, cx| window.click("url", cx));
     assert!(!keyboard_ring(cx));
     act(cx, window, |window, cx| window.press("tab", cx));
-    assert!(super::animation_fixes::focused(cx, window, "play"));
+    assert!(focused(cx, window, "play"));
     assert!(keyboard_ring(cx));
     act(cx, window, |window, cx| window.hover("play", cx));
     assert!(
-        super::animation_fixes::focused(cx, window, "play"),
+        focused(cx, window, "play"),
         "pointer modality does not blur"
     );
     assert!(!keyboard_ring(cx));
@@ -90,9 +91,9 @@ fn native_modality_changes_emphasis_without_clearing_real_focus(cx: &mut TestApp
         window.click("url", cx);
         window.input("x", cx);
     });
-    assert!(super::animation_fixes::focused(cx, window, "url-editor"));
+    assert!(focused(cx, window, "url-editor"));
     assert!(
-        !super::animation_fixes::focused(cx, window, "play"),
+        !focused(cx, window, "play"),
         "text entry cannot style a different control"
     );
 }
@@ -101,7 +102,7 @@ fn native_modality_changes_emphasis_without_clearing_real_focus(cx: &mut TestApp
 fn row_menu_keyboard_dismissal_restores_visible_focus(cx: &mut TestAppContext) {
     let (window, _, mut received, _) = open(cx, with_lists(Phase::Ready, 3, 3));
     for _ in 0..12 {
-        if super::animation_fixes::focused(cx, window, ("queue-more", 11_u64)) {
+        if focused(cx, window, ("queue-more", 11_u64)) {
             break;
         }
         act(cx, window, |window, cx| {
@@ -110,33 +111,17 @@ fn row_menu_keyboard_dismissal_restores_visible_focus(cx: &mut TestAppContext) {
             window.render_frame(cx);
         });
     }
-    assert!(super::animation_fixes::focused(
-        cx,
-        window,
-        ("queue-more", 11_u64)
-    ));
+    assert!(focused(cx, window, ("queue-more", 11_u64)));
     act(cx, window, |window, cx| {
         window.press("enter", cx);
         window.simulate_next_frame(cx);
         window.render_frame(cx);
     });
-    assert!(super::animation_fixes::focused(
-        cx,
-        window,
-        ("queue-next", 11_u64)
-    ));
+    assert!(focused(cx, window, ("queue-next", 11_u64)));
     act(cx, window, |window, cx| window.press("down", cx));
-    assert!(super::animation_fixes::focused(
-        cx,
-        window,
-        ("queue-up", 11_u64)
-    ));
+    assert!(focused(cx, window, ("queue-up", 11_u64)));
     act(cx, window, |window, cx| window.press("escape", cx));
-    assert!(super::animation_fixes::focused(
-        cx,
-        window,
-        ("queue-more", 11_u64)
-    ));
+    assert!(focused(cx, window, ("queue-more", 11_u64)));
     assert!(received.try_recv().is_err());
 }
 
@@ -155,11 +140,7 @@ fn forgetting_last_history_row_restores_the_neighbour_then_input(cx: &mut TestAp
         window.simulate_next_frame(cx);
         window.render_frame(cx);
     });
-    assert!(super::animation_fixes::focused(
-        cx,
-        window,
-        ("history-more", 0_usize)
-    ));
+    assert!(focused(cx, window, ("history-more", 0_usize)));
     click(cx, window, ("history-remove", 0_usize));
     assert!(matches!(received.try_recv(), Ok(Command::ForgetHistory(_))));
     after.history.clear();
@@ -169,7 +150,7 @@ fn forgetting_last_history_row_restores_the_neighbour_then_input(cx: &mut TestAp
         window.simulate_next_frame(cx);
         window.render_frame(cx);
     });
-    assert!(super::animation_fixes::focused(cx, window, "url-editor"));
+    assert!(focused(cx, window, "url-editor"));
 }
 
 #[gpui_kit::test]
@@ -182,7 +163,7 @@ fn real_playback_with_import_and_error_keeps_two_complete_rows_above_footer(
         initial.history = with_lists(Phase::Paused, 3, 3).history;
         initial.error =
             Some("The previous seek failed. Playback remains paused. Try another position.".into());
-        initial.import = crate::player::ImportStatus::Importing;
+        initial.import = crate::playlist::ImportStatus::Importing;
         let ((window, view, _, _), _) = open_at(cx, initial, width, height);
         for section in [Section::Queue, Section::History] {
             show(cx, &view, section);
@@ -217,7 +198,7 @@ fn real_playback_with_import_and_error_keeps_two_complete_rows_above_footer(
 fn idle_play_queue_and_section_switches_do_not_strand_keyboard_focus(cx: &mut TestAppContext) {
     let (window, _, mut received, _) = open(cx, with_lists(Phase::Ready, 3, 3));
     for _ in 0..20 {
-        if super::animation_fixes::focused(cx, window, "next") {
+        if focused(cx, window, "next") {
             break;
         }
         act(cx, window, |window, cx| {
@@ -225,13 +206,13 @@ fn idle_play_queue_and_section_switches_do_not_strand_keyboard_focus(cx: &mut Te
             window.simulate_next_frame(cx);
         });
     }
-    assert!(super::animation_fixes::focused(cx, window, "next"));
+    assert!(focused(cx, window, "next"));
     act(cx, window, |window, cx| window.press("enter", cx));
     assert!(matches!(received.try_recv(), Ok(Command::Next)));
-    assert!(super::animation_fixes::focused(cx, window, "url-editor"));
+    assert!(focused(cx, window, "url-editor"));
     let (window, _, _, _) = open(cx, with_lists(Phase::Ready, 3, 3));
     for _ in 0..20 {
-        if super::animation_fixes::focused(cx, window, ("queue-more", 10_u64)) {
+        if focused(cx, window, ("queue-more", 10_u64)) {
             break;
         }
         act(cx, window, |window, cx| {
@@ -240,7 +221,7 @@ fn idle_play_queue_and_section_switches_do_not_strand_keyboard_focus(cx: &mut Te
         });
     }
     act(cx, window, |window, cx| window.press("ctrl-2", cx));
-    assert!(super::animation_fixes::focused(cx, window, "url-editor"));
+    assert!(focused(cx, window, "url-editor"));
 }
 
 #[gpui_kit::test]
@@ -251,7 +232,7 @@ fn clearing_history_and_cancelling_confirmation_keep_a_usable_focus_target(
     let (window, view, mut received, states) = open(cx, initial.clone());
     show(cx, &view, Section::History);
     for _ in 0..20 {
-        if super::animation_fixes::focused(cx, window, "history-clear") {
+        if focused(cx, window, "history-clear") {
             break;
         }
         act(cx, window, |window, cx| {
@@ -263,16 +244,12 @@ fn clearing_history_and_cancelling_confirmation_keep_a_usable_focus_target(
         window.press("enter", cx);
         window.press("tab", cx);
     });
-    assert!(super::animation_fixes::focused(
-        cx,
-        window,
-        "history-clear-cancel"
-    ));
+    assert!(focused(cx, window, "history-clear-cancel"));
     act(cx, window, |window, cx| {
         window.press("enter", cx);
         window.simulate_next_frame(cx);
     });
-    assert!(super::animation_fixes::focused(cx, window, "history-clear"));
+    assert!(focused(cx, window, "history-clear"));
     act(cx, window, |window, cx| {
         window.press("enter", cx);
         window.press("enter", cx);
@@ -282,7 +259,7 @@ fn clearing_history_and_cancelling_confirmation_keep_a_usable_focus_target(
     after.history.clear();
     states.send_replace(after);
     cx.run_until_parked();
-    assert!(super::animation_fixes::focused(cx, window, "url-editor"));
+    assert!(focused(cx, window, "url-editor"));
 }
 
 #[gpui_kit::test]
@@ -322,8 +299,7 @@ fn controller_removing_an_open_menu_target_retires_menu_and_restores_focus(
             window.render_frame(cx);
         });
         assert!(!present(cx, window, "track-options-menu"));
-        assert!(cx.update(|cx| view.read(cx).row_menu.is_none()));
-        assert!(super::animation_fixes::focused(
+        assert!(focused(
             cx,
             window,
             if section == Section::Queue {
@@ -350,11 +326,7 @@ fn history_insertion_closes_old_menu_and_follows_the_same_track(cx: &mut TestApp
         window.render_frame(cx);
     });
     assert!(!present(cx, window, "track-options-menu"));
-    assert!(super::animation_fixes::focused(
-        cx,
-        window,
-        ("history-more", 2_usize)
-    ));
+    assert!(focused(cx, window, ("history-more", 2_usize)));
 }
 
 #[gpui_kit::test]
@@ -363,11 +335,12 @@ fn switching_sections_from_either_open_menu_returns_to_the_input(cx: &mut TestAp
         ElementId::from("queue-options"),
         ElementId::from(("queue-more", 10_u64)),
     ] {
-        let (window, view, _, _) = open(cx, with_lists(Phase::Ready, 3, 3));
+        let (window, _view, _, _) = open(cx, with_lists(Phase::Ready, 3, 3));
         click(cx, window, trigger);
         act(cx, window, |window, cx| window.press("ctrl-2", cx));
-        assert!(super::animation_fixes::focused(cx, window, "url-editor"));
-        assert!(cx.update(|cx| view.read(cx).section == Section::History));
+        assert!(focused(cx, window, "url-editor"));
+        assert!(present(cx, window, ("history-row", 0_usize)));
+        assert!(!present(cx, window, ("queue-row", 10_u64)));
         assert!(!present(cx, window, "track-options-menu"));
         assert!(!present(cx, window, "queue-options-menu"));
     }

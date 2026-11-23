@@ -134,66 +134,93 @@ async fn rapid_seeks_coalesce_to_last_target_and_duplicates_do_not_repeat() -> R
 }
 
 #[tokio::test(start_paused = true)]
-async fn seek_failure_keeps_position_queue_and_failure_budget() -> Result<()> {
-    let (mut controller, fake, updates) = solo(Saved {
+async fn seek_failure_keeps_position_queue_and_does_not_consume_recovery() -> Result<()> {
+    let mut rig = Rig::start(Saved {
         continue_on_error: true,
         ..Saved::default()
     });
-    let track = track_of(&fake).await?;
-    let mut current = active(&track);
-    current.confirmed = true;
-    current.position = Duration::from_secs(10);
-    controller.track = Some(current);
-    controller.failures = 2;
-    controller
-        .track
-        .as_mut()
-        .context("no track")?
-        .request
-        .origin = Origin::Queue;
-    controller.enqueue(B, crate::player::Placement::End);
-    controller.emit(controller.track.as_ref().context("no track")?.state(None));
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    rig.enqueue(B).await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    let track = rig.fake.track(0)?;
+    track.advance(10);
+    rig.until(|s| s.phase == Phase::Playing).await?;
     let gate = track.seek_gate();
-    controller.seek(0, Duration::from_secs(30));
+    request(&rig, 30).await?;
+    rig.until(|s| matches!(s.seek, SeekStatus::Pending(_)))
+        .await?;
     gate.send(Err(ControlError::Finished))
         .map_err(|_| anyhow::anyhow!("seek cancelled"))?;
-    let result = seek_result(&mut controller.seek_job).await;
-    controller.finish_seek(result);
-    assert!(matches!(updates.borrow().seek, SeekStatus::Failed(_)));
-    assert_eq!(updates.borrow().position.as_secs(), 10);
-    assert_eq!(controller.failures, 2);
-    assert!(controller.scheduled.is_none());
-    assert_eq!(controller.queue.snapshot().len(), 1);
-    assert!(controller.track.is_some());
-    assert!(!updates.borrow().can_seek());
+    let state = rig
+        .until(|s| matches!(s.seek, SeekStatus::Failed(_)))
+        .await?;
+    assert_eq!(state.position.as_secs(), 10, "the position does not move");
+    assert!(!state.can_seek(), "a failed stream is not sought again");
+    assert_eq!(state.phase, Phase::Playing);
+    assert_eq!(rig.queued(), [B]);
+    assert!(state.track.is_some(), "the track is kept");
+    tokio::time::advance(Duration::from_secs(5)).await;
+    rig.settle().await;
+    assert_eq!(
+        rig.fake.requests(),
+        [A],
+        "a seek failure is not a track failure"
+    );
+    assert!(rig.state().error.is_none());
+    assert_eq!(rig.fake.started(), 1);
+    ensure!(!track.stopped.load(SeqCst));
     Ok(())
 }
 
 #[tokio::test(start_paused = true)]
 async fn seek_is_rejected_in_idle_resolving_stopped_and_unreliable_media() -> Result<()> {
-    let (mut controller, fake, updates) = solo(Saved::default());
-    controller.publish(Phase::Ready, None);
-    controller.seek(0, Duration::ZERO);
-    assert!(controller.seek_job.is_none());
-    let track = track_of(&fake).await?;
-    controller.track = Some(active(&track));
-    for (phase, duration, seekable) in [
-        (Phase::Resolving, Some(Duration::from_secs(60)), true),
-        (Phase::Playing, None, true),
-        (Phase::Playing, Some(Duration::ZERO), true),
-        (Phase::Playing, Some(Duration::from_secs(60)), false),
-    ] {
-        let current = controller.track.as_mut().context("no track")?;
-        current.info.duration = duration;
-        current.info.seekable = seekable;
-        controller.publish(phase, None);
-        let id = updates.borrow().track_id;
-        controller.seek(id, Duration::from_secs(20));
-        assert!(controller.seek_job.is_none());
-    }
-    controller.stop().await;
-    controller.seek(0, Duration::from_secs(20));
-    assert_eq!(track.seeks(), [] as [Duration; 0]);
+    let mut rig = Rig::new().await?;
+    // Idle: nothing to seek.
+    request(&rig, 20).await?;
+    rig.settle().await;
+    assert_eq!(rig.state().seek, SeekStatus::Ready);
+
+    // Resolving: a track exists but playback has not begun.
+    rig.play(C).await?;
+    rig.started(1).await?;
+    let resolving = rig.fake.track(0)?;
+    request(&rig, 20).await?;
+    rig.settle().await;
+    assert_eq!(rig.state().seek, SeekStatus::Ready);
+    assert_eq!(resolving.seeks(), [] as [Duration; 0]);
+
+    // Unknown duration.
+    rig.fake.durationless(A);
+    rig.play(A).await?;
+    rig.started(2).await?;
+    let durationless = rig.fake.track(1)?;
+    durationless.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    request(&rig, 20).await?;
+    rig.settle().await;
+    assert_eq!(rig.state().seek, SeekStatus::Ready);
+    assert_eq!(durationless.seeks(), [] as [Duration; 0]);
+
+    // Not seekable.
+    rig.fake.unseekable(B);
+    rig.play(B).await?;
+    rig.started(3).await?;
+    let unseekable = rig.fake.track(2)?;
+    unseekable.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    request(&rig, 20).await?;
+    rig.settle().await;
+    assert_eq!(rig.state().seek, SeekStatus::Ready);
+    assert_eq!(unseekable.seeks(), [] as [Duration; 0]);
+
+    // Stopped.
+    rig.send(Command::Stop).await?;
+    rig.until(|s| s.phase == Phase::Ready).await?;
+    request(&rig, 20).await?;
+    rig.settle().await;
+    assert_eq!(rig.state().seek, SeekStatus::Ready);
+    assert_eq!(unseekable.seeks(), [] as [Duration; 0]);
     Ok(())
 }
 
@@ -449,15 +476,15 @@ async fn failed_range_end_never_repeats_or_rotates_and_only_opt_in_recovery_adva
             // Includes the MP4 path where seek succeeds before the following packet read fails.
             controller.track.as_mut().context("no track")?.seek =
                 SeekStatus::Complete(Duration::from_secs(30));
-            let ended = crate::live::source_state(info(PlayMode::End, 30.), Some(&source));
+            let ended = crate::discord::live::source_state(info(PlayMode::End, 30.), Some(&source));
             assert!(
                 !controller.apply(Some(Ok(ended))),
                 "failure must not request natural_end"
             );
             assert_eq!(updates.borrow().phase, Phase::Error);
-            assert_eq!(controller.queue.snapshot().len(), 1);
+            assert_eq!(updates.borrow().queue.len(), 1);
+            assert!(updates.borrow().error.is_some());
             assert_eq!(fake.started(), 1);
-            assert_eq!(controller.failures, u8::from(continue_on_error));
             assert_eq!(controller.scheduled.is_some(), continue_on_error);
         }
     }

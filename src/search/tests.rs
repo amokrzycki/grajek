@@ -111,6 +111,21 @@ fn parser_skips_unavailable_and_deduplicates_canonical_video_ids() -> anyhow::Re
 }
 
 #[test]
+fn shared_unavailable_rules_reject_every_entry_kind() -> anyhow::Result<()> {
+    let value = json!({"_type":"playlist","entries":[
+        {"id":"aqz-KE-bpKQ","_type":"channel"},
+        {"id":"aqz-KE-bpKQ","availability":"needs_auth"},
+        {"id":"aqz-KE-bpKQ","title":"[Private video]"},
+        {"id":"aqz-KE-bpKQ","ie_key":"Vimeo"}
+    ]});
+    let results =
+        parse(value.to_string().as_bytes()).context("parse shared unavailable entries")?;
+    assert_eq!(results.items.len(), 0);
+    assert_eq!(results.rejected, 4);
+    Ok(())
+}
+
+#[test]
 fn duration_accepts_representable_positive_values_without_millisecond_truncation()
 -> anyhow::Result<()> {
     let value = json!({"_type":"playlist","entries":[
@@ -383,35 +398,39 @@ async fn abrupt_future_drop_uses_kill_on_drop() -> anyhow::Result<()> {
 
 #[test]
 fn final_search_argument_is_single_and_follows_option_terminator() {
-    for required in [
+    let args = crate::ytdlp::flat_args(ENTRY_LIMIT, false);
+    let mut required: Vec<String> = [
         "--ignore-config",
         "--no-plugin-dirs",
         "--flat-playlist",
         "--dump-single-json",
         "--playlist-end",
-        "5",
         "--skip-download",
-    ] {
-        assert!(args().contains(&required));
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    required.push(ENTRY_LIMIT.to_string());
+    for required in &required {
+        assert!(args.iter().any(|arg| arg == required), "missing {required}");
     }
-    assert!(!args().contains(&"--no-playlist"));
+    assert!(!args.iter().any(|arg| arg == "--no-playlist"));
     assert!(
-        !args()
+        !args
             .iter()
             .any(|arg| arg.contains("runtime") || arg.contains("cookies"))
     );
     let input = "--simulate; $(touch nope)";
-    let mut values = args().map(str::to_owned).to_vec();
-    values.push(format!("ytsearch5:{input}"));
+    let mut values = args.clone();
+    values.push(format!("ytsearch{ENTRY_LIMIT}:{input}"));
     assert_eq!(
         values.iter().position(|value| value == "--"),
         Some(values.len() - 2)
     );
     assert_eq!(
         values.last().map(String::as_str),
-        Some("ytsearch5:--simulate; $(touch nope)")
+        Some(format!("ytsearch{ENTRY_LIMIT}:{input}").as_str())
     );
-    assert_eq!(values.len(), args().len() + 1);
+    assert_eq!(values.len(), args.len() + 1);
 }
 
 #[tokio::test(start_paused = true)]

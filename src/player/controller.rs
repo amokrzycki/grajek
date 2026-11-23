@@ -1,59 +1,39 @@
 mod favorites;
+mod import;
 mod jobs;
+mod playback;
+mod queue;
+mod rejoin;
 mod search;
-#[cfg(test)]
-use jobs::Event as JobEvent;
-use jobs::{Job, Origin, Request, Start, event as job_event};
+mod seek;
+mod setup;
+mod view;
+use import::{ImportJob, import_result};
+use jobs::{Job, event as job_event};
+use playback::{Active, track_outcome};
+use queue::{TitleJob, title_result};
+use seek::{SeekJob, seek_result};
+use setup::SetupChange;
 
+use crate::favorites::FavoriteResult;
+use crate::playlist::ImportStatus;
+use crate::queue::Queue;
+use crate::{discord::Health, store::Saved};
 use anyhow::{Context, Result};
-use songbird::tracks::{PlayMode, TrackResult, TrackState};
 use std::{future::pending, sync::Arc, time::Duration};
 use tokio::{
-    sync::{mpsc, oneshot, watch},
-    task::{JoinError, JoinHandle},
+    sync::{mpsc, watch},
+    task::JoinHandle,
     time::{Instant, MissedTickBehavior, interval, sleep_until, timeout},
 };
 
-use super::{
-    Backend, Command, FavoriteResult, Handle, ImportStatus, Outcome, Phase, Preferences,
-    RepeatMode, SeekStatus, State, VolumeRequest, seek_target, volume_factor,
-};
-use crate::{
-    config::{playlist_url, video_url},
-    discord::Health,
-    media::{self, Resolved, TrackInfo},
-    queue::{Full, Placement, QUEUE_LIMIT, Queue},
-    store::{HistoryEntry, Saved, SavedQueueItem},
-};
+use super::{Backend, Command, Handle, Phase, State, VolumeRequest};
 
-/// How long a track may take to start advancing before it is reported as failed.
-const START_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_mins(10);
-const SKIP_DELAY: Duration = Duration::from_secs(1);
-const FAILURE_LIMIT: u8 = 3;
-const REJOIN_LIMIT: u8 = 2;
-const TITLE_TIMEOUT: Duration = Duration::from_secs(20);
-const SEEK_TIMEOUT: Duration = Duration::from_secs(10);
-const UNRESPONSIVE_TIMEOUT: Duration = Duration::from_secs(15);
 
-struct SeekJob {
-    task: JoinHandle<Result<Duration>>,
-    track_id: u64,
-    target: Duration,
-    next: Option<Duration>,
-}
-
-impl Drop for SeekJob {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-async fn seek_result(job: &mut Option<SeekJob>) -> Result<Result<Duration>, JoinError> {
-    match job {
-        Some(job) => (&mut job.task).await,
-        None => pending().await,
-    }
+/// Whole-second position: reported values never split a second across ticks.
+pub(super) fn whole_seconds(position: Duration) -> Duration {
+    Duration::from_secs(position.as_secs())
 }
 
 #[derive(Clone, Copy)]
@@ -63,169 +43,11 @@ enum Scheduled {
     Idle,
 }
 
-/// What one `get_info()` poll means for the current track.
-#[derive(Debug, PartialEq, Eq)]
-enum Observed {
-    Idle,
-    Changed,
-    Done(Option<String>),
-}
-
-/// The one live track. Its event mailbox belongs to it, so a replaced track can never
-/// report an outcome for its successor.
-struct Active<H> {
-    id: u64,
-    seek: SeekStatus,
-    seek_serial: u64,
-    handle: H,
-    outcome: watch::Receiver<Option<Outcome>>,
-    info: TrackInfo,
-    request: Request,
-    started: Instant,
-    last_info: Instant,
-    /// Position has advanced at least once; Playing is not claimed before this.
-    confirmed: bool,
-    /// The video has been added to the history (once, when playback begins).
-    recorded: bool,
-    paused: bool,
-    position: Duration,
-}
-
-impl<H: Handle> Active<H> {
-    fn new(
-        handle: H,
-        outcome: watch::Receiver<Option<Outcome>>,
-        info: TrackInfo,
-        request: Request,
-    ) -> Self {
-        Self {
-            id: 0,
-            seek: SeekStatus::Ready,
-            seek_serial: 0,
-            handle,
-            outcome,
-            info,
-            request,
-            started: Instant::now(),
-            last_info: Instant::now(),
-            confirmed: false,
-            recorded: false,
-            paused: false,
-            position: Duration::ZERO,
-        }
-    }
-
-    fn state(&self, error: Option<String>) -> State {
-        let phase = if self.paused {
-            Phase::Paused
-        } else if self.confirmed {
-            Phase::Playing
-        } else {
-            Phase::Resolving
-        };
-        State {
-            phase,
-            error,
-            available: true,
-            track: Some(self.info.clone()),
-            position: self.position,
-            track_id: self.id,
-            seek: self.seek.clone(),
-            seek_serial: self.seek_serial,
-            ..State::default()
-        }
-    }
-
-    fn entry(&self) -> HistoryEntry {
-        HistoryEntry {
-            url: self.request.url.clone(),
-            title: self.info.title.clone(),
-            duration_secs: self.info.duration.map(|duration| duration.as_secs()),
-        }
-    }
-
-    fn stalled(&self) -> bool {
-        !self.confirmed && self.started.elapsed() > START_TIMEOUT
-    }
-
-    fn observe(&mut self, info: &TrackState) -> Observed {
-        match &info.playing {
-            PlayMode::Errored(error) => return Observed::Done(Some(error.to_string())),
-            PlayMode::End => return Observed::Done(None),
-            PlayMode::Stop => {
-                return Observed::Done(Some(
-                    "Audio track stopped unexpectedly. Press Next or Play URL.".into(),
-                ));
-            }
-            PlayMode::Play if self.paused || info.position.is_zero() => return Observed::Idle,
-            PlayMode::Pause if !self.paused => return Observed::Idle,
-            _ => {}
-        }
-        let position = Duration::from_secs(info.position.as_secs());
-        let changed = !self.confirmed || position != self.position;
-        self.confirmed = true;
-        self.position = position;
-        if changed {
-            Observed::Changed
-        } else {
-            Observed::Idle
-        }
-    }
-}
-
-/// The import owns its task even when the controller future is dropped abruptly.
-struct ImportJob {
-    task: JoinHandle<Result<crate::playlist::Playlist>>,
-}
-
-impl Drop for ImportJob {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-async fn import_result(
-    job: &mut Option<ImportJob>,
-) -> Result<Result<crate::playlist::Playlist>, JoinError> {
-    match job {
-        Some(job) => (&mut job.task).await,
-        None => pending().await,
-    }
-}
-
-/// One title subprocess at a time, independent of playback and playlist import.
-struct TitleJob {
-    url: String,
-    ids: Vec<u64>,
-    task: JoinHandle<Result<Option<String>>>,
-}
-
-async fn title_result(job: &mut Option<TitleJob>) -> Result<Result<Option<String>>, JoinError> {
-    match job {
-        Some(job) => (&mut job.task).await,
-        None => pending().await,
-    }
-}
-
-async fn track_outcome<H>(track: &mut Option<Active<H>>) -> bool {
-    match track {
-        Some(current) => current.outcome.changed().await.is_ok(),
-        None => pending().await,
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SetupChange {
-    Discovery,
-    Reconfigure,
-    Remove,
-}
-
 /// All playback, queue and volume state lives here. The GUI never mutates a copy.
 pub(super) struct Controller<B: Backend> {
     setup_job: Option<JoinHandle<Result<()>>>,
     setup_change: SetupChange,
-    pending_setup: Option<crate::setup::Request>,
+    pending_setup: Option<crate::discord::setup::Request>,
     backend: Arc<B>,
     health: watch::Receiver<Health>,
     states: watch::Sender<State>,
@@ -299,524 +121,7 @@ impl<B: Backend> Controller<B> {
     }
 
     fn gateway(&self) -> bool {
-        self.health.borrow().gateway
-            && self.backend.ready()
-            && !(self.setup_job.is_some() && self.setup_change != SetupChange::Discovery)
-    }
-
-    /// Adds the shared data (volume, queue, history) to a state about the track/phase.
-    fn view(&self, mut state: State) -> State {
-        state.close_to_tray = self.saved.close_to_tray;
-        state.transport_ack = self.transport_ack;
-        state.enqueue_result = self.enqueue_result;
-        state.components_request = self.components_request;
-        state.track_id = self.track.as_ref().map_or(0, |track| track.id);
-        state.seek = self
-            .track
-            .as_ref()
-            .map_or(SeekStatus::Ready, |track| track.seek.clone());
-        state.seek_serial = self.track.as_ref().map_or(0, |track| track.seek_serial);
-        state.available = self.gateway();
-        state.setup = self.health.borrow().setup.clone();
-        state.setup_busy = self.setup_job.is_some();
-        state.confirm_setup = self.pending_setup.is_some();
-        state.controller_ready = true;
-        state.voice_connected = self.health.borrow().voice;
-        state.preferences = Preferences {
-            continue_on_error: self.saved.continue_on_error,
-            remember_queue: self.saved.remember_queue,
-            repeat: self.saved.repeat,
-        };
-        if state.error.is_none() {
-            state.error.clone_from(&self.failure_notice);
-        }
-        state.volume = self.volume;
-        state.volume_seq = self.volume_seq;
-        state.queue = self.queue.snapshot();
-        state.import.clone_from(&self.import);
-        state.search.clone_from(&self.search.state);
-        state.history.clone_from(&self.saved.history);
-        state.favorites.clone_from(&self.saved.favorites);
-        state.favorite_result.clone_from(&self.favorite_result);
-        state.current_url = self
-            .track
-            .as_ref()
-            .map(|track| track.request.url.clone())
-            .or_else(|| {
-                self.job
-                    .as_ref()
-                    .and_then(|job| job.current_url().map(str::to_owned))
-            });
-        let save_notice = self
-            .saver_status
-            .as_ref()
-            .and_then(|status| *status.borrow());
-        state.notice = match (&self.notice, save_notice) {
-            (Some(startup), Some(runtime)) => Some(format!("{runtime} {startup}")),
-            (Some(startup), None) => Some(startup.clone()),
-            (None, Some(runtime)) => Some(runtime.into()),
-            (None, None) => None,
-        };
-        state
-    }
-
-    fn emit(&self, state: State) {
-        let state = self.view(state);
-        if self.states.borrow().phase != state.phase {
-            tracing::info!(state = ?state.phase, "Player state");
-        }
-        self.states.send_replace(state);
-    }
-
-    fn publish(&self, phase: Phase, error: Option<String>) {
-        self.emit(State {
-            phase,
-            error,
-            ..State::default()
-        });
-    }
-
-    /// Refreshes the shared data and always answers, so no GUI action is left waiting.
-    fn sync(&self) {
-        self.states
-            .send_modify(|state| *state = self.view(std::mem::take(state)));
-    }
-
-    /// Shows a message without disturbing what is playing or being prepared.
-    fn report(&self, message: String) {
-        self.states.send_modify(|state| {
-            state.error = Some(message);
-            if state.phase == Phase::Ready {
-                state.phase = Phase::Error;
-            }
-        });
-    }
-
-    fn persist(&self) {
-        self.persist.send_replace(self.saved.clone());
-    }
-
-    fn queue_changed(&mut self) {
-        self.saved.queue = if self.saved.remember_queue {
-            self.queue
-                .snapshot()
-                .into_iter()
-                .map(|item| SavedQueueItem {
-                    url: item.url,
-                    title: item.title.as_deref().and_then(crate::store::safe_title),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        self.persist();
-        self.sync();
-    }
-
-    fn known_title(&self, url: &str) -> Option<String> {
-        self.saved
-            .title_of(url)
-            .or_else(|| self.queue.title_of(url))
-            .or_else(|| {
-                self.track
-                    .as_ref()
-                    .filter(|track| track.request.url == url)
-                    .and_then(|track| track.info.title.clone())
-            })
-    }
-
-    async fn refresh_titles(&mut self) {
-        let mut changed = false;
-        for item in self
-            .queue
-            .snapshot()
-            .iter()
-            .filter(|item| item.title.is_none())
-        {
-            if let Some(title) = self.known_title(&item.url) {
-                self.queue.resolve_titles(&[item.id], Some(&title));
-                changed = true;
-            }
-        }
-        if changed {
-            self.queue_changed();
-        }
-        let items = self.queue.snapshot();
-        if let Some(job) = &mut self.title_job {
-            job.ids.retain(|id| {
-                items
-                    .iter()
-                    .any(|item| item.id == *id && item.title.is_none())
-            });
-            if job.ids.is_empty() {
-                if let Some(job) = self.title_job.take() {
-                    job.task.abort();
-                    let _ = job.task.await;
-                }
-            } else {
-                for item in &items {
-                    if item.url == job.url && item.title.is_none() && !job.ids.contains(&item.id) {
-                        job.ids.push(item.id);
-                    }
-                }
-            }
-        }
-        if self.title_job.is_some() {
-            return;
-        }
-        let Some(item) = items
-            .iter()
-            .find(|item| item.title.is_none() && !item.title_unavailable)
-        else {
-            return;
-        };
-        let url = item.url.clone();
-        let ids = items
-            .iter()
-            .filter(|item| item.url == url && item.title.is_none())
-            .map(|item| item.id)
-            .collect();
-        let backend = self.backend.clone();
-        let request = url.clone();
-        self.title_job = Some(TitleJob {
-            url,
-            ids,
-            task: tokio::spawn(async move {
-                timeout(TITLE_TIMEOUT, backend.title(request))
-                    .await
-                    .context("Title lookup timed out.")?
-            }),
-        });
-    }
-
-    fn finish_title(&mut self, result: Result<Result<Option<String>>, JoinError>) {
-        let Some(job) = self.title_job.take() else {
-            return;
-        };
-        let title = match result {
-            Ok(Ok(title)) => title.and_then(|title| crate::store::safe_title(&title)),
-            result => {
-                tracing::debug!(?result, "Queue title lookup failed");
-                None
-            }
-        };
-        self.queue.resolve_titles(&job.ids, title.as_deref());
-        self.queue_changed();
-    }
-
-    fn start_import(&mut self, value: &str) {
-        if self.import_job.is_some() {
-            return self.sync();
-        }
-        match playlist_url(value) {
-            Err(error) => self.import = ImportStatus::Failed(error.to_string()),
-            Ok(_) if self.queue.snapshot().len() >= QUEUE_LIMIT => {
-                self.import = ImportStatus::Failed(
-                    "Queue full (100 tracks). Remove entries and try again.".into(),
-                );
-            }
-            Ok(url) => {
-                let backend = self.backend.clone();
-                self.import_job = Some(ImportJob {
-                    task: tokio::spawn(async move { backend.playlist(url).await }),
-                });
-                self.import = ImportStatus::Importing;
-            }
-        }
-        self.sync();
-    }
-
-    async fn cancel_import(&mut self) {
-        if let Some(mut job) = self.import_job.take() {
-            job.task.abort();
-            let _ = (&mut job.task).await;
-            self.import = ImportStatus::Cancelled;
-        }
-    }
-
-    fn finish_import(&mut self, result: Result<Result<crate::playlist::Playlist>, JoinError>) {
-        if self.import_job.take().is_none() {
-            return;
-        }
-        match result {
-            Ok(Ok(playlist)) => {
-                let total = playlist.entries.len();
-                let added = self.queue.append(playlist.entries);
-                self.import = if added == 0 {
-                    ImportStatus::Failed(
-                        "Queue full (100 tracks). Remove entries and try again.".into(),
-                    )
-                } else {
-                    ImportStatus::Finished {
-                        added,
-                        unavailable: playlist.unavailable,
-                        omitted: total - added,
-                        limited: playlist.limited,
-                    }
-                };
-                if added > 0 {
-                    self.queue_changed();
-                } else {
-                    self.sync();
-                }
-            }
-            error => {
-                tracing::debug!(?error, "Playlist import failed");
-                if matches!(&error, Ok(Err(error)) if error.downcast_ref::<crate::playlist::Error>() == Some(&crate::playlist::Error::MissingComponents))
-                {
-                    self.components_request = self.components_request.wrapping_add(1);
-                    self.import = ImportStatus::Ready;
-                    self.sync();
-                    return;
-                }
-                self.import = ImportStatus::Failed(match error {
-                    Ok(Err(error)) => error.downcast_ref::<crate::playlist::Error>().map_or_else(
-                        || "Playlist unavailable. Check the public link and try again.".into(),
-                        ToString::to_string,
-                    ),
-                    _ => "Playlist import failed. Try again.".into(),
-                });
-                self.sync();
-            }
-        }
-    }
-
-    async fn cancel_job(&mut self) {
-        if let Some(job) = self.job.take() {
-            job.cancel().await;
-        }
-    }
-
-    fn stop_track(&mut self) {
-        self.seek_job = None;
-        if let Some(track) = self.track.take()
-            && let Err(error) = track.handle.stop()
-        {
-            tracing::debug!(%error, "Track already finished");
-        }
-    }
-
-    fn fail(&mut self, message: &str) {
-        self.stop_track();
-        self.publish(Phase::Error, Some(message.into()));
-    }
-
-    /// Starts a selection, cancelling whatever was being prepared or played. Only one request
-    /// and one track can exist because everything runs through this single path.
-    async fn start(&mut self, start: Start) {
-        self.left_voice = false;
-        self.scheduled = None;
-        self.cancel_job().await;
-        self.stop_track();
-        self.backend.clear_error();
-        let backend = self.backend.clone();
-        self.job = Some(Job::Preflight {
-            task: tokio::spawn(async move { backend.check_tools().await }),
-            start,
-        });
-        self.publish(Phase::Connecting, None);
-    }
-
-    fn prepare(&mut self, request: Request) {
-        let (connected_tx, connected) = oneshot::channel();
-        let backend = self.backend.clone();
-        let url = request.url.clone();
-        self.job = Some(Job::Prepare {
-            task: tokio::spawn(async move { backend.prepare(url, connected_tx).await }),
-            connected: Some(connected),
-            request,
-            voice_ready: false,
-        });
-    }
-
-    fn finish_preflight(&mut self, start: Start, result: Result<()>) {
-        if let Err(error) = result {
-            tracing::warn!(%error, "Playback tool preflight failed");
-            if error
-                .downcast_ref::<media::components::MissingComponents>()
-                .is_some()
-            {
-                self.components_request = self.components_request.wrapping_add(1);
-                self.failure_notice = None;
-                self.publish(Phase::Ready, None);
-            } else {
-                self.fail(&media::user_error(&error));
-            }
-            return;
-        }
-        if !self.gateway() {
-            self.fail(
-                "Discord destination is no longer available. Select it again before playing.",
-            );
-            return;
-        }
-        let request = match start {
-            Start::Track(request) => request,
-            Start::Queue(mut selected) => {
-                for item in &selected {
-                    self.queue.remove(item.id);
-                }
-                self.queue_changed();
-                let Some(item) = selected.pop() else {
-                    return self.publish(Phase::Ready, None);
-                };
-                Request {
-                    url: item.url,
-                    origin: Origin::Queue,
-                }
-            }
-            Start::Rotate { completed, next } => {
-                if let Some(next) = next {
-                    self.queue.remove(next.id);
-                    if self.queue.push(completed.url, completed.title).is_err() {
-                        self.report("Could not rotate the completed track: queue is full.".into());
-                    }
-                    self.queue_changed();
-                    Request {
-                        url: next.url,
-                        origin: Origin::Queue,
-                    }
-                } else {
-                    Request {
-                        url: completed.url,
-                        origin: Origin::Queue,
-                    }
-                }
-            }
-        };
-        self.prepare(request);
-    }
-
-    /// Called exactly once per track that ended on its own: the next queued track, or Ready.
-    async fn advance(&mut self) {
-        let mut selected = match &self.job {
-            Some(Job::Preflight {
-                start: Start::Queue(selected),
-                ..
-            }) => selected.clone(),
-            _ => Vec::new(),
-        };
-        let next = self
-            .queue
-            .snapshot()
-            .into_iter()
-            .find(|item| !selected.iter().any(|pending| pending.id == item.id));
-        if let Some(next) = next {
-            selected.push(next);
-            self.start(Start::Queue(selected)).await;
-        } else if self.job.is_none() {
-            self.publish(Phase::Ready, None);
-        } else {
-            self.sync();
-        }
-    }
-
-    /// Only a confirmed natural completion can recycle media. Errors and manual
-    /// cancellation never enter this path; each successor gets fresh extraction.
-    async fn natural_end(&mut self) {
-        let Some(current) = self.track.as_ref() else {
-            return;
-        };
-        if self.saved.repeat != RepeatMode::Off && !current.confirmed {
-            self.media_failure(
-                "Audio ended before playback was confirmed. Press Next or Play URL.",
-            );
-            return;
-        }
-        let completed = current.entry();
-        let request = current.request.clone();
-        self.stop_track();
-        match self.saved.repeat {
-            RepeatMode::Track => self.start(Start::Track(request)).await,
-            RepeatMode::Queue if request.origin == Origin::Queue => {
-                let next = self.queue.snapshot().into_iter().next();
-                self.start(Start::Rotate { completed, next }).await;
-            }
-            RepeatMode::Off | RepeatMode::Queue => self.advance().await,
-        }
-    }
-
-    fn answer(&mut self, request_id: u64, item_id: Option<u64>) {
-        self.enqueue_result = Some(super::EnqueueResult {
-            request_id,
-            item_id,
-        });
-    }
-
-    fn enqueue(&mut self, value: &str, placement: Placement) -> Option<u64> {
-        match video_url(value) {
-            Ok(url) => {
-                let title = self.known_title(&url);
-                match self.queue.insert(url, title, placement) {
-                    Ok(id) => {
-                        self.queue_changed();
-                        return Some(id);
-                    }
-                    Err(Full) => {
-                        self.report(format!("The queue is full ({QUEUE_LIMIT} tracks)."));
-                    }
-                }
-            }
-            Err(error) => self.report(error.to_string()),
-        }
-        None
-    }
-
-    pub(super) async fn configure(&mut self, request: crate::setup::Request) {
-        if self.setup_job.is_some() {
-            return self.sync();
-        }
-        self.setup_change = if matches!(request, crate::setup::Request::Remove) {
-            SetupChange::Remove
-        } else if request.interrupts() {
-            SetupChange::Reconfigure
-        } else {
-            SetupChange::Discovery
-        };
-        if self.setup_change != SetupChange::Discovery {
-            self.left_voice = true;
-            self.scheduled = None;
-            self.cancel_job().await;
-            self.stop_track();
-            self.failure_notice = None;
-            self.publish(Phase::Ready, None);
-        }
-        let backend = self.backend.clone();
-        self.setup_job = Some(tokio::spawn(async move { backend.setup(request).await }));
-        self.sync();
-    }
-
-    async fn finish_setup(&mut self, result: &Result<Result<()>, JoinError>) {
-        self.setup_job = None;
-        // A health update during discovery may have deferred voice cleanup.
-        if !self.backend.ready() && self.health.borrow().voice {
-            self.leave_voice(true).await;
-            return;
-        }
-        let succeeded = matches!(result, Ok(Ok(())));
-        if succeeded && self.setup_change != SetupChange::Discovery {
-            let setup = self.health.borrow().setup.clone();
-            if self.setup_change == SetupChange::Remove {
-                self.saved.destination = None;
-                self.persist();
-            } else if let Some(destination) = setup.destination {
-                self.saved.destination = Some(destination);
-                self.persist();
-            } else if let Some(destination) = self
-                .saved
-                .destination
-                .clone()
-                .filter(|destination| Some(destination.bot) == setup.bot)
-            {
-                self.configure(crate::setup::Request::Select(destination))
-                    .await;
-                return;
-            }
-        }
-        if !succeeded {
-            self.report("Discord setup did not finish. Check Settings and retry.".into());
-        }
-        self.sync();
+        self.health.borrow().gateway && self.backend.ready() && !self.setup_interrupting()
     }
 
     #[expect(
@@ -824,489 +129,139 @@ impl<B: Backend> Controller<B> {
         reason = "One exhaustive dispatcher preserves transport cancellation and ordering"
     )]
     async fn command(&mut self, command: Command) {
-        match command {
-            Command::CloseToTray(enabled) => {
-                self.saved.close_to_tray = enabled;
-                self.persist();
-                self.sync();
-            }
-            Command::Setup(request) => {
-                if self.setup_job.is_some() {
-                    return self.sync();
+        let mut command = command;
+        let mut acknowledged = false;
+        loop {
+            match command {
+                Command::Transport { id, command: inner } => {
+                    self.transport_ack = id;
+                    acknowledged = true;
+                    command = *inner;
                 }
-                if request.interrupts() && (self.track.is_some() || self.job.is_some()) {
-                    self.pending_setup = Some(request);
-                    self.sync();
-                } else {
-                    self.configure(request).await;
+                Command::Media(request) => {
+                    let Some(inner) = super::media::translate(request, &self.states.borrow())
+                    else {
+                        return self.sync();
+                    };
+                    acknowledged = true;
+                    command = inner;
                 }
-            }
-            Command::ConfirmSetup(accept) => {
-                if let Some(request) = self.pending_setup.take()
-                    && accept
-                {
-                    self.configure(request).await;
+                Command::CloseToTray(enabled) => {
+                    self.set_close_to_tray(enabled);
+                    break;
                 }
-                self.sync();
-            }
-            Command::Transport { id, command } => {
-                self.transport_ack = id;
-                // ponytail: no recursion guard; translate() never returns Transport/Media, so unbounded recursion cannot occur
-                Box::pin(self.command(*command)).await;
-                // Validation errors and ignored commands must acknowledge the request too.
-                self.sync();
-            }
-            Command::Media(request) => {
-                let command = crate::native::translate(request, &self.states.borrow());
-                if let Some(command) = command {
-                    // ponytail: no recursion guard; translate() never returns Transport/Media, so unbounded recursion cannot occur
-                    Box::pin(self.command(command)).await;
-                } else {
-                    self.sync();
+                Command::Setup(request) => {
+                    self.setup_command(request).await;
+                    break;
                 }
-            }
-            Command::Seek { track_id, position } => self.seek(track_id, position),
-            Command::ImportPlaylist(value) => self.start_import(&value),
-            Command::Search { id, query } => self.submit_search(id, query),
-            Command::CancelSearch { id } => self.cancel_search(id),
-            Command::SearchAction {
-                search_id,
-                video_id,
-                action,
-            } => self.search_action(search_id, &video_id, action).await,
-            Command::SetFavorite { id, url, saved } => self.set_favorite(id, &url, saved),
-            Command::CancelImport => {
-                self.cancel_import().await;
-                self.sync();
-            }
-            Command::LeaveVoice => {
-                if self.setup_job.is_none() {
-                    self.leave_voice(true).await;
-                } else {
-                    self.sync();
+                Command::ConfirmSetup(accept) => {
+                    self.confirm_setup(accept).await;
+                    break;
                 }
-            }
-            Command::Stop => {
-                if self.setup_job.is_some() && self.setup_change != SetupChange::Discovery {
-                    return self.sync();
+                Command::Seek { track_id, position } => {
+                    self.seek(track_id, position);
+                    break;
                 }
-                if !self.job.as_ref().is_some_and(Job::manual_disconnect) {
-                    self.stop().await;
+                Command::ImportPlaylist(value) => {
+                    self.start_import(&value);
+                    break;
                 }
-            }
-            Command::Pause => self.set_paused(true),
-            Command::Resume => self.set_paused(false),
-            Command::Play(value) => {
-                if self
-                    .job
-                    .as_ref()
-                    .is_some_and(|job| job.preparing() || job.manual_disconnect())
-                    || !self.gateway()
-                {
-                    return self.sync();
+                Command::CancelImport => {
+                    self.cancel_import_command().await;
+                    break;
                 }
-                match video_url(&value) {
-                    Ok(url) => {
-                        self.failure_notice = None;
-                        self.rejoin_attempts = 0;
-                        self.start(Start::Track(Request {
-                            url,
-                            origin: Origin::Direct,
-                        }))
-                        .await;
-                    }
-                    // A bad URL must not disturb the track that is still playing or paused.
-                    Err(error) => self.report(error.to_string()),
+                Command::Search { id, query } => {
+                    self.submit_search(id, query);
+                    break;
                 }
-            }
-            Command::EnqueueRequest {
-                id,
-                value,
-                placement,
-            } => {
-                let item_id = self.enqueue(&value, placement);
-                self.answer(id, item_id);
-                self.sync();
-            }
-            Command::MoveToNext { request_id, id } => {
-                let moved = self.queue.move_to_front(id).then_some(id);
-                self.answer(request_id, moved);
-                self.queue_changed();
-            }
-            Command::Next => {
-                self.failure_notice = None;
-                self.rejoin_attempts = 0;
-                if !self.gateway() {
-                    return self.sync();
+                Command::CancelSearch { id } => {
+                    self.cancel_search(id);
+                    break;
                 }
-                if self.states.borrow().can_next() {
-                    self.advance().await;
-                } else {
-                    self.sync();
+                Command::SearchAction {
+                    search_id,
+                    video_id,
+                    action,
+                } => {
+                    self.search_action(search_id, &video_id, action).await;
+                    break;
                 }
-            }
-            Command::Dequeue(id) => {
-                self.queue.remove(id);
-                self.queue_changed();
-            }
-            Command::Shift { id, up } => {
-                self.queue.shift(id, up);
-                self.queue_changed();
-            }
-            Command::ClearQueue => {
-                self.cancel_import().await;
-                self.queue.clear();
-                self.queue_changed();
-            }
-            Command::ForgetHistory(url) => {
-                if self.saved.remove(&url) {
-                    self.persist();
+                Command::SetFavorite { id, url, saved } => {
+                    self.set_favorite(id, &url, saved);
+                    break;
                 }
-                self.sync();
-            }
-            Command::RememberQueue(enabled) => {
-                self.saved.remember_queue = enabled;
-                self.queue_changed();
-            }
-            Command::Repeat(mode) => {
-                self.saved.repeat = mode;
-                self.persist();
-                self.sync();
-            }
-            Command::ContinueOnError(enabled) => {
-                self.saved.continue_on_error = enabled;
-                if !enabled && matches!(self.scheduled, Some((_, Scheduled::Advance))) {
-                    self.scheduled = None;
-                    self.report("Automatic continuation disabled. Press Next or Play URL.".into());
+                Command::LeaveVoice => {
+                    self.leave_voice_command().await;
+                    break;
                 }
-                self.persist();
-                self.sync();
-            }
-            Command::ClearHistory => {
-                if !self.saved.history.is_empty() {
-                    self.saved.history.clear();
-                    self.persist();
+                Command::Stop => {
+                    self.stop_command().await;
+                    break;
                 }
-                self.sync();
-            }
-        }
-    }
-
-    fn seek(&mut self, track_id: u64, position: Duration) {
-        if !self.states.borrow().can_seek()
-            || self.track.as_ref().is_none_or(|track| track.id != track_id)
-        {
-            return self.sync();
-        }
-        let Some(current) = &mut self.track else {
-            return;
-        };
-        let Some(target) = seek_target(position, current.info.duration) else {
-            return;
-        };
-        if self.seek_job.is_none() && target == current.position {
-            return self.sync();
-        }
-        if let Some(job) = &mut self.seek_job {
-            job.next = (target != job.target).then_some(target);
-        } else {
-            let handle = current.handle.clone();
-            self.seek_job = Some(SeekJob {
-                track_id,
-                target,
-                next: None,
-                task: tokio::spawn(async move {
-                    timeout(SEEK_TIMEOUT, handle.seek(target)).await
-                        .context("Seeking timed out. This stream cannot be sought again; use Play URL to reopen it.")?
-                        .context("This stream could not seek. Use Play URL to reopen it.")
-                }),
-            });
-        }
-        current.seek = SeekStatus::Pending(target);
-        self.sync();
-    }
-
-    fn finish_seek(&mut self, result: Result<Result<Duration>, JoinError>) {
-        let Some(job) = self.seek_job.take() else {
-            return;
-        };
-        let Some(current) = &mut self.track else {
-            return;
-        };
-        if job.track_id != current.id {
-            return;
-        }
-        match result
-            .context("Seek task failed.")
-            .and_then(|result| result)
-        {
-            Ok(actual) => {
-                current.last_info = Instant::now();
-                current.position = Duration::from_secs(actual.as_secs());
-                current.seek = SeekStatus::Complete(actual);
-                current.seek_serial = current.seek_serial.wrapping_add(1);
-                let state = current.state(None);
-                self.emit(state);
-                if let Some(next) = job.next {
-                    self.seek(job.track_id, next);
+                Command::Pause => {
+                    self.set_paused(true);
+                    break;
+                }
+                Command::Resume => {
+                    self.set_paused(false);
+                    break;
+                }
+                Command::Play(value) => {
+                    self.play_command(&value).await;
+                    break;
+                }
+                Command::EnqueueRequest {
+                    id,
+                    value,
+                    placement,
+                } => {
+                    self.enqueue_command(id, &value, placement);
+                    break;
+                }
+                Command::MoveToNext { request_id, id } => {
+                    self.move_to_next(request_id, id);
+                    break;
+                }
+                Command::Next => {
+                    self.next_command().await;
+                    break;
+                }
+                Command::Dequeue(id) => {
+                    self.dequeue(id);
+                    break;
+                }
+                Command::Shift { id, up } => {
+                    self.shift(id, up);
+                    break;
+                }
+                Command::ClearQueue => {
+                    self.clear_queue().await;
+                    break;
+                }
+                Command::ForgetHistory(url) => {
+                    self.forget_history(&url);
+                    break;
+                }
+                Command::RememberQueue(enabled) => {
+                    self.remember_queue(enabled);
+                    break;
+                }
+                Command::Repeat(mode) => {
+                    self.set_repeat(mode);
+                    break;
+                }
+                Command::ContinueOnError(enabled) => {
+                    self.continue_on_error(enabled);
+                    break;
+                }
+                Command::ClearHistory => {
+                    self.clear_history();
+                    break;
                 }
             }
-            Err(error) => {
-                tracing::warn!(%error, "Seek failed");
-                current.seek = SeekStatus::Failed(error.to_string());
-                self.sync();
-            }
         }
-    }
-
-    async fn leave_voice(&mut self, manual: bool) {
-        if self.job.as_ref().is_some_and(Job::manual_disconnect) {
-            return self.sync();
-        }
-        self.left_voice = true;
-        self.scheduled = None;
-        self.failure_notice = None;
-        self.rejoin_attempts = 0;
-        self.cancel_job().await;
-        self.stop_track();
-        // Automatic idle leave remains interruptible by explicit Play/Next.
-        if manual {
-            self.publish(Phase::Disconnecting, None);
-        }
-        let backend = self.backend.clone();
-        self.job = Some(Job::Disconnect {
-            task: tokio::spawn(async move {
-                timeout(Duration::from_secs(5), backend.disconnect())
-                    .await
-                    .context("Leaving voice timed out.")??;
-                Ok(())
-            }),
-            manual,
-        });
-    }
-
-    /// Cancels pending work and the active track. The queue is kept and nothing advances.
-    async fn stop(&mut self) {
-        self.scheduled = None;
-        self.failure_notice = None;
-        self.publish(Phase::Stopping, None);
-        self.cancel_job().await;
-        self.stop_track();
-        self.backend.recover().await;
-        let error = self.health.borrow().error();
-        let phase = if error.is_some() {
-            Phase::Error
-        } else {
-            Phase::Ready
-        };
-        self.publish(phase, error);
-    }
-
-    /// Applies Pause/Resume. The controller is the authority: it always answers with a state,
-    /// so a stale or duplicate click can never leave the GUI waiting or showing the wrong button.
-    fn set_paused(&mut self, paused: bool) {
-        self.set_paused_with(paused, |handle| {
-            if paused {
-                handle.pause()
-            } else {
-                handle.resume()
-            }
-        });
-    }
-
-    fn set_paused_with(&mut self, paused: bool, send: impl FnOnce(&B::Handle) -> TrackResult<()>) {
-        let Some(current) = self.track.as_mut() else {
-            return self.sync();
-        };
-        if !current.confirmed || current.paused == paused {
-            let state = current.state(None);
-            return self.emit(state);
-        }
-        match send(&current.handle) {
-            Ok(()) => {
-                current.paused = paused;
-                let state = current.state(None);
-                self.emit(state);
-            }
-            Err(error) => {
-                tracing::warn!(%error, paused, "Track control failed");
-                let action = if paused { "pause" } else { "resume" };
-                self.fail(&format!(
-                    "Could not {action} playback. The track is no longer active."
-                ));
-            }
-        }
-    }
-
-    /// Applies the newest slider value to the live track, without restarting it.
-    fn set_volume(&mut self, request: VolumeRequest) {
-        let percent = request.percent.min(100);
-        self.volume_seq = request.seq;
-        if let Some(current) = &self.track
-            && let Err(error) = current.handle.set_volume(volume_factor(percent))
-        {
-            // The old volume stays: nothing was applied, so none may be claimed.
-            tracing::warn!(%error, "Volume control failed");
-            return self.fail("Could not change the volume. The track is no longer active.");
-        }
-        self.volume = percent;
-        if request.commit && self.saved.volume != percent {
-            self.saved.volume = percent;
-            self.persist();
-        }
-        self.sync();
-    }
-
-    /// `alive` is false when the track's event senders disappeared without reporting an
-    /// outcome. Returns true when the track ended on its own.
-    fn handle_outcome(&mut self, alive: bool) -> bool {
-        let Some(current) = self.track.as_mut() else {
-            return false;
-        };
-        if !alive {
-            self.media_failure("Audio driver terminated unexpectedly. Try again.");
-            return false;
-        }
-        let outcome = current.outcome.borrow_and_update().clone();
-        match outcome {
-            Some(Outcome::End) => true,
-            Some(Outcome::Error(error)) => {
-                self.media_failure(&error);
-                false
-            }
-            None => false,
-        }
-    }
-
-    fn apply(&mut self, reading: Option<TrackResult<TrackState>>) -> bool {
-        let Some(current) = self.track.as_mut() else {
-            return false;
-        };
-        let failure = match reading {
-            Some(Ok(info)) => {
-                current.last_info = Instant::now();
-                match current.observe(&info) {
-                    Observed::Changed => {
-                        let state = current.state(None);
-                        // History records a video once it is really playing, not when yt-dlp succeeds.
-                        let entry = (!current.recorded).then(|| {
-                            current.recorded = true;
-                            current.entry()
-                        });
-                        self.failures = 0;
-                        if let Some(entry) = entry {
-                            self.saved.record(entry);
-                            self.persist();
-                        }
-                        self.emit(state);
-                        None
-                    }
-                    Observed::Done(error) => {
-                        let ended = error.is_none();
-                        if let Some(error) = error {
-                            self.media_failure(&error);
-                        }
-                        return ended;
-                    }
-                    Observed::Idle => current
-                        .stalled()
-                        .then_some("Audio playback did not start. Try another video."),
-                }
-            }
-            Some(Err(error)) => {
-                tracing::debug!(%error, "Track handle finished");
-                // Allow terminal events to arrive; a dead driver cannot hold the UI forever.
-                (current.started.elapsed() > START_TIMEOUT)
-                    .then_some("Audio track terminated unexpectedly. Try again.")
-            }
-            None => (current.last_info.elapsed() >= UNRESPONSIVE_TIMEOUT)
-                .then_some("Audio driver stopped responding. Try again."),
-        };
-        if let Some(message) = failure {
-            self.media_failure(message);
-        }
-        false
-    }
-
-    fn media_failure(&mut self, message: &str) {
-        let queued = self
-            .track
-            .as_ref()
-            .is_some_and(|track| track.request.origin == Origin::Queue);
-        self.media_failure_for(message, queued);
-    }
-
-    fn media_failure_for(&mut self, message: &str, queued: bool) {
-        self.fail(message);
-        let healthy = {
-            let health = self.health.borrow();
-            health.gateway && health.voice && health.error().is_none()
-        };
-        if !self.saved.continue_on_error || !queued || !healthy {
-            return;
-        }
-        self.failures = self.failures.saturating_add(1);
-        let explanation = if self.failures >= FAILURE_LIMIT {
-            format!(
-                "Recovery stopped after {FAILURE_LIMIT} consecutive failures. Press Next or Play URL."
-            )
-        } else if self.queue.is_empty() {
-            "No queued tracks remain. Press Play URL or add tracks and press Next.".into()
-        } else {
-            self.scheduled = Some((Instant::now() + SKIP_DELAY, Scheduled::Advance));
-            "Skipped failed queued track; continuing in 1 second.".into()
-        };
-        self.failure_notice = Some(format!("{message} {explanation}"));
-        self.publish(Phase::Error, self.failure_notice.clone());
-    }
-
-    fn schedule_rejoin(&mut self) {
-        if self.rejoin_attempts >= REJOIN_LIMIT {
-            self.publish(Phase::Error, Some("Discord voice recovery stopped after 2 attempts. Check the network and permissions, then press Next or Play URL.".into()));
-        } else {
-            self.rejoin_attempts += 1;
-            self.scheduled = Some((
-                Instant::now() + Duration::from_secs(u64::from(self.rejoin_attempts) * 2 - 1),
-                Scheduled::Rejoin(self.rejoin_attempts),
-            ));
-            self.publish(Phase::Error, Some("Discord voice interrupted; reconnecting. Playback will not restart automatically.".into()));
-        }
-    }
-
-    async fn health_changed(&mut self, current: Health) {
-        if !self.backend.ready() && current.voice && self.setup_job.is_none() {
-            self.leave_voice(true).await;
-            return;
-        }
-        // Explicit leave owns teardown; late voice callbacks cannot cancel it or rejoin.
-        if self.left_voice {
-            if current.gateway_error.is_some() && self.states.borrow().phase != Phase::Disconnecting
-            {
-                self.publish(Phase::Error, current.gateway_error);
-            } else {
-                self.sync();
-            }
-            return;
-        }
-        let Some(error) = current.error() else {
+        if acknowledged {
             self.sync();
-            return;
-        };
-        // Voice callbacks from a rejoin belong to that job; its result owns the retry budget.
-        if current.gateway
-            && current.voice_retry
-            && (matches!(self.job.as_ref(), Some(Job::Rejoin { .. }))
-                || matches!(self.scheduled, Some((_, Scheduled::Rejoin(_)))))
-        {
-            return;
-        }
-        self.scheduled = None;
-        self.cancel_job().await;
-        self.stop_track();
-        self.failure_notice = None;
-        self.publish(Phase::Error, Some(error));
-        if current.gateway && !current.voice && current.voice_retry {
-            self.schedule_rejoin();
         }
     }
 
@@ -1361,7 +316,6 @@ impl<B: Backend> Controller<B> {
         mut shutdown: watch::Receiver<bool>,
     ) {
         let mut health = self.health.clone();
-        // Poll only while a track exists; otherwise sleep until the single scheduled deadline.
         let mut tick = interval(Duration::from_millis(250));
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         self.publish(Phase::Ready, None);
@@ -1448,10 +402,7 @@ impl<B: Backend> Controller<B> {
         }
         self.join_search().await;
         self.cancel_import().await;
-        if let Some(job) = self.title_job.take() {
-            job.task.abort();
-            let _ = job.task.await;
-        }
+        self.cancel_titles().await;
         self.cancel_job().await;
         self.stop_track();
         if let Some(job) = self.setup_job.take() {

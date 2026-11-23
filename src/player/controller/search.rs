@@ -1,11 +1,12 @@
-use super::{Backend, Controller, JoinError, JoinHandle, pending, watch};
+use super::{Backend, Controller, JoinHandle, pending, watch};
 use crate::{
-    config::video_url,
-    player::{Command, SearchAction, SearchPhase, SearchState},
-    queue::QUEUE_LIMIT,
-    search::{Error, Results, TIMEOUT, query},
+    player::Command,
+    queue::{full_message, is_full},
+    search::{Error, Results, SearchAction, SearchPhase, SearchState, TIMEOUT, query},
+    youtube::video_url,
 };
 use std::time::Duration;
+use tokio::task::JoinError;
 use tokio::time::Instant;
 
 type Completion = std::result::Result<std::result::Result<Results, Error>, JoinError>;
@@ -250,18 +251,18 @@ impl<B: Backend> Controller<B> {
         let state = self.view(self.states.borrow().clone());
         let refusal = match action {
             SearchAction::Play if !state.can_play() => {
-                Some("Playback unavailable. Restore Discord and try again.")
+                Some("Playback unavailable. Restore Discord and try again.".into())
             }
             SearchAction::Enqueue { .. } if !state.can_enqueue() => {
-                Some("Queueing unavailable. Restore Discord and try again.")
+                Some("Queueing unavailable. Restore Discord and try again.".into())
             }
-            SearchAction::Enqueue { .. } if state.queue.len() >= QUEUE_LIMIT => {
-                Some("Queue full (100 tracks). Remove an entry and try again.")
+            SearchAction::Enqueue { .. } if is_full(state.queue.len()) => {
+                Some(full_message("Remove an entry and try again."))
             }
             _ => None,
         };
         if let Some(message) = refusal {
-            self.search.state.status = Some(message.into());
+            self.search.state.status = Some(message);
             if let SearchAction::Enqueue { id, .. } = action {
                 self.answer(id, None);
             }
@@ -275,7 +276,6 @@ impl<B: Backend> Controller<B> {
                 let item_id = self.enqueue(&url, placement);
                 self.answer(id, item_id);
             }
-            // Membership is routed before this match; see the guard above.
             SearchAction::Favorite { .. } => {}
         }
         self.sync();

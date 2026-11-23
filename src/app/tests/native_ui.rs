@@ -122,7 +122,8 @@ fn native_offline_animation_check() {
     reason = "opt-in native state matrix keeps compositor and capture lifecycle together and fails on capture errors"
 )]
 fn native_player_redesign_evidence() {
-    use crate::player::{ImportStatus, RepeatMode};
+    use crate::player::RepeatMode;
+    use crate::playlist::ImportStatus;
     use gpui_kit::component::ActiveTheme;
     use gpui_kit::{InputEvent as _, MouseButton, MouseDownEvent, MouseUpEvent};
     let directory = std::env::var_os("GRAJEK_CAPTURE_DIR").map_or_else(
@@ -198,14 +199,14 @@ fn native_player_redesign_evidence() {
                     let mut snapshot = if matches!(name, "setup" | "setup-help" | "auth-error" | "onboarding-player") {
                         let mut snapshot = State::default();
                         if matches!(name, "auth-error" | "onboarding-player") { snapshot.controller_ready = true; snapshot.phase = Phase::Ready; }
-                        if name == "auth-error" { snapshot.setup.status = crate::setup::Status::Failed("Discord rejected this bot token. Copy the token from the Bot page in the Developer Portal, then connect again.".into()); }
+                        if name == "auth-error" { snapshot.setup.status = crate::discord::setup::Status::Failed("Discord rejected this bot token. Copy the token from the Bot page in the Developer Portal, then connect again.".into()); }
                         snapshot
                     } else if matches!(name, "settings" | "destination" | "credentials" | "server-selector" | "channel-selector" | "selector-keyboard" | "permission" | "settings-long" | "destination-player" | "settings-scroll" | "confirmation") {
-                        let mut snapshot = super::experience::configured();
-                        if matches!(name, "destination" | "destination-player") { snapshot.setup.destination = None; snapshot.available = false; snapshot.setup.status = crate::setup::Status::NeedsDestination; }
+                        let mut snapshot = super::support::configured();
+                        if matches!(name, "destination" | "destination-player") { snapshot.setup.destination = None; snapshot.available = false; snapshot.setup.status = crate::discord::setup::Status::NeedsDestination; }
                         snapshot
                     } else if matches!(name, "idle" | "idle-queued" | "idle-history" | "play-pointer" | "play-keyboard" | "qn-idle") || name.starts_with("focus-action-") {
-                        let mut snapshot = super::experience::configured();
+                        let mut snapshot = super::support::configured();
                         if matches!(name, "idle-queued" | "qn-idle") { snapshot.queue = with_lists(Phase::Ready, 3, 0).queue; }
                         if name == "idle-history" { snapshot.history = with_lists(Phase::Ready, 0, 12).history; }
                         snapshot
@@ -236,7 +237,7 @@ fn native_player_redesign_evidence() {
                         snapshot
                     };
                     if !matches!(name, "setup" | "setup-help" | "auth-error" | "onboarding-player" | "settings" | "destination" | "credentials" | "server-selector" | "channel-selector" | "selector-keyboard" | "permission" | "settings-long" | "destination-player" | "settings-scroll" | "confirmation") {
-                        snapshot.setup.destination = Some(crate::setup::Destination {
+                        snapshot.setup.destination = Some(crate::discord::setup::Destination {
                             bot: serenity::all::UserId::new(1),
                                 guild: serenity::all::GuildId::new(2), channel: serenity::all::ChannelId::new(3),
                             guild_name: "Friends’ listening room".into(),
@@ -585,13 +586,13 @@ fn native_player_redesign_evidence() {
                         cx.update_window(window, |_, window, cx| window.click(match name { "search-selected" => "search-enqueue", "search-queue-next" => "search-enqueue-next", _ => "search-play" }, cx)).expect("explicit native selected action");
                         executor.timer(Duration::from_millis(100)).await;
                         let mut accepted = super::native_search::snapshot(name, snapshot.clone(), search_id);
-                        accepted.search.phase = crate::player::SearchPhase::Idle;
+                        accepted.search.phase = crate::search::SearchPhase::Idle;
                         if name == "search-keyboard" {
                             let Command::Transport { id, command } = receiver.try_recv().expect("selected play transport") else { panic!("expected selected play transport"); };
-                            assert!(matches!(*command, Command::SearchAction { search_id: selected_id, video_id, action: crate::player::SearchAction::Play } if selected_id == search_id && video_id == "aaaaaaaaaa4"));
+                            assert!(matches!(*command, Command::SearchAction { search_id: selected_id, video_id, action: crate::search::SearchAction::Play } if selected_id == search_id && video_id == "aaaaaaaaaa4"));
                             accepted.transport_ack = id;
                         } else {
-                            let Command::SearchAction { search_id: selected_id, video_id, action: crate::player::SearchAction::Enqueue { id, placement } } = receiver.try_recv().expect("selected enqueue intent") else { panic!("expected selected enqueue"); };
+                            let Command::SearchAction { search_id: selected_id, video_id, action: crate::search::SearchAction::Enqueue { id, placement } } = receiver.try_recv().expect("selected enqueue intent") else { panic!("expected selected enqueue"); };
                             assert_eq!(placement, if name == "search-queue-next" { crate::player::Placement::Next } else { crate::player::Placement::End });
                             assert_eq!(selected_id, search_id);
                             assert_eq!(video_id, "aaaaaaaaaa0");
@@ -667,7 +668,7 @@ fn native_player_redesign_evidence() {
             assert!(matches!(receiver.try_recv(), Ok(Command::EnqueueRequest { value, .. }) if value == "https://youtu.be/aqz-KE-bpKQ"));
             std::fs::write(directory.join("interactions.txt"), "Native Pause: one intent; confirmed Playing retained while pending.\nAcknowledged Paused snapshot: Resume rendered and enabled.\nNative typing + Ctrl+Enter: Enqueue submitted with unchanged URL.\n").expect("interaction evidence");
             // Follow the real selector event/focus path, then acknowledge only controller snapshots.
-            let mut destination = super::experience::configured();
+            let mut destination = super::support::configured();
             snapshots.send_replace(destination.clone());
             executor.timer(Duration::from_millis(150)).await;
             cx.update_window(window, |_, window, cx| {
@@ -677,7 +678,7 @@ fn native_player_redesign_evidence() {
                 window.press("enter", cx);
             }).expect("native server keyboard selection");
             executor.timer(Duration::from_millis(150)).await;
-            assert!(matches!(receiver.try_recv(), Ok(Command::Setup(crate::setup::Request::Channels(id))) if id.get() == 4));
+            assert!(matches!(receiver.try_recv(), Ok(Command::Setup(crate::discord::setup::Request::Channels(id))) if id.get() == 4));
             destination.setup.browsing = Some(serenity::all::GuildId::new(4));
             snapshots.send_replace(destination.clone());
             executor.timer(Duration::from_millis(150)).await;
@@ -688,7 +689,7 @@ fn native_player_redesign_evidence() {
                 window.press("enter", cx);
             }).expect("native channel keyboard selection");
             executor.timer(Duration::from_millis(150)).await;
-            assert!(matches!(receiver.try_recv(), Ok(Command::Setup(crate::setup::Request::Select(selected))) if selected.guild.get() == 4 && selected.channel.get() == 6));
+            assert!(matches!(receiver.try_recv(), Ok(Command::Setup(crate::discord::setup::Request::Select(selected))) if selected.guild.get() == 4 && selected.channel.get() == 6));
             assert!(receiver.try_recv().is_err(), "selection alone must never send playback");
             destination.confirm_setup = true;
             snapshots.send_replace(destination);

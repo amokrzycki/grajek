@@ -1,9 +1,8 @@
-use super::animation_fixes::focused;
-use super::composition::tab_until;
-use super::search::{results, settle, snapshot};
+use super::support::*;
 use super::*;
-use crate::player::{FavoriteRefusal, FavoriteResult, Placement, SearchAction};
-use crate::store::FavoriteEntry;
+use crate::favorites::{FavoriteEntry, FavoriteRefusal, FavoriteResult};
+use crate::player::Placement;
+use crate::search::SearchAction;
 
 const VIDEO: &str = "https://www.youtube.com/watch?v=aaaaaaaaaaa";
 
@@ -72,7 +71,7 @@ fn submit_search(cx: &mut TestAppContext, window: AnyWindowHandle, received: &mu
 
 #[gpui_kit::test]
 fn current_track_save_and_remove_target_the_exact_url_without_optimism(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) =
+    let (window, _view, mut received, states) =
         open(cx, playing_url(Phase::Playing, VIDEO, Some("Song")));
     assert_eq!(
         button(cx, window, "now-playing-favorite"),
@@ -106,7 +105,11 @@ fn current_track_save_and_remove_target_the_exact_url_without_optimism(cx: &mut 
         received.try_recv(),
         Ok(Command::SetFavorite { id: 2, url, saved: false }) if url == VIDEO
     ));
-    cx.update(|cx| assert!(view.read(cx).favorite_pending.is_some()));
+    click(cx, window, "now-playing-favorite");
+    assert!(
+        received.try_recv().is_err(),
+        "a pending removal blocks a duplicate"
+    );
 }
 
 #[gpui_kit::test]
@@ -289,7 +292,7 @@ fn favorite_row_click_never_autoplays(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn full_favorites_refusal_surfaces_the_refusal_text(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) =
+    let (window, _view, mut received, states) =
         open(cx, playing_url(Phase::Playing, VIDEO, Some("Song")));
     click(cx, window, "now-playing-favorite");
     assert!(received.try_recv().is_ok());
@@ -302,24 +305,23 @@ fn full_favorites_refusal_surfaces_the_refusal_text(cx: &mut TestAppContext) {
     });
     states.send_replace(refused);
     cx.run_until_parked();
-    cx.update(|cx| assert!(view.read(cx).favorite_pending.is_none()));
-    let text = cx
-        .update_window(window, |_, window, _| {
-            window
-                .find("link-status")
-                .label()
-                .unwrap_or_default()
-                .to_owned()
-        })
-        .ok();
-    assert_eq!(
-        text.as_deref(),
-        Some("Favorites full (500 tracks). Remove a favorite and try again.")
-    );
+    assert_eq!(status(cx, window), crate::favorites::full_message());
     assert_eq!(
         button(cx, window, "now-playing-favorite"),
         ("Save to Favorites: Song".into(), false),
         "refusal changes nothing"
+    );
+    click(cx, window, "now-playing-favorite");
+    assert!(
+        matches!(
+            received.try_recv(),
+            Ok(Command::SetFavorite {
+                id: 2,
+                saved: true,
+                ..
+            })
+        ),
+        "the refusal released the pending slot"
     );
 }
 
@@ -350,7 +352,11 @@ fn delayed_acknowledgement_and_saturated_channel_do_not_claim_membership(cx: &mu
             ..
         })
     ));
-    cx.update(|cx| assert!(view.read(cx).favorite_pending.is_some()));
+    click(cx, window, "now-playing-favorite");
+    assert!(
+        received.try_recv().is_err(),
+        "the accepted request is pending until it is answered"
+    );
 }
 
 #[gpui_kit::test]
@@ -494,7 +500,7 @@ fn search_membership_requires_a_controller_but_not_discord(cx: &mut TestAppConte
 
 #[gpui_kit::test]
 fn search_save_and_remove_use_the_envelope_and_retain_results(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, states) = open(cx, state(Phase::Ready));
     submit_search(cx, window, &mut received);
     assert!(
         button(cx, window, "search-favorite").1,
@@ -510,10 +516,7 @@ fn search_save_and_remove_use_the_envelope_and_retain_results(cx: &mut TestAppCo
         Ok(Command::SearchAction { search_id: 1, video_id, action: SearchAction::Favorite { id: 1, saved: true } }) if video_id == "aaaaaaaaaa0"
     ));
     assert!(present(cx, window, "search-row-1"), "results remain");
-    assert_eq!(
-        cx.update(|cx| view.read(cx).input.read(cx).value().to_string()),
-        "Bach cello"
-    );
+    assert_eq!(input(cx, window), "Bach cello", "the query is retained");
     let mut confirmed = snapshot(Phase::Ready, results());
     confirmed.favorites = vec![favorite("aaaaaaaaaa0", Some("Found"))];
     states.send_replace(ack(
@@ -585,38 +588,43 @@ fn nonsearch_save_keeps_its_captured_url_when_the_source_row_disappears(cx: &mut
     }];
     states.send_replace(ack(source_gone, 1, &url, true));
     cx.run_until_parked();
-    cx.update(|cx| assert!(view.read(cx).favorite_pending.is_none()));
     show(cx, &view, Section::Favorites);
     assert!(present(cx, window, format!("favorite-row:{url}")));
+    favorite_menu(cx, window, &url, "favorite-remove");
+    assert!(
+        matches!(
+            received.try_recv(),
+            Ok(Command::SetFavorite { saved: false, .. })
+        ),
+        "the answered save released the pending slot"
+    );
 }
 
 #[gpui_kit::test]
 fn settings_and_search_exits_preserve_the_selected_collection(cx: &mut TestAppContext) {
-    let (window, view, mut received, _) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, _) = open(cx, state(Phase::Ready));
     act(cx, window, |window, cx| window.press("ctrl-3", cx));
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::Favorites));
+    assert!(present(cx, window, "favorites-empty"));
     click(cx, window, "settings");
-    assert!(cx.update(|cx| view.read(cx).settings_open));
+    assert!(present(cx, window, "discord-settings"));
     act(cx, window, |window, cx| window.press("escape", cx));
-    cx.update(|cx| assert!(!view.read(cx).settings_open));
+    assert!(!present(cx, window, "discord-settings"));
     assert!(focused(cx, window, "url-editor"));
     submit_search(cx, window, &mut received);
     assert!(present(cx, window, "search-region"));
     click(cx, window, "search-cancel");
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::Favorites));
     assert!(present(cx, window, "favorites-empty"));
 }
 
 #[gpui_kit::test]
 fn ctrl_digits_and_tabs_select_all_three_collections(cx: &mut TestAppContext) {
-    let (window, view, _, _) = open(cx, with_lists(Phase::Ready, 1, 1));
+    let (window, _view, _, _) = open(cx, with_lists(Phase::Ready, 1, 1));
     act(cx, window, |window, cx| window.press("ctrl-3", cx));
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::Favorites));
     assert!(present(cx, window, "favorites-empty"));
     act(cx, window, |window, cx| window.press("ctrl-2", cx));
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::History));
+    assert!(present(cx, window, ("history-row", 0_usize)));
     act(cx, window, |window, cx| window.press("ctrl-1", cx));
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::Queue));
+    assert!(present(cx, window, ("queue-row", 10_u64)));
 }
 
 #[gpui_kit::test]
@@ -634,7 +642,7 @@ fn narrow_window_uses_the_chooser_and_wide_uses_tabs(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn count_only_updates_do_not_navigate_or_emit_selection(cx: &mut TestAppContext) {
-    let (_window, view, mut received, states) = open(
+    let (window, view, mut received, states) = open(
         cx,
         with_favorites(Phase::Ready, vec![favorite("aaaaaaaaaaa", None)]),
     );
@@ -646,7 +654,14 @@ fn count_only_updates_do_not_navigate_or_emit_selection(cx: &mut TestAppContext)
     count_changed.queue = with_lists(Phase::Ready, 3, 0).queue;
     states.send_replace(count_changed);
     cx.run_until_parked();
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::Favorites));
+    assert!(
+        present(
+            cx,
+            window,
+            format!("favorite-row:{}", favorite("aaaaaaaaaaa", None).url)
+        ),
+        "a count change never navigates away from the open collection"
+    );
     assert!(
         received.try_recv().is_err(),
         "count changes emit no command"

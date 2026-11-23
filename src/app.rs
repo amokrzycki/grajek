@@ -1,72 +1,62 @@
-mod collections;
 mod components;
 pub(super) mod composer;
-mod controls;
 mod favorites;
-mod focus;
-mod height_reveal;
-mod help;
+pub(super) mod fmt;
 mod history;
-mod lists;
 mod motion;
 mod progress;
 mod queue;
 mod search;
+mod sections;
 mod settings;
+mod transport;
+mod ui;
+mod volume;
 
-use gpui_kit::assets::IconName as AudioIcon;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon,
-    button::{Button, ButtonVariants},
-    input::{Input, InputEvent, InputState},
+    ActiveTheme,
+    input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, AppContext, Context, ElementId, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Subscription, Task, TestSupportExt, Window, div, px,
-    relative,
+    AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Task,
+    TestSupportExt, Window, div, px,
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
-use crate::player::{Command, Phase, State, VolumeRequest};
+use crate::player::{Command, State, VolumeRequest};
 use crate::style::space;
-use help::HelpExt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Section {
-    Queue,
-    History,
-    Favorites,
-}
-
-#[derive(Clone, Copy)]
-enum Pending {
-    Play,
-    Next,
-    Pause,
-    Stop,
-    Leave,
-}
+use components::Panel;
+use composer::{Landing, PendingEnqueue, Resolution};
+use motion::{Frame, Motion};
+use sections::TrackTarget;
+use sections::lists::ListNavigation;
+use sections::{CollectionSelect, Section};
+use settings::DestinationSelect;
+use transport::Pending;
+use ui::help::HelpExt;
+use ui::{FocusPresentation, Help};
 
 #[expect(
     clippy::struct_excessive_bools,
     reason = "Independent UI focus, pending-operation and panel flags are not a single state machine"
 )]
 pub struct PlayerApp {
-    components: components::Panel,
-    help: help::Help,
-    focus: focus::FocusPresentation,
-    row_menu: Option<lists::TrackTarget>,
+    components: Panel,
+    help: Help,
+    focus: FocusPresentation,
+    row_menu: Option<TrackTarget>,
     token_error: bool,
     token: Entity<InputState>,
     settings_open: bool,
     credentials_open: bool,
     preferences_open: bool,
-    server_select: settings::DestinationSelect,
-    channel_select: settings::DestinationSelect,
+    server_select: DestinationSelect,
+    channel_select: DestinationSelect,
     settings_focus: FocusHandle,
     settings_scroll: gpui_kit::ScrollHandle,
     confirm_setup_focus: FocusHandle,
@@ -75,12 +65,12 @@ pub struct PlayerApp {
     setup_help: bool,
     input: Entity<InputState>,
     search_ui: search::SearchUi,
-    enqueue_pending: Option<composer::PendingEnqueue>,
+    enqueue_pending: Option<PendingEnqueue>,
     enqueue_seq: u64,
     /// The entry the controller last placed for this window, and how it got there.
-    added: Option<(u64, composer::Landing)>,
-    local_hint: Option<&'static str>,
-    retired_import: Option<crate::player::ImportStatus>,
+    added: Option<(u64, Landing)>,
+    local_hint: Option<String>,
+    retired_import: Option<crate::playlist::ImportStatus>,
     volume: Entity<SliderState>,
     volume_focus: FocusHandle,
     progress: Entity<SliderState>,
@@ -94,10 +84,10 @@ pub struct PlayerApp {
     commands: mpsc::Sender<Command>,
     volume_requests: watch::Sender<VolumeRequest>,
     state: State,
-    motion: motion::Motion,
-    frame: motion::Frame,
-    height_reveals: height_reveal::HeightReveals,
-    reveal: height_reveal::RevealFrame,
+    motion: Motion,
+    frame: Frame,
+    height_reveals: motion::HeightReveals,
+    reveal: motion::RevealFrame,
     /// Only a change of these messages starts a fade.
     shown_error: Option<String>,
     shown_notice: Option<String>,
@@ -105,13 +95,13 @@ pub struct PlayerApp {
     /// Prevent duplicate input while keeping the authoritative playback snapshot visible.
     pending: Option<Pending>,
     transport_seq: u64,
-    queue_scroll: lists::ListNavigation,
-    history_scroll: lists::ListNavigation,
-    favorites_scroll: lists::ListNavigation,
+    queue_scroll: ListNavigation,
+    history_scroll: ListNavigation,
+    favorites_scroll: ListNavigation,
     import_pending: bool,
     favorite_pending: Option<u64>,
     favorite_seq: u64,
-    collection_select: collections::CollectionSelect,
+    collection_select: CollectionSelect,
     now_playing_favorite_focus: FocusHandle,
     /// The slider is being dragged; controller snapshots must not fight the pointer.
     dragging: bool,
@@ -125,25 +115,15 @@ pub struct PlayerApp {
     subscriptions: Vec<Subscription>,
     _updates: Task<()>,
     #[cfg(target_os = "windows")]
-    media: Option<crate::native::windows::MediaSession>,
-}
-
-fn clock(position: Duration) -> String {
-    let seconds = position.as_secs();
-    format!("{:02}:{:02}", seconds / 60, seconds % 60)
-}
-
-/// `01:24 / 03:45`, or `01:24 (duration unavailable)` when yt-dlp gave no duration.
-fn format_progress(position: Duration, duration: Option<Duration>) -> String {
-    match duration {
-        Some(duration) => format!("{} / {}", clock(position), clock(duration)),
-        None => format!("{} (duration unavailable)", clock(position)),
-    }
+    media: Option<crate::platform::media::windows::MediaSession>,
 }
 
 impl PlayerApp {
     #[cfg(target_os = "windows")]
-    pub fn with_media(mut self, media: Option<crate::native::windows::MediaSession>) -> Self {
+    pub fn with_media(
+        mut self,
+        media: Option<crate::platform::media::windows::MediaSession>,
+    ) -> Self {
         self.media = media;
         self
     }
@@ -159,9 +139,9 @@ impl PlayerApp {
         volume_requests: watch::Sender<VolumeRequest>,
         mut states: watch::Receiver<State>,
     ) -> Self {
-        lists::init(cx);
-        controls::init(cx);
-        let help = help::Help::new(cx);
+        sections::lists::init(cx);
+        ui::menu::init(cx);
+        let help = Help::new(cx);
         let token = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
@@ -173,14 +153,14 @@ impl PlayerApp {
         let volume = cx.new(|_| {
             SliderState::new()
                 .min(0.0)
-                .max(100.0)
+                .max(f32::from(crate::preferences::VOLUME_MAX))
                 .step(1.0)
                 .default_value(f32::from(volume_requests.borrow().percent))
         });
         let progress = cx.new(|_| {
             SliderState::new()
                 .min(0.)
-                .max(1000.)
+                .max(progress::SLIDER_MAX)
                 .step(1.)
                 .default_value(0.)
         });
@@ -198,7 +178,7 @@ impl PlayerApp {
                     // Typing starts a new entry; programmatic clearing keeps the confirmation.
                     this.local_hint = None;
                     this.retire_search(cx);
-                    if this.state.import != crate::player::ImportStatus::Importing {
+                    if this.state.import != crate::playlist::ImportStatus::Importing {
                         this.retired_import = Some(this.state.import.clone());
                     }
                     if !this.input_text(cx).is_empty() {
@@ -230,7 +210,7 @@ impl PlayerApp {
             }),
         ];
         let (server_select, channel_select) = settings::selectors(window, cx);
-        let collection_select = collections::selector(window, cx);
+        let collection_select = sections::selector(window, cx);
         let state = states.borrow_and_update().clone();
         let updates = cx.spawn_in(window, async move |entity, cx| {
             while states.changed().await.is_ok() {
@@ -250,9 +230,9 @@ impl PlayerApp {
         let shown_error = motion::displayed_error(&state);
         let shown_notice = state.notice.clone();
         let mut app = Self {
-            components: components::Panel::new(cx),
+            components: Panel::new(cx),
             help,
-            focus: focus::FocusPresentation::from_window(window),
+            focus: FocusPresentation::from_window(window),
             row_menu: None,
             token_error: false,
             token,
@@ -286,18 +266,18 @@ impl PlayerApp {
             commands,
             volume_requests,
             state,
-            motion: motion::Motion::default(),
-            frame: motion::Frame::default(),
-            height_reveals: height_reveal::HeightReveals::default(),
-            reveal: height_reveal::RevealFrame::default(),
+            motion: Motion::default(),
+            frame: Frame::default(),
+            height_reveals: motion::HeightReveals::default(),
+            reveal: motion::RevealFrame::default(),
             shown_error,
             shown_notice,
             shown_view: None,
             pending: None,
             transport_seq,
-            queue_scroll: lists::ListNavigation::new(),
-            history_scroll: lists::ListNavigation::new(),
-            favorites_scroll: lists::ListNavigation::new(),
+            queue_scroll: ListNavigation::new(),
+            history_scroll: ListNavigation::new(),
+            favorites_scroll: ListNavigation::new(),
             import_pending: false,
             favorite_pending: None,
             favorite_seq,
@@ -330,8 +310,7 @@ impl PlayerApp {
         }
         if self.setup_starting && state.controller_ready && !state.setup_busy {
             if state.setup.destination.is_some() {
-                self.settings_open = false;
-                window.focus(&self.input.read(cx).focus_handle(cx), cx);
+                self.leave_settings(window, cx);
             }
             self.setup_starting = false;
         }
@@ -344,8 +323,8 @@ impl PlayerApp {
         let lost_voice_control = self.state.can_leave_voice()
             && !state.can_leave_voice()
             && self.voice_focus.contains_focused(window, cx);
-        let import_finished = self.state.import == crate::player::ImportStatus::Importing
-            && state.import != crate::player::ImportStatus::Importing
+        let import_finished = self.state.import == crate::playlist::ImportStatus::Importing
+            && state.import != crate::playlist::ImportStatus::Importing
             && self.import_focus.contains_focused(window, cx);
         let lost_progress = self.state.can_seek()
             && (!state.can_seek() || self.state.track_id != state.track_id)
@@ -354,12 +333,14 @@ impl PlayerApp {
             self.progress_preview = None;
         }
         if lost_gateway {
-            self.queue_options_open = false;
-            self.row_menu = None;
+            self.close_popups();
         }
         let list_focus = self.list_focus(&state, window, cx);
         let resolution = self.resolve_enqueue(&state);
-        let moved_focus = matches!(resolution, Some(composer::Resolution::Placed(id, composer::Landing::Moved)) if self.queue_row_focused(id, window, cx));
+        let moved_focus = matches!(
+            resolution,
+            Some(Resolution::Placed(id, Landing::Moved)) if self.queue_row_focused(id, window, cx)
+        );
         if self.state.import != state.import {
             self.retired_import = None;
         }
@@ -397,14 +378,16 @@ impl PlayerApp {
         cx.notify();
     }
 
+    /// Closes every transient menu so only one popup can own the window at a time.
+    fn close_popups(&mut self) {
+        self.row_menu = None;
+        self.queue_options_open = false;
+    }
+
     /// Fire-and-forget: the controller answers every command with a new snapshot, and the
     /// window only ever renders snapshots.
     fn send(&self, command: Command) -> bool {
         self.commands.try_send(command).is_ok()
-    }
-
-    fn button(&self, id: impl Into<ElementId>) -> Button {
-        self.focus.button(id)
     }
 
     fn input_text(&self, cx: &Context<Self>) -> String {
@@ -412,428 +395,9 @@ impl PlayerApp {
     }
 }
 
-fn state_symbol(phase: Phase) -> AudioIcon {
-    match phase {
-        Phase::Playing => AudioIcon::Play,
-        Phase::Paused => AudioIcon::Pause,
-        Phase::Ready | Phase::Error => AudioIcon::Square,
-        Phase::Initializing
-        | Phase::Connecting
-        | Phase::Resolving
-        | Phase::Stopping
-        | Phase::Disconnecting => AudioIcon::Ellipsis,
-    }
-}
-
-fn connection(state: &State) -> &'static str {
-    if state.setup.bot.is_none()
-        && matches!(state.setup.status, crate::setup::Status::NeedsToken)
-        && !state.available
-    {
-        "Bot setup needed"
-    } else if matches!(state.setup.status, crate::setup::Status::NeedsDestination) {
-        "Choose a voice channel"
-    } else if state.phase == Phase::Disconnecting {
-        "Leaving Discord voice…"
-    } else if state.available && state.voice_connected {
-        "Voice connected"
-    } else if state.available {
-        "Voice idle"
-    } else if state.phase == Phase::Initializing {
-        "Connecting to Discord…"
-    } else {
-        "Discord unavailable"
-    }
-}
-
-fn connection_color(state: &State, theme: &gpui_kit::component::Theme) -> gpui_kit::Hsla {
-    match (&state.setup.status, state.phase, state.available) {
-        (_, _, true) => theme.green,
-        (
-            crate::setup::Status::NeedsToken
-            | crate::setup::Status::NeedsDestination
-            | crate::setup::Status::Checking,
-            _,
-            _,
-        )
-        | (_, Phase::Initializing, _) => theme.muted_foreground,
-        _ => theme.danger,
-    }
-}
-
-/// A one-line, ellipsized label whose full text appears in a tooltip.
-fn label(id: impl Into<ElementId>, text: String, help: &help::Help) -> impl IntoElement {
-    let tip = text.clone();
-    label_with_tooltip(id, text, tip, help)
-}
-
-fn label_with_tooltip(
-    id: impl Into<ElementId>,
-    text: String,
-    tip: String,
-    help: &help::Help,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .flex_1()
-        .min_w_0()
-        .truncate()
-        .aria_label(text.clone())
-        .child(text)
-        .help(tip, help)
-        .test_support()
-}
-
-impl PlayerApp {
-    fn header(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let status = connection(&self.state);
-        let (settings_icon, settings_label) = if self.settings_open {
-            (AudioIcon::ArrowLeft, "Back to player")
-        } else {
-            (AudioIcon::Settings, "Discord settings")
-        };
-        let color = connection_color(&self.state, theme);
-        div()
-            .id("player-header")
-            .test_support()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(18.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Grajek"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .text_xs()
-                    .line_height(px(16.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().size(px(5.)).flex_none().rounded_full().bg(color))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_color(if self.state.available {
-                                        theme.muted_foreground
-                                    } else {
-                                        color
-                                    })
-                                    .child(label("voice-status", status.into(), &self.help)),
-                            ),
-                    )
-                    .children(self.state.setup.destination.as_ref().map(|destination| {
-                        div()
-                            .flex()
-                            .min_w_0()
-                            .text_color(theme.muted_foreground)
-                            .child(label(
-                                "voice-destination",
-                                format!(
-                                    "{} / {}",
-                                    destination.guild_name, destination.channel_name
-                                ),
-                                &self.help,
-                            ))
-                    })),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_1()
-                    .track_focus(&self.voice_focus)
-                    .tab_stop(false)
-                    .when(self.state.can_leave_voice(), |row| {
-                        row.child(self.leave_button(cx))
-                    })
-                    .child(
-                        self.button("settings")
-                            .icon(settings_icon)
-                            .accessibility_label(settings_label)
-                            .help(settings_label, &self.help)
-                            .ghost()
-                            .flex_none()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.retire_search(cx);
-                                this.help.dismiss(cx);
-                                this.setup_starting = false;
-                                this.settings_open = !this.settings_open;
-                                this.queue_options_open = false;
-                                this.row_menu = None;
-                                if this.settings_open {
-                                    this.focus_settings(window, cx);
-                                } else {
-                                    window.focus(&this.input.read(cx).focus_handle(cx), cx);
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            )
-    }
-
-    /// Title and status are single lines that truncate with an ellipsis, so a long
-    /// title can never widen the window or push the controls away.
-    fn now_playing(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let compact = window.viewport_size().height <= px(480.);
-        let track_id = self.state.track_id;
-        let resting = if self.state.error.is_some() {
-            theme.danger
-        } else if self.state.phase == Phase::Playing {
-            theme.primary
-        } else if self.state.phase == Phase::Paused {
-            theme.yellow
-        } else {
-            theme.muted_foreground
-        };
-        let phase_color = self.frame.settle(track_id, theme.muted_foreground, resting);
-        let track = self.state.visible_track();
-        let (title, title_color) = match track {
-            Some(info) => (
-                info.title
-                    .clone()
-                    .unwrap_or_else(|| "Untitled track".into()),
-                self.frame
-                    .settle(track_id, theme.muted_foreground, theme.foreground),
-            ),
-            None => (
-                match self.state.phase {
-                    Phase::Ready | Phase::Error if !self.state.available => "Connect to Discord",
-                    Phase::Ready => "Ready for a link",
-                    Phase::Initializing => "Starting Grajek…",
-                    Phase::Connecting => "Joining voice…",
-                    Phase::Resolving => "Preparing your track…",
-                    Phase::Stopping => "Stopping playback…",
-                    Phase::Disconnecting => "Leaving voice…",
-                    Phase::Error => "Playback stopped",
-                    Phase::Playing | Phase::Paused => "Untitled track",
-                }
-                .into(),
-                theme.muted_foreground,
-            ),
-        };
-        let progress = track.map(|info| format_progress(self.state.position, info.duration));
-        let symbol = state_symbol(self.state.phase);
-        div().flex().flex_none().items_center().child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_size(px(if compact { 20. } else { 24. }))
-                        .line_height(relative(1.25))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(title_color)
-                        .child(label("title", title, &self.help))
-                        .children(self.now_playing_favorite(cx)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_xs()
-                        .line_height(px(16.))
-                        .child(Icon::new(symbol).size(px(12.)).text_color(phase_color))
-                        .child(
-                            div()
-                                .id("seek-status")
-                                .flex_none()
-                                .when(
-                                    track.is_some_and(|track| {
-                                        track.duration.is_some_and(|duration| !duration.is_zero())
-                                    }),
-                                    |status| status.w(px(104.)).truncate(),
-                                )
-                                .role(gpui_kit::Role::Status)
-                                .text_color(phase_color)
-                                .when(self.progress_preview.is_some(), |status| {
-                                    status.font_family(theme.mono_font_family.clone())
-                                })
-                                .child(self.progress_status())
-                                .test_support(),
-                        )
-                        .children(progress.map(|progress| {
-                            div()
-                                .id("progress")
-                                .min_w_0()
-                                .truncate()
-                                .font_family(theme.mono_font_family.clone())
-                                .text_color(theme.muted_foreground)
-                                .child(progress)
-                                .test_support()
-                        }))
-                        .children(self.progress_row(window, cx)),
-                ),
-        )
-    }
-
-    /// Keep failures readable without displacing the scrolling list.
-    fn error(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
-        let theme = cx.theme();
-        let error = motion::displayed_error(&self.state)?;
-        let tip = error.clone();
-        Some(
-            div()
-                .id("error")
-                .role(gpui_kit::Role::Alert)
-                .flex_none()
-                .w_full()
-                .px_2()
-                .py_1()
-                .rounded(theme.radius)
-                .bg(theme.button_danger)
-                .text_xs()
-                .line_height(px(16.))
-                .text_color(theme.danger)
-                .line_clamp(2)
-                .when_some(self.frame.error_fade(), Styled::opacity)
-                .child(error)
-                .help(tip, &self.help)
-                .test_support(),
-        )
-    }
-
-    fn idle(&self) -> bool {
-        self.state.visible_track().is_none()
-            && matches!(self.state.phase, Phase::Ready | Phase::Error)
-            && !matches!(self.pending, Some(Pending::Play | Pending::Next))
-    }
-
-    fn active_player(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
-        div()
-            .id("active-player")
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap(space::TIGHT)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(space::TIGHT)
-                    .child(self.now_playing(window, cx)),
-            )
-            .child(self.controls(cx))
-            .children(self.error(cx))
-            .test_support()
-    }
-
-    /// Idle keeps the next useful action: setup guidance or Play Queue. An empty, ready
-    /// player leads with its composer; audio adjustment remains in the permanent footer.
-    fn idle_player(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
-        let compact = window.viewport_size().height <= px(480.);
-        let error = self.error(cx);
-        let panel = div()
-            .id("idle-player")
-            .track_focus(&self.controls_focus)
-            .tab_stop(false)
-            .flex()
-            .flex_none()
-            .flex_col();
-        if self.state.available {
-            panel
-                .gap(space::GROUP)
-                .when(!self.state.queue.is_empty(), |panel| {
-                    panel.child(div().flex().child(self.play_queue_button(cx)))
-                })
-                .children(error)
-                .test_support()
-                .into_any_element()
-        } else {
-            let (title, guidance, action) = if self.state.setup.bot.is_none() {
-                (
-                    "Connect your Discord bot",
-                    "Set up a bot to play YouTube in your Discord voice channel.",
-                    "Connect a bot",
-                )
-            } else {
-                (
-                    "Choose where to play",
-                    "Select a server and voice channel in Discord settings.",
-                    "Choose destination",
-                )
-            };
-            panel
-                .gap(space::DETAIL)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(space::TIGHT)
-                        .child(
-                            div()
-                                .text_size(px(if compact { 20. } else { 24. }))
-                                .line_height(relative(1.25))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(label("title", title.into(), &self.help)),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .line_height(px(20.))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(guidance),
-                        ),
-                )
-                .child(
-                    div().flex().child(
-                        self.button("setup-next-step")
-                            .primary()
-                            .label(action)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.retire_search(cx);
-                                this.setup_starting = false;
-                                this.settings_open = true;
-                                this.help.dismiss(cx);
-                                this.focus_settings(window, cx);
-                                cx.notify();
-                            })),
-                    ),
-                )
-                .children(error)
-                .test_support()
-                .into_any_element()
-        }
-    }
-
-    fn empty(id: &'static str, text: &'static str, cx: &Context<Self>) -> impl IntoElement {
-        div()
-            .id(id)
-            .flex_1()
-            .pt_2()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .aria_label(text)
-            .child(text)
-            .test_support()
-    }
-}
-
 impl Render for PlayerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.focus = focus::FocusPresentation::from_window(window);
+        self.focus = FocusPresentation::from_window(window);
         self.frame = self.motion_frame(window, cx);
         if self.components.check_pending {
             self.check_components(cx);
@@ -852,7 +416,7 @@ impl Render for PlayerApp {
         }
         // Related controls sit 4–8px apart; the three jobs (listening, adding music, up next)
         // are separated by larger, unequal gaps so they read as regions without borders.
-        let compact = window.viewport_size().height <= px(480.);
+        let compact = window.viewport_size().height <= fmt::COMPACT_HEIGHT;
         let (after_header, before_composer, before_queue) = if compact {
             (px(8.), px(12.), px(8.))
         } else {
@@ -881,7 +445,7 @@ impl Render for PlayerApp {
             .capture_key_down({
                 let help = self.help.clone();
                 move |event: &KeyDownEvent, _, cx| {
-                    if !matches!(event.keystroke.key.as_str(), "f1" | "escape") {
+                    if !ui::help_key(event.keystroke.key.as_str()) {
                         help.dismiss(cx);
                     }
                 }

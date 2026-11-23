@@ -1,10 +1,7 @@
+use super::support::frame;
 use super::*;
+use crate::app::motion::VIEW;
 use crate::app::motion::{Direction, Frame};
-
-fn frame(cx: &mut TestAppContext, window: AnyWindowHandle, view: &Entity<PlayerApp>) -> Frame {
-    drawn(cx, window);
-    cx.update(|cx| view.read(cx).frame.clone())
-}
 
 fn toggle(cx: &TestAppContext, view: &Entity<PlayerApp>, open: bool) {
     cx.update(|cx| {
@@ -61,7 +58,7 @@ fn entering_settings_slides_in_from_the_right(cx: &mut TestAppContext) {
         "Settings starts invisible, 12px right of its resting inset"
     );
     assert_eq!(bounds(cx, window, "discord-settings").left(), px(28.));
-    cx.executor().advance_clock(Duration::from_millis(80));
+    cx.executor().advance_clock(VIEW / 2);
     let middle = frame(cx, window, &view);
     let (direction, progress) = middle.view().expect("the pulse is running");
     assert_eq!(direction, Direction::Right);
@@ -80,7 +77,7 @@ fn leaving_settings_returns_the_player_from_the_left(cx: &mut TestAppContext) {
     let resting_input = bounds(cx, window, "url").left();
     toggle(cx, &view, true);
     drawn(cx, window);
-    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.executor().advance_clock(VIEW);
     drawn(cx, window);
     toggle(cx, &view, false);
     let first = frame(cx, window, &view);
@@ -117,7 +114,7 @@ fn the_view_pulse_finishes_and_the_frame_rests(cx: &mut TestAppContext) {
     let (window, view, _received, _states) = open(cx, state(Phase::Ready));
     toggle(cx, &view, true);
     drawn(cx, window);
-    cx.executor().advance_clock(Duration::from_millis(160));
+    cx.executor().advance_clock(VIEW);
     assert_eq!(
         frame(cx, window, &view),
         Frame::default(),
@@ -156,11 +153,11 @@ fn a_settings_round_trip_does_not_replay_a_finished_pulse(cx: &mut TestAppContex
     let (window, view, _received, _states) = open(cx, state(Phase::Ready));
     toggle(cx, &view, true);
     drawn(cx, window);
-    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.executor().advance_clock(VIEW);
     drawn(cx, window);
     toggle(cx, &view, false);
     drawn(cx, window);
-    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.executor().advance_clock(VIEW);
     drawn(cx, window);
     assert_eq!(
         frame(cx, window, &view),

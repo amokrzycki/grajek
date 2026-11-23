@@ -1,21 +1,38 @@
+use super::support::{frame, tab_until, wheel_at};
 use super::*;
-use crate::app::motion::Frame;
-use crate::player::{EnqueueResult, FavoriteResult, Placement};
-use crate::store::FavoriteEntry;
+use crate::app::motion::{ARRIVAL, CALLOUT, MARK, SAVED};
+use crate::app::motion::{Frame, SHIFT_WAIT};
+use crate::favorites::{FavoriteEntry, FavoriteResult};
+use crate::player::Placement;
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::{PlatformInput, ScrollWheelEvent};
 
 const CANONICAL: &str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
 
-fn keys(cx: &TestAppContext, view: &Entity<PlayerApp>) -> (Option<u64>, Option<u64>) {
-    cx.update(|cx| view.read(cx).motion.keys())
+fn brass(cx: &TestAppContext) -> gpui_kit::Hsla {
+    cx.update(|cx| cx.theme().primary)
 }
 
-fn frame(cx: &mut TestAppContext, window: AnyWindowHandle, view: &Entity<PlayerApp>) -> Frame {
-    act(cx, window, |window, cx| {
-        window.render_frame(cx);
-    });
-    cx.update(|cx| view.read(cx).frame.clone())
+fn arriving(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    view: &Entity<PlayerApp>,
+    id: u64,
+) -> bool {
+    let (muted, rest) = colours(cx);
+    frame(cx, window, view).settle(id, muted, rest) == muted
+}
+
+fn has_mark(
+    cx: &mut TestAppContext,
+    window: AnyWindowHandle,
+    view: &Entity<PlayerApp>,
+    id: u64,
+) -> bool {
+    frame(cx, window, view).wash(id, brass(cx)).is_some()
+}
+
+fn resting(cx: &mut TestAppContext, window: AnyWindowHandle, view: &Entity<PlayerApp>) -> bool {
+    frame(cx, window, view) == Frame::default()
 }
 
 fn settle_state(cx: &mut TestAppContext, window: AnyWindowHandle, next: State, states: &Snapshots) {
@@ -40,43 +57,15 @@ fn colours(cx: &TestAppContext) -> (gpui_kit::Hsla, gpui_kit::Hsla) {
     })
 }
 
-fn entry(id: u64, url: &str, title: &str) -> QueueItem {
-    QueueItem {
-        id,
-        url: url.into(),
-        title: Some(title.into()),
-        title_unavailable: false,
-    }
-}
-
-fn answered(mut state: State, request_id: u64, item_id: Option<u64>) -> State {
-    state.enqueue_result = Some(EnqueueResult {
-        request_id,
-        item_id,
-    });
-    state
-}
-
 fn wheel(cx: &mut TestAppContext, window: AnyWindowHandle, delta: f32) {
     let center = bounds(cx, window, "queue-list").center();
-    act(cx, window, |window, cx| {
-        window.simulate_mouse_move(center, cx);
-        window.dispatch_event(
-            PlatformInput::ScrollWheel(ScrollWheelEvent {
-                position: center,
-                delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
-                ..Default::default()
-            }),
-            cx,
-        );
-        window.render_frame(cx);
-    });
+    wheel_at(cx, window, center, delta);
 }
 
 #[gpui_kit::test]
 fn arrival_follows_the_confirmed_track_and_ends(cx: &mut TestAppContext) {
     let (window, view, _received, states) = open(cx, state(Phase::Ready));
-    assert_eq!(keys(cx, &view), (None, None), "a quiet player has no pulse");
+    assert!(resting(cx, window, &view), "a quiet player has no pulse");
     settle_state(
         cx,
         window,
@@ -87,9 +76,9 @@ fn arrival_follows_the_confirmed_track_and_ends(cx: &mut TestAppContext) {
         },
         &states,
     );
-    assert_eq!(keys(cx, &view), (None, None), "preparing is not arrival");
+    assert!(resting(cx, window, &view), "preparing is not arrival");
     settle_state(cx, window, track(Phase::Playing, 1, 0), &states);
-    assert_eq!(keys(cx, &view).0, Some(1));
+    assert!(arriving(cx, window, &view, 1));
     let (muted, rest) = colours(cx);
     let first = frame(cx, window, &view);
     assert_eq!(
@@ -102,22 +91,21 @@ fn arrival_follows_the_confirmed_track_and_ends(cx: &mut TestAppContext) {
         rest,
         "another track is never tinted"
     );
-    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.executor().advance_clock(ARRIVAL / 2);
     let middle = frame(cx, window, &view).settle(1, muted, rest);
     assert!(middle != muted && middle != rest, "mid-pulse is a blend");
-    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.executor().advance_clock(ARRIVAL);
     assert_eq!(
         frame(cx, window, &view),
         Frame::default(),
         "finished means resting"
     );
-    assert_eq!(keys(cx, &view), (None, None), "finished pulses are dropped");
+    assert!(resting(cx, window, &view), "finished pulses are dropped");
     settle_state(cx, window, track(Phase::Playing, 1, 5), &states);
     settle_state(cx, window, track(Phase::Paused, 1, 5), &states);
     settle_state(cx, window, track(Phase::Playing, 1, 5), &states);
-    assert_eq!(
-        keys(cx, &view),
-        (None, None),
+    assert!(
+        resting(cx, window, &view),
         "a tick or Pause/Resume of the same track never replays"
     );
 }
@@ -125,9 +113,8 @@ fn arrival_follows_the_confirmed_track_and_ends(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_new_identity_replaces_and_stop_discards_the_pulse(cx: &mut TestAppContext) {
     let (window, view, _received, states) = open(cx, track(Phase::Playing, 1, 0));
-    assert_eq!(
-        keys(cx, &view),
-        (None, None),
+    assert!(
+        resting(cx, window, &view),
         "an already playing window does not pulse"
     );
     settle_state(
@@ -139,17 +126,16 @@ fn a_new_identity_replaces_and_stop_discards_the_pulse(cx: &mut TestAppContext) 
         },
         &states,
     );
-    assert_eq!(keys(cx, &view).0, None, "volume has no pulse");
+    assert!(!arriving(cx, window, &view, 1), "volume has no pulse");
     settle_state(cx, window, track(Phase::Playing, 2, 0), &states);
-    assert_eq!(keys(cx, &view).0, Some(2));
+    assert!(arriving(cx, window, &view, 2));
     settle_state(cx, window, track(Phase::Playing, 3, 0), &states);
-    assert_eq!(
-        keys(cx, &view).0,
-        Some(3),
+    assert!(
+        arriving(cx, window, &view, 3) && !arriving(cx, window, &view, 2),
         "one slot: the newest replaces the running pulse"
     );
     settle_state(cx, window, state(Phase::Ready), &states);
-    assert_eq!(keys(cx, &view), (None, None), "Stop or cancel discards it");
+    assert!(resting(cx, window, &view), "Stop or cancel discards it");
     assert_eq!(frame(cx, window, &view), Frame::default());
 }
 
@@ -157,8 +143,8 @@ fn a_new_identity_replaces_and_stop_discards_the_pulse(cx: &mut TestAppContext) 
 fn settings_round_trip_never_replays_a_finished_pulse(cx: &mut TestAppContext) {
     let (window, view, _received, states) = open(cx, state(Phase::Ready));
     settle_state(cx, window, track(Phase::Playing, 1, 0), &states);
-    assert_eq!(keys(cx, &view).0, Some(1));
-    cx.executor().advance_clock(Duration::from_millis(500));
+    assert!(arriving(cx, window, &view, 1));
+    cx.executor().advance_clock(ARRIVAL);
     assert_eq!(frame(cx, window, &view), Frame::default());
     for open in [true, false] {
         cx.update(|cx| {
@@ -171,9 +157,8 @@ fn settings_round_trip_never_replays_a_finished_pulse(cx: &mut TestAppContext) {
             window.render_frame(cx);
         });
     }
-    cx.executor().advance_clock(Duration::from_millis(500));
-    assert_eq!(frame(cx, window, &view), Frame::default());
-    assert_eq!(keys(cx, &view), (None, None));
+    cx.executor().advance_clock(ARRIVAL);
+    assert!(resting(cx, window, &view));
 }
 
 #[gpui_kit::test]
@@ -181,10 +166,8 @@ fn reduced_motion_skips_every_pulse(cx: &mut TestAppContext) {
     let (window, view, _received, states) = open(cx, state(Phase::Ready));
     cx.update(|cx| cx.set_reduce_motion(true));
     settle_state(cx, window, track(Phase::Playing, 1, 0), &states);
-    assert_eq!(frame(cx, window, &view), Frame::default());
-    assert_eq!(
-        keys(cx, &view),
-        (None, None),
+    assert!(
+        resting(cx, window, &view),
         "nothing is left to request frames"
     );
 }
@@ -192,13 +175,16 @@ fn reduced_motion_skips_every_pulse(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_queue_move_is_marked_only_when_the_controller_confirms_it(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, with_lists(Phase::Ready, 3, 0));
-    super::composition::tab_until(cx, window, ("queue-more", 10_u64));
+    tab_until(cx, window, ("queue-more", 10_u64));
     act(cx, window, |window, cx| window.press("alt-down", cx));
     assert!(matches!(
         received.try_recv(),
         Ok(Command::Shift { id: 10, up: false })
     ));
-    assert_eq!(keys(cx, &view).1, None, "asking is not a confirmation");
+    assert!(
+        !has_mark(cx, window, &view, 10),
+        "asking is not a confirmation"
+    );
     settle_state(
         cx,
         window,
@@ -208,35 +194,33 @@ fn a_queue_move_is_marked_only_when_the_controller_confirms_it(cx: &mut TestAppC
         },
         &states,
     );
-    assert_eq!(
-        keys(cx, &view).1,
-        None,
+    assert!(
+        !has_mark(cx, window, &view, 10),
         "an unrelated tick neither marks nor forgets the request"
     );
     let mut moved = with_lists(Phase::Ready, 3, 0);
     moved.queue.swap(0, 1);
     settle_state(cx, window, moved, &states);
-    assert_eq!(keys(cx, &view).1, Some(10));
+    assert!(has_mark(cx, window, &view, 10));
     let brass = cx.update(|cx| cx.theme().primary);
     assert!(frame(cx, window, &view).wash(10, brass).is_some());
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(MARK);
     assert_eq!(frame(cx, window, &view), Frame::default());
 }
 
 #[gpui_kit::test]
 fn an_unanswered_move_request_expires_instead_of_marking_a_later_rotation(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, with_lists(Phase::Ready, 3, 0));
-    super::composition::tab_until(cx, window, ("queue-more", 10_u64));
+    tab_until(cx, window, ("queue-more", 10_u64));
     act(cx, window, |window, cx| window.press("alt-down", cx));
     assert!(received.try_recv().is_ok());
-    cx.executor().advance_clock(Duration::from_secs(3));
+    cx.executor().advance_clock(SHIFT_WAIT);
     settle_state(cx, window, with_lists(Phase::Ready, 3, 0), &states);
     let mut rotated = with_lists(Phase::Ready, 3, 0);
     rotated.queue.rotate_left(1);
     settle_state(cx, window, rotated, &states);
-    assert_eq!(
-        keys(cx, &view).1,
-        None,
+    assert!(
+        !has_mark(cx, window, &view, 10),
         "a later rotation is not the user's move"
     );
 }
@@ -244,16 +228,15 @@ fn an_unanswered_move_request_expires_instead_of_marking_a_later_rotation(cx: &m
 #[gpui_kit::test]
 fn an_expired_move_request_is_dropped_before_any_later_reordering(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, with_lists(Phase::Ready, 3, 0));
-    super::composition::tab_until(cx, window, ("queue-more", 10_u64));
+    tab_until(cx, window, ("queue-more", 10_u64));
     act(cx, window, |window, cx| window.press("alt-down", cx));
     assert!(received.try_recv().is_ok());
-    cx.executor().advance_clock(Duration::from_secs(3));
+    cx.executor().advance_clock(SHIFT_WAIT);
     let mut rotated = with_lists(Phase::Ready, 3, 0);
     rotated.queue.rotate_left(1);
     settle_state(cx, window, rotated, &states);
-    assert_eq!(
-        keys(cx, &view).1,
-        None,
+    assert!(
+        !has_mark(cx, window, &view, 10),
         "the first snapshot after expiry is dropped, not marked"
     );
     act(cx, window, |window, cx| window.press("alt-up", cx));
@@ -264,9 +247,8 @@ fn an_expired_move_request_is_dropped_before_any_later_reordering(cx: &mut TestA
     let mut moved = with_lists(Phase::Ready, 3, 0);
     moved.queue.swap(1, 2);
     settle_state(cx, window, moved, &states);
-    assert_eq!(
-        keys(cx, &view).1,
-        Some(10),
+    assert!(
+        has_mark(cx, window, &view, 10),
         "a request answered within the window still marks"
     );
 }
@@ -284,9 +266,8 @@ fn a_confirmed_add_is_marked_and_removal_discards_the_mark(cx: &mut TestAppConte
         received.try_recv(),
         Ok(Command::EnqueueRequest { id: 1, .. })
     ));
-    assert_eq!(
-        keys(cx, &view).1,
-        None,
+    assert!(
+        !has_mark(cx, window, &view, 99),
         "nothing before the controller answers"
     );
     let mut acknowledged = initial;
@@ -297,12 +278,11 @@ fn a_confirmed_add_is_marked_and_removal_discards_the_mark(cx: &mut TestAppConte
         answered(acknowledged.clone(), 1, Some(99)),
         &states,
     );
-    assert_eq!(keys(cx, &view).1, Some(99));
+    assert!(has_mark(cx, window, &view, 99));
     acknowledged.queue.pop();
     settle_state(cx, window, acknowledged, &states);
-    assert_eq!(
-        keys(cx, &view).1,
-        None,
+    assert!(
+        !has_mark(cx, window, &view, 99),
         "a removed entry cannot stay marked"
     );
 }
@@ -329,7 +309,7 @@ fn queue_next_move_to_next_and_a_favorite_insert_are_marked_on_acknowledgement(
     let mut acknowledged = initial;
     acknowledged.queue.insert(0, entry(99, CANONICAL, "Aqua"));
     settle_state(cx, window, answered(acknowledged, 1, Some(99)), &states);
-    assert_eq!(keys(cx, &view).1, Some(99));
+    assert!(has_mark(cx, window, &view, 99));
 
     click(cx, window, ("queue-next", 11_u64));
     assert!(matches!(
@@ -343,7 +323,7 @@ fn queue_next_move_to_next_and_a_favorite_insert_are_marked_on_acknowledgement(
     let shifted = moved.queue.remove(1);
     moved.queue.insert(0, shifted);
     settle_state(cx, window, answered(moved, 2, Some(11)), &states);
-    assert_eq!(keys(cx, &view).1, Some(11));
+    assert!(has_mark(cx, window, &view, 11));
 
     let mut with_favorite = state(Phase::Ready);
     with_favorite.favorites = vec![FavoriteEntry {
@@ -363,7 +343,7 @@ fn queue_next_move_to_next_and_a_favorite_insert_are_marked_on_acknowledgement(
     let mut inserted = with_favorite;
     inserted.queue.insert(0, entry(77, CANONICAL, "Aqua"));
     settle_state(cx, window, answered(inserted, 3, Some(77)), &states);
-    assert_eq!(keys(cx, &view).1, Some(77));
+    assert!(has_mark(cx, window, &view, 77));
 }
 
 #[gpui_kit::test]
@@ -384,8 +364,8 @@ fn the_mark_does_not_refire_on_unrelated_snapshots(cx: &mut TestAppContext) {
         answered(acknowledged.clone(), 1, Some(99)),
         &states,
     );
-    assert_eq!(keys(cx, &view).1, Some(99));
-    cx.executor().advance_clock(Duration::from_millis(400));
+    assert!(has_mark(cx, window, &view, 99));
+    cx.executor().advance_clock(MARK);
     assert_eq!(frame(cx, window, &view), Frame::default());
     settle_state(
         cx,
@@ -400,9 +380,8 @@ fn the_mark_does_not_refire_on_unrelated_snapshots(cx: &mut TestAppContext) {
         ),
         &states,
     );
-    assert_eq!(
-        keys(cx, &view).1,
-        None,
+    assert!(
+        !has_mark(cx, window, &view, 99),
         "a retained result is not a new confirmation"
     );
     assert_eq!(frame(cx, window, &view), Frame::default());
@@ -411,7 +390,7 @@ fn the_mark_does_not_refire_on_unrelated_snapshots(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_marked_row_scrolled_back_does_not_replay(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, with_lists(Phase::Ready, 40, 0));
-    super::composition::tab_until(cx, window, ("queue-more", 10_u64));
+    tab_until(cx, window, ("queue-more", 10_u64));
     act(cx, window, |window, cx| window.press("alt-down", cx));
     assert!(matches!(
         received.try_recv(),
@@ -420,7 +399,7 @@ fn a_marked_row_scrolled_back_does_not_replay(cx: &mut TestAppContext) {
     let mut moved = with_lists(Phase::Ready, 40, 0);
     moved.queue.swap(0, 1);
     settle_state(cx, window, moved, &states);
-    assert_eq!(keys(cx, &view).1, Some(10));
+    assert!(has_mark(cx, window, &view, 10));
     for _ in 0..6 {
         wheel(cx, window, 200.);
     }
@@ -428,13 +407,12 @@ fn a_marked_row_scrolled_back_does_not_replay(cx: &mut TestAppContext) {
         wheel(cx, window, -200.);
     }
     let brass = cx.update(|cx| cx.theme().primary);
-    assert_eq!(
-        keys(cx, &view).1,
-        Some(10),
+    assert!(
+        has_mark(cx, window, &view, 10),
         "the pulse survives the row leaving and re-entering the viewport"
     );
     assert!(frame(cx, window, &view).wash(10, brass).is_some());
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(MARK);
     assert_eq!(frame(cx, window, &view), Frame::default());
     wheel(cx, window, 200.);
     wheel(cx, window, -200.);
@@ -476,7 +454,7 @@ fn the_wash_yields_to_the_keyboard_focus_row_background(cx: &mut TestAppContext)
         unfocused_row_wash(cx).is_some(),
         "a row without keyboard focus shows the wash"
     );
-    super::composition::tab_until(cx, window, ("queue-more", 99_u64));
+    tab_until(cx, window, ("queue-more", 99_u64));
     let focused = cx
         .update_window(window, |_, window, _| {
             window.find(("queue-more", 99_u64)).focused()
@@ -511,7 +489,7 @@ fn frames_are_requested_only_while_a_pulse_runs(cx: &mut TestAppContext) {
         requested(cx, window) >= 1,
         "a running pulse keeps the frame loop alive"
     );
-    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.executor().advance_clock(ARRIVAL);
     requested(cx, window);
     drawn(cx, window);
     assert_eq!(
@@ -536,7 +514,7 @@ fn error_and_notice_fades_start_only_on_a_new_message(cx: &mut TestAppContext) {
     };
     settle_state(cx, window, failure.clone(), &states);
     assert_eq!(frame(cx, window, &view).error_fade(), Some(0.0));
-    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.executor().advance_clock(CALLOUT / 2);
     settle_state(
         cx,
         window,
@@ -552,7 +530,7 @@ fn error_and_notice_fades_start_only_on_a_new_message(cx: &mut TestAppContext) {
             .is_some_and(|fade| fade > 0.5),
         "an unrelated snapshot does not restart the fade"
     );
-    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.executor().advance_clock(CALLOUT);
     assert_eq!(frame(cx, window, &view).error_fade(), None);
     settle_state(
         cx,
@@ -581,7 +559,7 @@ fn error_and_notice_fades_start_only_on_a_new_message(cx: &mut TestAppContext) {
     };
     settle_state(cx, window, notice.clone(), &states);
     assert_eq!(frame(cx, window, &view).notice_fade(), Some(0.0));
-    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.executor().advance_clock(CALLOUT);
     assert_eq!(frame(cx, window, &view).notice_fade(), None);
     settle_state(
         cx,
@@ -677,10 +655,10 @@ fn the_saved_label_settles_only_after_a_confirmed_result(cx: &mut TestAppContext
         muted,
         "the confirmation starts the settle"
     );
-    cx.executor().advance_clock(Duration::from_millis(100));
+    cx.executor().advance_clock(SAVED / 2);
     let middle = frame(cx, window, &view).saved(CANONICAL, muted, brass);
     assert!(middle != muted && middle != brass, "mid-settle is a blend");
-    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.executor().advance_clock(SAVED);
     assert_eq!(
         frame(cx, window, &view).saved(CANONICAL, muted, brass),
         brass

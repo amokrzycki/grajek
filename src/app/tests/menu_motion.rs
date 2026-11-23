@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::lists::TrackTarget;
+use crate::app::sections::TrackTarget;
 
 /// Runs the pending frame callbacks until none remain, failing after a bounded
 /// number of rounds so a never-settling frame loop cannot hang the test.

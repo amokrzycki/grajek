@@ -1,18 +1,14 @@
 //! Bounded, metadata-only `YouTube` playlist extraction. No voice or audio preparation.
 
-use std::{fmt, process::Stdio, time::Duration};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt as _},
-    process::Child,
-    time::timeout,
+use std::{
+    fmt::{self, Write as _},
+    time::Duration,
 };
+use tokio::time::timeout;
 
-use crate::{
-    config::{playlist_url, valid_video_id},
-    store::safe_title,
-};
+use crate::youtube::{playlist_url, safe_title, valid_video_id, watch_url};
 
-const ENTRY_LIMIT: usize = 100;
+pub(crate) const ENTRY_LIMIT: usize = crate::queue::QUEUE_LIMIT;
 const OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
 const DIAGNOSTIC_LIMIT: usize = 64 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(45);
@@ -65,43 +61,80 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-fn args() -> [&'static str; 18] {
-    [
-        "--ignore-config",
-        "--no-plugin-dirs",
-        "--flat-playlist",
-        "--dump-single-json",
-        "--playlist-end",
-        "100",
-        "--lazy-playlist",
-        "--skip-download",
-        "--yes-playlist",
-        "--socket-timeout",
-        "15",
-        "--retries",
-        "0",
-        "--extractor-retries",
-        "0",
-        "--no-warnings",
-        "--no-progress",
-        "--", // End options before the canonical URL.
-    ]
+impl From<crate::ytdlp::Failure> for Error {
+    fn from(failure: crate::ytdlp::Failure) -> Self {
+        match failure {
+            crate::ytdlp::Failure::Tool => Self::Tool,
+            crate::ytdlp::Failure::Unavailable => Self::Unavailable,
+            crate::ytdlp::Failure::OutputLimit => Self::OutputLimit,
+        }
+    }
+}
+
+/// Import feedback is independent of playback phase and errors.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ImportStatus {
+    #[default]
+    Ready,
+    Importing,
+    Cancelled,
+    Finished {
+        added: usize,
+        unavailable: usize,
+        omitted: usize,
+        limited: bool,
+    },
+    Failed(String),
+}
+
+impl ImportStatus {
+    pub fn message(&self) -> String {
+        match self {
+            Self::Ready => format!("Playlist import · up to {ENTRY_LIMIT} pending tracks"),
+            Self::Importing => "Importing playlist…".into(),
+            Self::Cancelled => "Import cancelled.".into(),
+            Self::Failed(message) => message.clone(),
+            Self::Finished {
+                added,
+                unavailable,
+                omitted,
+                limited,
+            } => {
+                let mut message = format!(
+                    "Imported {added} {}.",
+                    if *added == 1 { "track" } else { "tracks" }
+                );
+                if *unavailable > 0 {
+                    let _ = write!(message, " {unavailable} entries unavailable.");
+                }
+                if *omitted > 0 {
+                    let _ = write!(
+                        message,
+                        " {omitted} did not fit; {}.",
+                        crate::queue::limit_note()
+                    );
+                }
+                if *limited {
+                    let _ = write!(
+                        message,
+                        " First {ENTRY_LIMIT} playlist entries checked; more may remain."
+                    );
+                }
+                message
+            }
+        }
+    }
 }
 
 pub async fn extract(url: String) -> Result<Playlist, Error> {
     let url = playlist_url(&url).map_err(|_| Error::InvalidUrl)?;
-    let execution = crate::media::components::execution::acquire()
+    let (execution, mut command) = crate::media::ytdlp_command()
         .await
         .map_err(|_| Error::MissingComponents)?;
-    let child = execution
-        .tools
-        .command(crate::media::Tool::YtDlp)
-        .args(args())
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
+    command
+        .args(crate::ytdlp::flat_args(ENTRY_LIMIT, true))
+        .arg(url);
+    let child = crate::ytdlp::spawn(command)
         .spawn()
         .map_err(|_| Error::MissingComponents)?;
     let bytes = collect(child, TIMEOUT).await?;
@@ -109,35 +142,14 @@ pub async fn extract(url: String) -> Result<Playlist, Error> {
     parse(&bytes)
 }
 
-async fn read_bounded(reader: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>, Error> {
-    let mut bytes = Vec::new();
-    reader
-        .take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|_| Error::Tool)?;
-    if bytes.len() > limit {
-        return Err(Error::OutputLimit);
-    }
-    Ok(bytes)
-}
-
-async fn collect(mut child: Child, deadline: Duration) -> Result<Vec<u8>, Error> {
-    let stdout = child.stdout.take().ok_or(Error::Tool)?;
-    let stderr = child.stderr.take().ok_or(Error::Tool)?;
-    let result = timeout(deadline, async {
-        let (output, _diagnostics, status) = tokio::try_join!(
-            read_bounded(stdout, OUTPUT_LIMIT),
-            read_bounded(stderr, DIAGNOSTIC_LIMIT),
-            async { child.wait().await.map_err(|_| Error::Tool) },
-        )?;
-        if !status.success() {
-            return Err(Error::Unavailable);
-        }
-        Ok(output)
-    })
+async fn collect(mut child: tokio::process::Child, deadline: Duration) -> Result<Vec<u8>, Error> {
+    let result = timeout(
+        deadline,
+        crate::ytdlp::read_output(&mut child, OUTPUT_LIMIT, DIAGNOSTIC_LIMIT),
+    )
     .await
-    .unwrap_or(Err(Error::Timeout));
+    .map_err(|_| Error::Timeout)
+    .and_then(|result| result.map_err(Error::from));
     if result.is_err() {
         // Explicit error paths reap before returning; dropping a cancelled future kills the child.
         let _ = child.kill().await;
@@ -147,13 +159,7 @@ async fn collect(mut child: Child, deadline: Duration) -> Result<Vec<u8>, Error>
 
 fn parse(bytes: &[u8]) -> Result<Playlist, Error> {
     let root: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| Error::Malformed)?;
-    if root.get("_type").and_then(serde_json::Value::as_str) != Some("playlist") {
-        return Err(Error::Malformed);
-    }
-    let items = root
-        .get("entries")
-        .and_then(serde_json::Value::as_array)
-        .ok_or(Error::Malformed)?;
+    let items = crate::ytdlp::playlist_entries(&root).ok_or(Error::Malformed)?;
     let limited = items.len() >= ENTRY_LIMIT;
     let mut entries = Vec::new();
     let mut unavailable = 0;
@@ -166,29 +172,16 @@ fn parse(bytes: &[u8]) -> Result<Playlist, Error> {
             unavailable += 1;
             continue;
         };
-        let kind = item.get("_type");
-        let title = item.get("title").and_then(serde_json::Value::as_str);
-        let availability = item.get("availability").and_then(serde_json::Value::as_str);
-        if kind
-            .is_some_and(|kind| !matches!(kind.as_str(), Some("url" | "url_transparent" | "video")))
-            || matches!(
-                availability,
-                Some("private" | "premium_only" | "subscriber_only" | "needs_auth" | "unavailable")
-            )
-            || matches!(
-                title,
-                Some("[Deleted video]" | "[Private video]" | "[Unavailable video]")
-            )
-            || item
-                .get("ie_key")
-                .is_some_and(|key| key.as_str() != Some("Youtube"))
-        {
+        if crate::ytdlp::unavailable_entry(item) {
             unavailable += 1;
             continue;
         }
         entries.push(Entry {
-            url: format!("https://www.youtube.com/watch?v={id}"),
-            title: title.and_then(safe_title),
+            url: watch_url(id),
+            title: item
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .and_then(safe_title),
         });
     }
     if entries.is_empty() {

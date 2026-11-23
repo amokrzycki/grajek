@@ -1,35 +1,12 @@
 use super::*;
+use crate::test_support::Scratch;
 use sha2::Sha256;
 use std::{
     io::{Cursor, Write as _},
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use tokio::{io::AsyncReadExt as _, net::TcpListener, task::JoinHandle};
-
-static NEXT: AtomicU64 = AtomicU64::new(0);
-
-struct Fixture(PathBuf);
-impl Fixture {
-    fn new() -> Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "grajek-download-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path)?;
-        Ok(Self(path))
-    }
-    fn tools(&self) -> PathBuf {
-        self.0.join("tools")
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 struct Server {
     url: String,
@@ -90,8 +67,8 @@ fn archive() -> Result<Vec<u8>> {
     let exe = EXECUTABLE
         .get_or_init(|| {
             (|| -> Result<Vec<u8>> {
-                let dir = Fixture::new()?;
-                let source = dir.0.join("fixture.rs");
+                let dir = Scratch::new()?;
+                let source = dir.path().join("fixture.rs");
                 std::fs::write(
                     &source,
                     r#"fn main() {
@@ -101,7 +78,7 @@ fn archive() -> Result<Vec<u8>> {
                 } else { println!("2026.10.26"); }
             }"#,
                 )?;
-                let binary = dir.0.join("fixture.exe");
+                let binary = dir.path().join("fixture.exe");
                 let output = std::process::Command::new("rustc")
                     .arg(&source)
                     .arg("-o")
@@ -162,7 +139,7 @@ fn pins_for(url: &str, bytes: &[u8]) -> Result<Pins> {
 
 #[tokio::test]
 async fn verified_archives_publish_a_complete_pair_and_marker() -> Result<()> {
-    let dir = Fixture::new()?;
+    let dir = Scratch::new()?;
     let bytes = archive()?;
     let server = server(bytes.clone(), false).await?;
     let pins = pins_for(&server.url, &bytes)?;
@@ -171,7 +148,7 @@ async fn verified_archives_publish_a_complete_pair_and_marker() -> Result<()> {
     let _publication = tokio::time::timeout(
         Duration::from_secs(10),
         install_with(
-            &dir.tools(),
+            &dir.file("tools"),
             &pins,
             reqwest::Client::new(),
             progress,
@@ -180,54 +157,54 @@ async fn verified_archives_publish_a_complete_pair_and_marker() -> Result<()> {
     )
     .await??;
     assert!(
-        dir.tools()
+        dir.file("tools")
             .join("yt-dlp")
             .join(Tool::YtDlp.filename())
             .is_file()
     );
     assert!(
-        dir.tools()
+        dir.file("tools")
             .join("deno")
             .join(Tool::Deno.filename())
             .is_file()
     );
     assert!(
-        dir.tools()
+        dir.file("tools")
             .join("yt-dlp/_internal/yt_dlp_ejs/yt/solver/core.min.js")
             .is_file()
     );
     let marker: super::super::Versions =
-        serde_json::from_slice(&std::fs::read(dir.tools().join("components.json"))?)?;
+        serde_json::from_slice(&std::fs::read(dir.file("tools").join("components.json"))?)?;
     assert_eq!(marker.ytdlp, "2026.10.26");
     assert_eq!(marker.deno, "2.9.8");
-    assert!(!dir.0.join("tools.partial").exists());
-    assert!(!dir.0.join("tools.old").exists());
+    assert!(!dir.path().join("tools.partial").exists());
+    assert!(!dir.path().join("tools.old").exists());
     assert_eq!(*rx.borrow(), Progress::Checking);
     Ok(())
 }
 
 #[tokio::test]
 async fn installed_checks_reload_external_updates_and_damage_under_the_lock() -> Result<()> {
-    let dir = Fixture::new()?;
+    let dir = Scratch::new()?;
     let bytes = archive()?;
     let pins = pins_for("https://example.invalid", &bytes)?;
-    let zip = dir.0.join("tools.zip");
+    let zip = dir.path().join("tools.zip");
     std::fs::write(&zip, &bytes)?;
     let (_cancel, cancelled) = watch::channel(false);
     for tool in [Tool::YtDlp, Tool::Deno] {
         extract(
             &zip,
-            &dir.tools().join(tool.name()),
+            &dir.file("tools").join(tool.name()),
             pins.ytdlp.artifact().unpacked_size,
             &cancelled,
         )?;
     }
-    let marker = dir.tools().join("components.json");
+    let marker = dir.file("tools").join("components.json");
     std::fs::write(
         &marker,
         br#"{"yt-dlp":"2025.01.01","yt-dlp-ejs":"0.8.0","deno":"2.3.0"}"#,
     )?;
-    let stale = Tools::select(false, Some(dir.tools()));
+    let stale = Tools::select(false, Some(dir.file("tools")));
     std::fs::write(&marker, serde_json::to_vec(&pins.versions())?)?;
     assert!(
         stale
@@ -236,7 +213,7 @@ async fn installed_checks_reload_external_updates_and_damage_under_the_lock() ->
             .iter()
             .all(|report| report.state == super::super::status::ComponentState::Ready)
     );
-    let cached = Tools::select(false, Some(dir.tools()));
+    let cached = Tools::select(false, Some(dir.file("tools")));
     std::fs::write(&marker, b"{damaged")?;
     assert!(cached.check().await.iter().all(|report| matches!(
         report.state,
@@ -245,27 +222,33 @@ async fn installed_checks_reload_external_updates_and_damage_under_the_lock() ->
     Ok(())
 }
 
-fn old_install(dir: &Fixture) -> Result<()> {
-    std::fs::create_dir(dir.tools())?;
-    std::fs::write(dir.tools().join("components.json"), b"previous marker")?;
-    std::fs::write(dir.tools().join("keep"), b"previous tools")?;
+fn old_install(dir: &Scratch) -> Result<()> {
+    std::fs::create_dir(dir.file("tools"))?;
+    std::fs::write(
+        dir.file("tools").join("components.json"),
+        b"previous marker",
+    )?;
+    std::fs::write(dir.file("tools").join("keep"), b"previous tools")?;
     Ok(())
 }
 
-fn assert_old_preserved(dir: &Fixture) -> Result<()> {
-    assert_eq!(std::fs::read(dir.tools().join("keep"))?, b"previous tools");
+fn assert_old_preserved(dir: &Scratch) -> Result<()> {
     assert_eq!(
-        std::fs::read(dir.tools().join("components.json"))?,
+        std::fs::read(dir.file("tools").join("keep"))?,
+        b"previous tools"
+    );
+    assert_eq!(
+        std::fs::read(dir.file("tools").join("components.json"))?,
         b"previous marker"
     );
-    assert!(!dir.0.join("tools.partial").exists());
+    assert!(!dir.path().join("tools.partial").exists());
     Ok(())
 }
 
 #[tokio::test]
 async fn wrong_hash_and_interrupted_download_never_replace_existing_tools() -> Result<()> {
     for truncated in [false, true] {
-        let dir = Fixture::new()?;
+        let dir = Scratch::new()?;
         old_install(&dir)?;
         let bytes = archive()?;
         let server = server(bytes.clone(), truncated).await?;
@@ -276,7 +259,7 @@ async fn wrong_hash_and_interrupted_download_never_replace_existing_tools() -> R
         let (progress, _rx) = watch::channel(Progress::Ready);
         let (_cancel, cancelled) = watch::channel(false);
         let error = install_with(
-            &dir.tools(),
+            &dir.file("tools"),
             &pins,
             reqwest::Client::new(),
             progress,
@@ -296,7 +279,7 @@ async fn wrong_hash_and_interrupted_download_never_replace_existing_tools() -> R
 #[tokio::test]
 async fn traversal_and_oversized_archives_are_rejected_without_publishing() -> Result<()> {
     for name in ["../escaped", "safe"] {
-        let dir = Fixture::new()?;
+        let dir = Scratch::new()?;
         old_install(&dir)?;
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
         zip.start_file(name, zip::write::SimpleFileOptions::default())?;
@@ -310,7 +293,7 @@ async fn traversal_and_oversized_archives_are_rejected_without_publishing() -> R
         let (progress, _rx) = watch::channel(Progress::Ready);
         let (_cancel, cancelled) = watch::channel(false);
         let error = install_with(
-            &dir.tools(),
+            &dir.file("tools"),
             &pins,
             reqwest::Client::new(),
             progress,
@@ -320,7 +303,7 @@ async fn traversal_and_oversized_archives_are_rejected_without_publishing() -> R
         .err()
         .ok_or_else(|| anyhow::anyhow!("unsafe archive installed"))?;
         assert!(error.to_string().contains("archive"), "{error:#}");
-        assert!(!dir.0.join("escaped").exists());
+        assert!(!dir.path().join("escaped").exists());
         assert_old_preserved(&dir)?;
     }
     Ok(())
@@ -328,7 +311,7 @@ async fn traversal_and_oversized_archives_are_rejected_without_publishing() -> R
 
 #[tokio::test]
 async fn cancellation_leaves_the_previous_mode_and_files_intact() -> Result<()> {
-    let dir = Fixture::new()?;
+    let dir = Scratch::new()?;
     old_install(&dir)?;
     let bytes = archive()?;
     let server = server(bytes.clone(), false).await?;
@@ -337,7 +320,7 @@ async fn cancellation_leaves_the_previous_mode_and_files_intact() -> Result<()> 
     let (_cancel, cancelled) = watch::channel(true);
     assert!(
         install_with(
-            &dir.tools(),
+            &dir.file("tools"),
             &pins,
             reqwest::Client::new(),
             progress,
@@ -352,20 +335,20 @@ async fn cancellation_leaves_the_previous_mode_and_files_intact() -> Result<()> 
 
 #[test]
 fn startup_recovers_the_previous_install_after_a_crash_between_renames() -> Result<()> {
-    let dir = Fixture::new()?;
+    let dir = Scratch::new()?;
     old_install(&dir)?;
-    std::fs::rename(dir.tools(), dir.0.join("tools.old"))?;
-    std::fs::create_dir(dir.0.join("tools.partial"))?;
-    std::fs::write(dir.0.join("tools.partial/unverified"), b"partial")?;
-    recover(&dir.tools())?;
+    std::fs::rename(dir.file("tools"), dir.path().join("tools.old"))?;
+    std::fs::create_dir(dir.path().join("tools.partial"))?;
+    std::fs::write(dir.path().join("tools.partial/unverified"), b"partial")?;
+    recover(&dir.file("tools"))?;
     assert_old_preserved(&dir)?;
-    assert!(!dir.0.join("tools.old").exists());
+    assert!(!dir.path().join("tools.old").exists());
     Ok(())
 }
 
 #[tokio::test]
 async fn cancelling_a_partial_response_cleans_staging_before_another_attempt() -> Result<()> {
-    let dir = Fixture::new()?;
+    let dir = Scratch::new()?;
     old_install(&dir)?;
     let bytes = archive()?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -386,7 +369,7 @@ async fn cancelling_a_partial_response_cleans_staging_before_another_attempt() -
     });
     let (progress, mut rx) = watch::channel(Progress::Ready);
     let (cancel, cancelled) = watch::channel(false);
-    let directory = dir.tools();
+    let directory = dir.file("tools");
     let install = tokio::spawn(async move {
         install_with(
             &directory,
@@ -415,18 +398,21 @@ async fn cancelling_a_partial_response_cleans_staging_before_another_attempt() -
 
 #[test]
 fn a_live_installer_lock_prevents_startup_from_deleting_its_partial_files() -> Result<()> {
-    let dir = Fixture::new()?;
-    let _guard = lock(&dir.tools())?;
-    std::fs::create_dir(dir.0.join("tools.partial"))?;
-    std::fs::write(dir.0.join("tools.partial/active"), b"still downloading")?;
-    assert!(recover(&dir.tools()).is_err());
-    assert!(dir.0.join("tools.partial/active").is_file());
+    let dir = Scratch::new()?;
+    let _guard = lock(&dir.file("tools"))?;
+    std::fs::create_dir(dir.path().join("tools.partial"))?;
+    std::fs::write(
+        dir.path().join("tools.partial/active"),
+        b"still downloading",
+    )?;
+    assert!(recover(&dir.file("tools")).is_err());
+    assert!(dir.path().join("tools.partial/active").is_file());
     Ok(())
 }
 
 #[test]
 fn symlink_entries_are_skipped_and_cannot_redirect_later_files() -> Result<()> {
-    let dir = Fixture::new()?;
+    let dir = Scratch::new()?;
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default();
     zip.add_symlink("link", "../outside", options)?;
@@ -438,19 +424,22 @@ fn symlink_entries_are_skipped_and_cannot_redirect_later_files() -> Result<()> {
             .decompressed_size()
             .unwrap_or(0),
     )?;
-    let file = dir.0.join("test.zip");
+    let file = dir.path().join("test.zip");
     std::fs::write(&file, bytes)?;
     let (_cancel, cancelled) = watch::channel(false);
-    extract(&file, &dir.tools(), size, &cancelled)?;
-    assert_eq!(std::fs::read(dir.tools().join("link/safe"))?, b"inside");
-    assert!(!dir.0.join("outside").exists());
+    extract(&file, &dir.file("tools"), size, &cancelled)?;
+    assert_eq!(
+        std::fs::read(dir.file("tools").join("link/safe"))?,
+        b"inside"
+    );
+    assert!(!dir.path().join("outside").exists());
     Ok(())
 }
 
 #[tokio::test]
 async fn publication_waits_for_running_extractors_and_can_be_cancelled_while_waiting() -> Result<()>
 {
-    let dir = Fixture::new()?;
+    let dir = Scratch::new()?;
     old_install(&dir)?;
     let bytes = archive()?;
     let server = server(bytes.clone(), false).await?;
@@ -458,7 +447,7 @@ async fn publication_waits_for_running_extractors_and_can_be_cancelled_while_wai
     let (progress, mut rx) = watch::channel(Progress::Ready);
     let (cancel, cancelled) = watch::channel(false);
     let execution = super::super::EXECUTIONS.read().await;
-    let directory = dir.tools();
+    let directory = dir.file("tools");
     let mut task = tokio::spawn(async move {
         install_with(
             &directory,
@@ -481,7 +470,7 @@ async fn publication_waits_for_running_extractors_and_can_be_cancelled_while_wai
         "Published while an extractor was still running"
     );
     assert_eq!(
-        std::fs::read(dir.tools().join("components.json"))?,
+        std::fs::read(dir.file("tools").join("components.json"))?,
         b"previous marker"
     );
     cancel.send_replace(true);
@@ -511,7 +500,7 @@ fn execution_lock_fixture() -> Result<()> {
 
 #[tokio::test]
 async fn publication_waits_for_a_managed_extractor_in_another_process() -> Result<()> {
-    let dir = Fixture::new()?;
+    let dir = Scratch::new()?;
     old_install(&dir)?;
     let mut reader = tokio::process::Command::new(std::env::current_exe()?)
         .args([
@@ -519,13 +508,13 @@ async fn publication_waits_for_a_managed_extractor_in_another_process() -> Resul
             "media::components::download::tests::execution_lock_fixture",
             "--nocapture",
         ])
-        .env("GRAJEK_EXECUTION_LOCK_FIXTURE", dir.tools())
+        .env("GRAJEK_EXECUTION_LOCK_FIXTURE", dir.file("tools"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
     tokio::time::timeout(Duration::from_secs(5), async {
-        while !dir.tools().with_extension("ready").is_file() {
+        while !dir.file("tools").with_extension("ready").is_file() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -535,7 +524,7 @@ async fn publication_waits_for_a_managed_extractor_in_another_process() -> Resul
     let pins = pins_for(&server.url, &bytes)?;
     let (progress, mut rx) = watch::channel(Progress::Ready);
     let (_cancel, cancelled) = watch::channel(false);
-    let directory = dir.tools();
+    let directory = dir.file("tools");
     let mut task = tokio::spawn(async move {
         install_with(
             &directory,
@@ -566,7 +555,7 @@ async fn publication_waits_for_a_managed_extractor_in_another_process() -> Resul
     assert!(reader.wait().await?.success());
     let _publication = tokio::time::timeout(Duration::from_secs(5), task).await???;
     assert!(
-        dir.tools()
+        dir.file("tools")
             .join("yt-dlp")
             .join(Tool::YtDlp.filename())
             .is_file()

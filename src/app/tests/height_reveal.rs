@@ -1,11 +1,13 @@
-use super::experience::configured;
+use super::support::configured;
 use super::*;
+use crate::app::motion::REVEAL;
+use crate::app::motion::RevealFrame;
 
 fn reveal(
     cx: &mut TestAppContext,
     window: AnyWindowHandle,
     view: &Entity<PlayerApp>,
-) -> super::super::height_reveal::RevealFrame {
+) -> RevealFrame {
     drawn(cx, window);
     cx.update(|cx| view.read(cx).reveal)
 }
@@ -34,13 +36,13 @@ fn opening_the_credentials_panel_reveals_and_settles_at_full_height(cx: &mut Tes
         requested(cx, window) >= 1,
         "a running reveal keeps the frame loop alive"
     );
-    cx.executor().advance_clock(Duration::from_millis(90));
+    cx.executor().advance_clock(REVEAL / 2);
     let middle = reveal(cx, window, &view).credentials;
     assert!(
         (0.0..1.0).contains(&middle),
         "mid-reveal blends the heights: {middle}"
     );
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(REVEAL);
     assert_eq!(
         reveal(cx, window, &view).credentials,
         1.0,
@@ -60,7 +62,7 @@ fn closing_the_credentials_panel_eases_down_and_unmounts(cx: &mut TestAppContext
     let (window, view, _received, _states) = open(cx, configured());
     click(cx, window, "settings");
     click(cx, window, "change-credentials");
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(REVEAL * 2);
     assert_eq!(reveal(cx, window, &view).credentials, 1.0);
     click(cx, window, "change-credentials");
     assert_eq!(
@@ -72,13 +74,13 @@ fn closing_the_credentials_panel_eases_down_and_unmounts(cx: &mut TestAppContext
         present(cx, window, "bot-token"),
         "content stays mounted while collapsing"
     );
-    cx.executor().advance_clock(Duration::from_millis(90));
+    cx.executor().advance_clock(REVEAL / 2);
     let middle = reveal(cx, window, &view).credentials;
     assert!(
         (0.0..1.0).contains(&middle),
         "the collapse eases down: {middle}"
     );
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(REVEAL);
     assert_eq!(reveal(cx, window, &view).credentials, 0.0);
     assert!(
         !present(cx, window, "bot-token"),
@@ -108,7 +110,7 @@ fn a_settings_round_trip_does_not_replay_an_open_panel(cx: &mut TestAppContext) 
     let (window, view, _received, _states) = open(cx, configured());
     click(cx, window, "settings");
     click(cx, window, "change-credentials");
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(REVEAL * 2);
     assert_eq!(
         reveal(cx, window, &view).credentials,
         1.0,
@@ -128,7 +130,7 @@ fn a_settings_round_trip_does_not_replay_an_open_panel(cx: &mut TestAppContext) 
         1.0,
         "still full height after the round-trip"
     );
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(REVEAL * 2);
     requested(cx, window);
     drawn(cx, window);
     assert_eq!(requested(cx, window), 0, "the round-trip replays nothing");
@@ -145,14 +147,14 @@ fn the_preferences_disclosure_and_setup_guide_share_the_clock(cx: &mut TestAppCo
         "the disclosure starts at zero height"
     );
     assert!(present(cx, window, "close-to-tray"));
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(REVEAL);
     assert_eq!(
         reveal(cx, window, &view).preferences,
         1.0,
         "the disclosure reaches full height"
     );
     click(cx, window, "change-credentials");
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(REVEAL);
     reveal(cx, window, &view);
     click(cx, window, "setup-help");
     assert_eq!(
@@ -164,6 +166,6 @@ fn the_preferences_disclosure_and_setup_guide_share_the_clock(cx: &mut TestAppCo
         present(cx, window, "developer-portal"),
         "the guide mounts from the first frame"
     );
-    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.executor().advance_clock(REVEAL);
     assert_eq!(reveal(cx, window, &view).guide, 1.0);
 }

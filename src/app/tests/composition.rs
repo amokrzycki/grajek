@@ -1,38 +1,14 @@
 //! Main-player composition: composer recognition and confirmed-add feedback, queue row
 //! keyboard model, focus after removal, and the state-specific skeletons.
-use super::animation_fixes::focused;
+use super::support::*;
 use super::*;
-use crate::app::composer::{Landing, LinkKind};
+use crate::app::composer::LinkKind;
 
 const CANONICAL: &str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
 const VIDEO: &str = "https://youtu.be/aqz-KE-bpKQ";
 const PLAYLIST_WATCH: &str =
     "https://www.youtube.com/watch?v=aqz-KE-bpKQ&list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG";
 const PLAYLIST: &str = "https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG";
-
-fn status(cx: &mut TestAppContext, window: AnyWindowHandle) -> String {
-    let mut text = String::new();
-    act(cx, window, |window, _| {
-        text = window
-            .find("link-status")
-            .label()
-            .unwrap_or_default()
-            .to_owned();
-    });
-    text
-}
-
-fn input(cx: &TestAppContext, view: &Entity<PlayerApp>) -> String {
-    cx.update(|cx| view.read(cx).input.read(cx).value().to_string())
-}
-
-fn type_link(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) {
-    act(cx, window, |window, cx| {
-        window.click("url", cx);
-        window.press("ctrl-a", cx);
-        window.input(text, cx);
-    });
-}
 
 pub(super) fn tab_until(
     cx: &mut TestAppContext,
@@ -56,16 +32,6 @@ pub(super) fn tab_until(
     );
 }
 
-fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
-    cx.run_until_parked();
-    act(cx, window, |window, cx| {
-        window.simulate_next_frame(cx);
-        window.render_frame(cx);
-        window.simulate_next_frame(cx);
-        window.render_frame(cx);
-    });
-}
-
 #[test]
 fn links_are_recognized_locally() {
     assert_eq!(LinkKind::of(""), LinkKind::Empty);
@@ -83,10 +49,13 @@ fn links_are_recognized_locally() {
 #[gpui_kit::test]
 fn enqueue_result_releases_a_repeated_refusal(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Ready, 100, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     let mut refused = initial;
-    refused.error = Some("The queue is full (100 tracks).".into());
+    refused.error = Some(format!(
+        "The queue is full ({} tracks).",
+        crate::queue::QUEUE_LIMIT
+    ));
     for request_id in 1..=2 {
         act(cx, window, |window, cx| window.press("ctrl-enter", cx));
         assert!(matches!(
@@ -102,14 +71,13 @@ fn enqueue_result_releases_a_repeated_refusal(cx: &mut TestAppContext) {
         });
         states.send_replace(refused.clone());
         settle(cx, window);
-        cx.update(|cx| assert!(view.read(cx).enqueue_pending.is_none()));
     }
 }
 
 #[gpui_kit::test]
 fn enqueue_result_survives_consumption_before_the_ui_reads_it(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Playing, 1, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(matches!(
@@ -127,13 +95,19 @@ fn enqueue_result_survives_consumption_before_the_ui_reads_it(cx: &mut TestAppCo
     });
     states.send_replace(consumed);
     settle(cx, window);
-    assert_eq!(input(cx, &view), "");
-    cx.update(|cx| assert!(view.read(cx).enqueue_pending.is_none()));
+    assert_eq!(input(cx, window), "");
+    // The pending slot is released even when the entry was consumed before this read.
+    type_link(cx, window, VIDEO);
+    act(cx, window, |window, cx| window.press("ctrl-enter", cx));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::EnqueueRequest { id: 2, .. })
+    ));
 }
 
 #[gpui_kit::test]
 fn pasting_a_link_only_describes_it(cx: &mut TestAppContext) {
-    let (window, view, mut received, _) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, _) = open(cx, state(Phase::Ready));
     assert_eq!(status(cx, window), "");
     type_link(cx, window, VIDEO);
     assert_eq!(status(cx, window), "Video link recognized.");
@@ -143,7 +117,7 @@ fn pasting_a_link_only_describes_it(cx: &mut TestAppContext) {
     assert!(status(cx, window).starts_with("Playlist link"));
     type_link(cx, window, "half-typed");
     assert_eq!(status(cx, window), "", "unrecognized text is never scolded");
-    assert_eq!(input(cx, &view), "half-typed", "the text is untouched");
+    assert_eq!(input(cx, window), "half-typed", "the text is untouched");
     assert!(
         received.try_recv().is_err(),
         "recognition never plays or imports"
@@ -239,14 +213,14 @@ fn the_idle_headline_matches_the_title_scale_and_fits_the_minimum_window(cx: &mu
 #[gpui_kit::test]
 fn a_confirmed_add_clears_the_field_and_is_acknowledged(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Ready, 2, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(
         matches!(received.try_recv(), Ok(Command::EnqueueRequest { value: url, placement: crate::player::Placement::End, .. }) if url == VIDEO)
     );
     // Nothing is claimed before the controller answers; the text stays and a repeat is ignored.
-    assert_eq!(input(cx, &view), VIDEO);
+    assert_eq!(input(cx, window), VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(
         received.try_recv().is_err(),
@@ -258,7 +232,7 @@ fn a_confirmed_add_clears_the_field_and_is_acknowledged(cx: &mut TestAppContext)
     });
     settle(cx, window);
     assert_eq!(
-        input(cx, &view),
+        input(cx, window),
         VIDEO,
         "an unrelated snapshot is not an acknowledgement"
     );
@@ -276,12 +250,11 @@ fn a_confirmed_add_clears_the_field_and_is_acknowledged(cx: &mut TestAppContext)
     states.send_replace(acknowledged);
     settle(cx, window);
     assert_eq!(
-        input(cx, &view),
+        input(cx, window),
         "",
         "the submitted text is cleared on confirmation"
     );
     assert_eq!(status(cx, window), "Added to queue · #3 · Aqua");
-    cx.update(|cx| assert_eq!(view.read(cx).added, Some((99, Landing::End))));
     // Typing starts a new entry and retires the confirmation.
     type_link(cx, window, "x");
     assert_eq!(status(cx, window), "");
@@ -290,7 +263,7 @@ fn a_confirmed_add_clears_the_field_and_is_acknowledged(cx: &mut TestAppContext)
 #[gpui_kit::test]
 fn a_refused_add_keeps_the_text_and_can_be_retried(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Ready, 1, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, "https://youtu.be/zzzzzzzzzzz");
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(matches!(
@@ -310,11 +283,14 @@ fn a_refused_add_keeps_the_text_and_can_be_retried(cx: &mut TestAppContext) {
     });
     settle(cx, window);
     assert_eq!(
-        input(cx, &view),
+        input(cx, window),
         "https://youtu.be/zzzzzzzzzzz",
         "validation failure keeps the text"
     );
-    cx.update(|cx| assert!(view.read(cx).added.is_none()));
+    assert!(
+        !status(cx, window).starts_with("Added to queue"),
+        "a refusal never claims an add"
+    );
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(
         matches!(
@@ -331,7 +307,7 @@ fn a_refused_add_keeps_the_text_and_can_be_retried(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn text_typed_after_submitting_survives_the_acknowledgement(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Ready, 1, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(matches!(
@@ -355,7 +331,7 @@ fn text_typed_after_submitting_survives_the_acknowledgement(cx: &mut TestAppCont
     });
     states.send_replace(acknowledged);
     settle(cx, window);
-    assert_eq!(input(cx, &view), format!("{VIDEO}&t=30"));
+    assert_eq!(input(cx, window), format!("{VIDEO}&t=30"));
 }
 
 #[gpui_kit::test]
@@ -468,13 +444,12 @@ fn a_moved_entry_keeps_keyboard_focus(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn the_next_entry_is_marked_and_the_empty_queue_is_calm(cx: &mut TestAppContext) {
-    let (window, view, _, _) = open(cx, with_lists(Phase::Playing, 3, 0));
+    let (window, _view, _, _) = open(cx, with_lists(Phase::Playing, 3, 0));
     let first = bounds(cx, window, ("queue-title", 10_u64));
     let second = bounds(cx, window, ("queue-title", 11_u64));
     assert!(second.top() > first.top());
-    cx.update(|cx| {
-        assert_eq!(view.read(cx).state.queue.len(), 3);
-    });
+    assert!(present(cx, window, ("queue-row", 12_u64)));
+    assert!(!present(cx, window, "queue-empty"));
     let (window, _, _, _) = open(cx, with_lists(Phase::Playing, 0, 0));
     let mut empty = String::new();
     act(cx, window, |window, _| {
@@ -520,7 +495,7 @@ fn both_native_sizes_keep_the_three_regions_ordered(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn another_command_retires_the_added_line(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Ready, 1, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(matches!(
@@ -547,13 +522,12 @@ fn another_command_retires_the_added_line(cx: &mut TestAppContext) {
     click(cx, window, "next");
     assert!(matches!(received.try_recv(), Ok(Command::Next)));
     assert_eq!(status(cx, window), "");
-    cx.update(|cx| assert!(view.read(cx).added.is_none()));
 }
 
 #[gpui_kit::test]
 fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Ready, 1, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(matches!(
@@ -574,12 +548,11 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
     states.send_replace(other.clone());
     settle(cx, window);
     assert_eq!(
-        input(cx, &view),
+        input(cx, window),
         VIDEO,
         "the text is kept until this request is answered"
     );
     assert_eq!(status(cx, window), "Video link recognized.");
-    cx.update(|cx| assert!(view.read(cx).added.is_none()));
     // Then the controller refuses the Enqueue: the text must still be there.
     other.error = Some("Could not add that link.".into());
     other.enqueue_result = Some(crate::player::EnqueueResult {
@@ -588,7 +561,7 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
     });
     states.send_replace(other.clone());
     settle(cx, window);
-    assert_eq!(input(cx, &view), VIDEO);
+    assert_eq!(input(cx, window), VIDEO);
     // A retry that is accepted is confirmed by its own entry only.
     act(cx, window, |window, cx| window.press("ctrl-enter", cx));
     assert!(matches!(
@@ -610,8 +583,8 @@ fn only_the_matching_entry_confirms_an_add(cx: &mut TestAppContext) {
     });
     states.send_replace(other);
     settle(cx, window);
-    assert_eq!(input(cx, &view), "");
-    cx.update(|cx| assert_eq!(view.read(cx).added, Some((51, Landing::End))));
+    assert_eq!(input(cx, window), "");
+    assert_eq!(status(cx, window), "Added to queue · #3 · Aqua");
 }
 
 #[gpui_kit::test]
