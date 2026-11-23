@@ -237,9 +237,45 @@ fn repeat_track_copy_appears_only_while_repeat_track_is_on(cx: &mut TestAppConte
     click(cx, window, "enqueue-next");
     assert!(next_request(&mut received).is_some());
     initial.queue.insert(0, entry(99, CANONICAL, "Aqua"));
+    states.send_replace(answered(initial.clone(), 1, Some(99)));
+    settle(cx, window);
+    assert_eq!(status(cx, window), format!("Queued next · {note} · Aqua"));
+    click(cx, window, ("queue-next", 11_u64));
+    assert!(matches!(
+        received.try_recv(),
+        Ok(Command::MoveToNext {
+            request_id: 2,
+            id: 11,
+        })
+    ));
+    let mut moved = initial;
+    let item = moved.queue.remove(2);
+    moved.queue.insert(0, item);
+    states.send_replace(answered(moved, 2, Some(11)));
+    settle(cx, window);
+    assert_eq!(
+        status(cx, window),
+        format!("Moved to next · {note} · Queued 11")
+    );
+}
+
+#[gpui_kit::test]
+fn a_long_title_with_repeat_track_on_still_leads_with_the_note(cx: &mut TestAppContext) {
+    let mut initial = with_lists(Phase::Playing, 2, 0);
+    initial.preferences.repeat = RepeatMode::Track;
+    let long_title = "Aqua Marine Orchestra Performs the Complete Extended Live Suite in One Take";
+    let (window, _view, mut received, states) = open(cx, initial.clone());
+    type_link(cx, window, VIDEO);
+    click(cx, window, "enqueue-next");
+    assert!(next_request(&mut received).is_some());
+    initial.queue.insert(0, entry(99, CANONICAL, long_title));
     states.send_replace(answered(initial, 1, Some(99)));
     settle(cx, window);
-    assert_eq!(status(cx, window), format!("Queued next · Aqua · {note}"));
+    assert!(
+        status(cx, window)
+            .starts_with("Queued next · Repeat Track is on; press Next to play it. · "),
+        "the fixed note leads so only the title truncates"
+    );
 }
 
 #[gpui_kit::test]

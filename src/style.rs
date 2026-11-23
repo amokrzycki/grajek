@@ -13,7 +13,15 @@ pub mod space {
     pub const INSET: Pixels = px(16.);
 }
 
+fn env_reduces_motion(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
+
 pub fn init(cx: &mut App) {
+    // Takes permanent ownership from the platform preference the kit follows by default.
+    if env_reduces_motion(std::env::var("GRAJEK_REDUCE_MOTION").ok().as_deref()) {
+        cx.set_reduce_motion(true);
+    }
     Theme::change(ThemeMode::Dark, None, cx);
     let installed = cx.text_system().all_font_names();
     #[cfg(target_os = "windows")]
@@ -108,4 +116,18 @@ pub fn init(cx: &mut App) {
 /// Separators convey grouping; unlike control boundaries they can stay quiet.
 pub fn separator() -> gpui_kit::Hsla {
     rgb(0x003d_4338).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::env_reduces_motion;
+
+    #[test]
+    fn an_empty_or_zero_env_value_is_as_unset() {
+        assert!(!env_reduces_motion(None));
+        assert!(!env_reduces_motion(Some("")));
+        assert!(!env_reduces_motion(Some("0")));
+        assert!(env_reduces_motion(Some("1")));
+        assert!(env_reduces_motion(Some("true")));
+    }
 }

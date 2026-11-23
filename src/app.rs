@@ -4,9 +4,11 @@ pub(super) mod composer;
 mod controls;
 mod favorites;
 mod focus;
+mod height_reveal;
 mod help;
 mod history;
 mod lists;
+mod motion;
 mod progress;
 mod queue;
 mod search;
@@ -92,6 +94,14 @@ pub struct PlayerApp {
     commands: mpsc::Sender<Command>,
     volume_requests: watch::Sender<VolumeRequest>,
     state: State,
+    motion: motion::Motion,
+    frame: motion::Frame,
+    height_reveals: height_reveal::HeightReveals,
+    reveal: height_reveal::RevealFrame,
+    /// Only a change of these messages starts a fade.
+    shown_error: Option<String>,
+    shown_notice: Option<String>,
+    shown_view: Option<bool>,
     /// Prevent duplicate input while keeping the authoritative playback snapshot visible.
     pending: Option<Pending>,
     transport_seq: u64,
@@ -237,6 +247,8 @@ impl PlayerApp {
         });
         let transport_seq = state.transport_ack;
         let favorite_seq = state.favorite_result.as_ref().map_or(0, |r| r.request_id);
+        let shown_error = motion::displayed_error(&state);
+        let shown_notice = state.notice.clone();
         let mut app = Self {
             components: components::Panel::new(cx),
             help,
@@ -274,6 +286,13 @@ impl PlayerApp {
             commands,
             volume_requests,
             state,
+            motion: motion::Motion::default(),
+            frame: motion::Frame::default(),
+            height_reveals: height_reveal::HeightReveals::default(),
+            reveal: height_reveal::RevealFrame::default(),
+            shown_error,
+            shown_notice,
+            shown_view: None,
             pending: None,
             transport_seq,
             queue_scroll: lists::ListNavigation::new(),
@@ -344,6 +363,9 @@ impl PlayerApp {
         if self.state.import != state.import {
             self.retired_import = None;
         }
+        let now = cx.background_executor().now();
+        self.motion.observe(&self.state, &state, now);
+        self.observe_callouts(&state, now);
         self.state = state;
         if let Some(resolution) = &resolution {
             self.finish_enqueue(resolution, window, cx);
@@ -569,7 +591,8 @@ impl PlayerApp {
     fn now_playing(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let compact = window.viewport_size().height <= px(480.);
-        let phase_color = if self.state.error.is_some() {
+        let track_id = self.state.track_id;
+        let resting = if self.state.error.is_some() {
             theme.danger
         } else if self.state.phase == Phase::Playing {
             theme.primary
@@ -578,13 +601,15 @@ impl PlayerApp {
         } else {
             theme.muted_foreground
         };
+        let phase_color = self.frame.settle(track_id, theme.muted_foreground, resting);
         let track = self.state.visible_track();
         let (title, title_color) = match track {
             Some(info) => (
                 info.title
                     .clone()
                     .unwrap_or_else(|| "Untitled track".into()),
-                theme.foreground,
+                self.frame
+                    .settle(track_id, theme.muted_foreground, theme.foreground),
             ),
             None => (
                 match self.state.phase {
@@ -667,11 +692,7 @@ impl PlayerApp {
     /// Keep failures readable without displacing the scrolling list.
     fn error(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let theme = cx.theme();
-        let seek_error = match &self.state.seek {
-            crate::player::SeekStatus::Failed(message) => Some(message.clone()),
-            _ => None,
-        };
-        let error = self.state.error.clone().or(seek_error)?;
+        let error = motion::displayed_error(&self.state)?;
         let tip = error.clone();
         Some(
             div()
@@ -687,6 +708,7 @@ impl PlayerApp {
                 .line_height(px(16.))
                 .text_color(theme.danger)
                 .line_clamp(2)
+                .when_some(self.frame.error_fade(), Styled::opacity)
                 .child(error)
                 .help(tip, &self.help)
                 .test_support(),
@@ -720,7 +742,8 @@ impl PlayerApp {
 
     /// Idle keeps the next useful action: setup guidance or Play Queue. An empty, ready
     /// player leads with its composer; audio adjustment remains in the permanent footer.
-    fn idle_player(&self, _window: &Window, cx: &Context<Self>) -> AnyElement {
+    fn idle_player(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let compact = window.viewport_size().height <= px(480.);
         let error = self.error(cx);
         let panel = div()
             .id("idle-player")
@@ -761,8 +784,8 @@ impl PlayerApp {
                         .gap(space::TIGHT)
                         .child(
                             div()
-                                .text_size(px(24.))
-                                .line_height(px(30.))
+                                .text_size(px(if compact { 20. } else { 24. }))
+                                .line_height(relative(1.25))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(label("title", title.into(), &self.help)),
                         )
@@ -811,6 +834,7 @@ impl PlayerApp {
 impl Render for PlayerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.focus = focus::FocusPresentation::from_window(window);
+        self.frame = self.motion_frame(window, cx);
         if self.components.check_pending {
             self.check_components(cx);
         }
@@ -843,7 +867,7 @@ impl Render for PlayerApp {
         } else {
             self.active_player(window, cx).into_any_element()
         };
-        div()
+        self.entering_surface(div())
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
@@ -883,6 +907,7 @@ impl Render for PlayerApp {
                     .text_xs()
                     .text_color(theme.yellow)
                     .line_clamp(2)
+                    .when_some(self.frame.notice_fade(), Styled::opacity)
                     .child(notice.clone())
                     .help(notice.clone(), &self.help)
                     .test_support()

@@ -292,6 +292,44 @@ fn errors_missing_metadata_and_section_exits_preserve_input_and_focus(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn selection_marks_the_row_with_an_inside_border_that_keeps_every_row_box(cx: &mut TestAppContext) {
+    let (window, _, mut received, states) = open(cx, state(Phase::Ready));
+    submit(cx, window, &mut received);
+    states.send_replace(snapshot(Phase::Ready, results()));
+    settle(cx, window);
+    let row = bounds(cx, window, "search-row-0");
+    let neighbour = bounds(cx, window, "search-row-1");
+    let title = bounds(cx, window, "search-title-0");
+    let neighbour_title = bounds(cx, window, "search-title-1");
+    assert_eq!(row.size.height, px(44.));
+    assert_eq!(
+        title.left(),
+        neighbour_title.left(),
+        "every row shares one content inset before selection"
+    );
+    click(cx, window, "search-row-0");
+    settle(cx, window);
+    let selected_row = bounds(cx, window, "search-row-0");
+    let selected_title = bounds(cx, window, "search-title-0");
+    assert_eq!(selected_row.origin, row.origin);
+    assert_eq!(selected_row.size, row.size, "the border stays inside 44px");
+    assert_eq!(
+        bounds(cx, window, "search-row-1"),
+        neighbour,
+        "an unselected row does not shift"
+    );
+    assert_eq!(
+        selected_title.origin, title.origin,
+        "selection does not shift the content"
+    );
+    assert_eq!(
+        selected_title.left(),
+        bounds(cx, window, "search-title-1").left(),
+        "the selected and unselected row share one content inset"
+    );
+}
+
+#[gpui_kit::test]
 fn selected_action_channel_saturation_remains_retryable(cx: &mut TestAppContext) {
     let (window, view, mut received, states) = open(cx, state(Phase::Ready));
     submit(cx, window, &mut received);

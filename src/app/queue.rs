@@ -1,7 +1,9 @@
+use std::time::Instant;
+
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    Context, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Styled,
+    App, Context, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Styled,
     TestSupportExt, Window, div, px,
 };
 
@@ -11,16 +13,18 @@ use crate::{player::Command, queue::QueueItem};
 impl PlayerApp {
     /// Alt+Up / Alt+Down move the entry holding focus; Delete removes it. Handles are keyed by
     /// entry id, so focus follows a moved entry.
-    fn queue_key(&self, id: u64, position: usize, event: &KeyDownEvent) {
+    fn queue_key(&mut self, id: u64, position: usize, event: &KeyDownEvent, now: Instant) {
         let modifiers = &event.keystroke.modifiers;
         if !self.state.controller_ready {
             return;
         }
         match event.keystroke.key.as_str() {
             "up" if modifiers.alt && position > 0 => {
+                self.motion.asked_to_move(id, position, now);
                 self.send(Command::Shift { id, up: true });
             }
             "down" if modifiers.alt && position + 1 < self.state.queue.len() => {
+                self.motion.asked_to_move(id, position, now);
                 self.send(Command::Shift { id, up: false });
             }
             "delete" if !modifiers.alt && !modifiers.control && !modifiers.shift => {
@@ -28,6 +32,22 @@ impl PlayerApp {
             }
             _ => {}
         }
+    }
+
+    pub(super) fn row_wash(
+        &self,
+        position: usize,
+        id: u64,
+        window: &Window,
+        cx: &App,
+    ) -> Option<gpui_kit::Hsla> {
+        self.frame.wash(id, cx.theme().primary).filter(|_| {
+            // The wash's bg would overwrite the keyboard-focus row background.
+            !(self.focus.keyboard
+                && self.queue_scroll.rows[position]
+                    .1
+                    .contains_focused(window, cx))
+        })
     }
 
     pub(super) fn queue_row(
@@ -43,16 +63,18 @@ impl PlayerApp {
         let theme = cx.theme();
         let id = item.id;
         let next = position == 0;
+        let wash = self.row_wash(position, id, window, cx);
         self.track_row(
             ("queue-row", id).into(),
             &self.queue_scroll.rows[position].1,
             window,
             cx,
         )
+        .when_some(wash, Styled::bg)
         .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
             if this.row_menu.is_none() {
                 this.list_key(Section::Queue, position, event, window, cx);
-                this.queue_key(id, position, event);
+                this.queue_key(id, position, event, cx.background_executor().now());
             }
         }))
         .child(
@@ -75,11 +97,7 @@ impl PlayerApp {
                 } else {
                     FontWeight::NORMAL
                 })
-                .text_color(if next {
-                    theme.foreground
-                } else {
-                    theme.foreground.opacity(0.86)
-                })
+                .text_color(theme.foreground)
                 .child(label_with_tooltip(
                     ("queue-title", id),
                     item.label().to_owned(),
@@ -97,7 +115,10 @@ impl PlayerApp {
                 )),
         )
         .when(self.is_favorite_url(&item.url), |row| {
-            row.child(Self::saved_label(("queue-saved", id), cx))
+            row.child(Self::saved_label(
+                ("queue-saved", id),
+                self.saved_label_color(&item.url, cx),
+            ))
         })
         .child(self.row_menu(Section::Queue, position, id, cx))
         .test_support()

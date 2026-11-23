@@ -344,7 +344,7 @@ impl PlayerApp {
                 .when(repeat != RepeatMode::Off, |button| button.text_color(cx.theme().primary))
 
                 .accessibility_label(format!("Queue options. {}. Remember queue, continue on error, clear queue", repeat.label())))
-            .child(div().id("queue-options-menu").on_key_down(Self::menu_key).flex().flex_col().w(px(300.)).max_h(px(392.)).overflow_y_scroll().gap_1()
+            .child(super::components::menu_enter(div().id("queue-options-menu").on_key_down(Self::menu_key).flex().flex_col().w(px(300.)).max_h(px(392.)).overflow_y_scroll().gap_1()
                 .child(self.repeat_button(cx))
                 .child(menu_detail("After a track finishes. Next and Stop never repeat.", cx))
                 .child(self.remember_button(cx))
@@ -369,7 +369,7 @@ impl PlayerApp {
                         .on_click(cx.listener(|this, _, _, _| { this.send(Command::ClearQueue); }))))
                 .child(menu_detail("Keeps the current track; cancels playlist imports.", cx))
                 .child(div().pt_2().px_2().text_xs().text_color(cx.theme().muted_foreground)
-                    .child("Preferences save automatically.")).test_support())
+                    .child("Preferences save automatically.")).test_support(), "queue-options-menu-enter", cx))
     }
 
     fn import_playlist(&mut self, window: &mut Window, cx: &mut Context<Self>) {

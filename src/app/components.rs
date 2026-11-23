@@ -11,8 +11,29 @@ use crate::media::{
         status::{ComponentReport, ComponentState},
     },
 };
+use gpui_kit::base::animation::{EffectTransition, ease_out_cubic};
 use gpui_kit::component::scroll::ScrollableElement;
-use gpui_kit::{AnyElement, FocusHandle, ScrollHandle};
+use gpui_kit::{AnyElement, App, ElementId, FocusHandle, ScrollHandle};
+
+const MENU_ENTER: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// The shared menu enter: content fades in and settles down 4px while open.
+/// Menus mount only while open, so element state replays on every open.
+pub(super) fn menu_enter(
+    element: impl IntoElement + Styled + 'static,
+    id: impl Into<ElementId>,
+    cx: &App,
+) -> AnyElement {
+    if cx.reduce_motion() {
+        return element.into_any_element();
+    }
+    EffectTransition::new(MENU_ENTER)
+        .ease(ease_out_cubic)
+        .slide_y(px(-4.), px(0.))
+        .fade(0., 1.)
+        .apply(element, id)
+        .into_any_element()
+}
 
 #[expect(
     clippy::struct_excessive_bools,

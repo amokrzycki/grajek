@@ -7,6 +7,7 @@ use gpui_kit::{
     ListSizingBehavior, ListState, ParentElement, Styled, TestSupportExt, Window, div, list, px,
 };
 
+use super::components::menu_enter;
 use super::help::HelpExt;
 use super::{PlayerApp, Section};
 use gpui_kit::component::Disableable;
@@ -218,6 +219,7 @@ impl PlayerApp {
             );
         }
         let open = self.row_menu.as_ref() == Some(&target);
+        let enter_id = id("track-options-menu-enter");
         let label = self.track_menu_label(section, row);
         let help = match section {
             Section::Queue => "Track options · Alt+Up/Down to reorder · Delete to remove".into(),
@@ -262,7 +264,7 @@ impl PlayerApp {
                     this.list_tab(section, row, 1, true, window, cx);
                 })),
         )
-        .child(content.test_support())
+        .child(menu_enter(content.test_support(), enter_id, cx))
     }
 
     fn track_menu_label(&self, section: Section, row: usize) -> String {
@@ -325,6 +327,10 @@ impl PlayerApp {
         }
         match (target, name) {
             (TrackTarget::Queue(id), "queue-up" | "queue-down") => {
+                if let Some(row) = row {
+                    self.motion
+                        .asked_to_move(*id, row, cx.background_executor().now());
+                }
                 self.send(crate::player::Command::Shift {
                     id: *id,
                     up: name == "queue-up",
