@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::animation::{Lerp, ease_out_cubic};
-use gpui_kit::{App, Hsla, Window};
+use gpui_kit::{App, Context, Div, Hsla, Styled, Window, px};
 
 use super::PlayerApp;
 use crate::player::State;
@@ -15,18 +15,28 @@ pub(super) const ARRIVAL: Duration = Duration::from_millis(200);
 pub(super) const MARK: Duration = Duration::from_millis(240);
 pub(super) const SAVED: Duration = Duration::from_millis(200);
 pub(super) const CALLOUT: Duration = Duration::from_millis(150);
+pub(super) const VIEW: Duration = Duration::from_millis(160);
 /// A move request the controller has not answered within this long is forgotten.
 const SHIFT_WAIT: Duration = Duration::from_secs(2);
 const MARK_PEAK: f32 = 0.16;
+const VIEW_SLIDE: f32 = 12.0;
+
+/// The edge the incoming surface enters from: Settings arrives from the right,
+/// the player returns from the left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Direction {
+    Right,
+    Left,
+}
 
 #[derive(Clone, Copy)]
-struct Pulse {
-    started: Instant,
+pub(super) struct Pulse {
+    pub(super) started: Instant,
 }
 
 impl Pulse {
     /// `None` once the pulse has finished.
-    fn progress(self, now: Instant, length: Duration) -> Option<f32> {
+    pub(super) fn progress(self, now: Instant, length: Duration) -> Option<f32> {
         let elapsed = now.saturating_duration_since(self.started);
         (elapsed < length).then(|| elapsed.as_secs_f32() / length.as_secs_f32())
     }
@@ -40,6 +50,7 @@ pub(super) struct Frame {
     saved: Option<(String, f32)>,
     error: Option<f32>,
     notice: Option<f32>,
+    view: Option<(Direction, f32)>,
 }
 
 impl Frame {
@@ -74,6 +85,23 @@ impl Frame {
     pub(super) fn notice_fade(&self) -> Option<f32> {
         self.notice.map(ease_out_cubic)
     }
+
+    #[cfg(test)]
+    pub(super) fn view(&self) -> Option<(Direction, f32)> {
+        self.view
+    }
+
+    /// Opacity and horizontal offset (px) for the incoming surface root.
+    pub(super) fn view_shift(&self) -> Option<(f32, f32)> {
+        self.view.map(|(direction, progress)| {
+            let eased = ease_out_cubic(progress);
+            let slide = match direction {
+                Direction::Right => VIEW_SLIDE,
+                Direction::Left => -VIEW_SLIDE,
+            };
+            (eased, slide * (1.0 - eased))
+        })
+    }
 }
 
 #[derive(Default)]
@@ -83,6 +111,7 @@ pub(super) struct Motion {
     saved: Option<(String, Pulse)>,
     error: Option<Pulse>,
     notice: Option<Pulse>,
+    view: Option<(Direction, Pulse)>,
     /// The entry the user asked to move, its position then, and when.
     shift: Option<(u64, usize, Instant)>,
 }
@@ -138,6 +167,10 @@ impl Motion {
         self.notice = Some(Pulse { started: now });
     }
 
+    pub(super) fn view_entered(&mut self, direction: Direction, now: Instant) {
+        self.view = Some((direction, Pulse { started: now }));
+    }
+
     /// (arrival, mark) identities of the running pulses.
     #[cfg(test)]
     pub(super) fn keys(&self) -> (Option<u64>, Option<u64>) {
@@ -168,6 +201,7 @@ impl Motion {
             saved,
             error: sample(&mut self.error, now, CALLOUT),
             notice: sample(&mut self.notice, now, CALLOUT),
+            view: sample_keyed(&mut self.view, now, VIEW),
         };
         if frame != Frame::default() {
             window.request_animation_frame();
@@ -199,6 +233,42 @@ fn sample(slot: &mut Option<Pulse>, now: Instant, length: Duration) -> Option<f3
 }
 
 impl PlayerApp {
+    /// A `settings_open` flip since the last render starts the incoming
+    /// surface's pulse here, so no toggle site needs its own animation call;
+    /// the first render only records.
+    pub(super) fn motion_frame(&mut self, window: &Window, cx: &Context<Self>) -> Frame {
+        if self
+            .shown_view
+            .is_some_and(|previous| previous != self.settings_open)
+        {
+            let direction = if self.settings_open {
+                Direction::Right
+            } else {
+                Direction::Left
+            };
+            self.motion
+                .view_entered(direction, cx.background_executor().now());
+        }
+        self.shown_view = Some(self.settings_open);
+        if self.settings_open && !self.components.open {
+            self.reveal = self.height_reveals.sample(
+                self.credentials_visible(),
+                self.preferences_open,
+                self.setup_help,
+                window,
+                cx,
+            );
+        }
+        self.motion.frame(window, cx)
+    }
+
+    pub(super) fn entering_surface(&self, root: Div) -> Div {
+        match self.frame.view_shift() {
+            Some((opacity, shift)) => root.opacity(opacity).left(px(shift)),
+            None => root,
+        }
+    }
+
     pub(super) fn observe_callouts(&mut self, next: &State, now: Instant) {
         let error = displayed_error(next);
         if error != self.shown_error {

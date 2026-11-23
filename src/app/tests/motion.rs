@@ -171,6 +171,7 @@ fn settings_round_trip_never_replays_a_finished_pulse(cx: &mut TestAppContext) {
             window.render_frame(cx);
         });
     }
+    cx.executor().advance_clock(Duration::from_millis(500));
     assert_eq!(frame(cx, window, &view), Frame::default());
     assert_eq!(keys(cx, &view), (None, None));
 }
@@ -493,21 +494,6 @@ fn the_wash_yields_to_the_keyboard_focus_row_background(cx: &mut TestAppContext)
     );
     let keyboard = cx.update(|cx| view.read(cx).focus.keyboard);
     assert!(keyboard, "the filter saw a real keyboard focus");
-}
-
-#[expect(
-    clippy::expect_used,
-    reason = "window access failure must fail the frame-count assertion"
-)]
-fn requested(cx: &mut TestAppContext, window: AnyWindowHandle) -> usize {
-    cx.update_window(window, |_, window, cx| window.simulate_next_frame(cx))
-        .expect("test window should simulate the frame")
-}
-
-fn drawn(cx: &mut TestAppContext, window: AnyWindowHandle) {
-    act(cx, window, |window, cx| {
-        window.render_frame(cx);
-    });
 }
 
 #[gpui_kit::test]

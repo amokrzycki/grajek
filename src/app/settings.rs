@@ -300,9 +300,13 @@ impl PlayerApp {
         }
     }
 
+    pub(super) fn credentials_visible(&self) -> bool {
+        !self.state.setup.external && (self.state.setup.bot.is_none() || self.credentials_open)
+    }
+
     pub(super) fn settings_surface(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        div()
+        self.entering_surface(div())
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
@@ -440,7 +444,6 @@ impl PlayerApp {
         let setup = &self.state.setup;
         let busy = self.state.setup_busy;
         let configured = setup.bot.is_some();
-        let credentials = !configured || self.credentials_open;
         let theme = cx.theme();
         let status = self.setup_status();
         let mut connection = div().flex().flex_none().flex_col().gap_2().child(
@@ -525,8 +528,13 @@ impl PlayerApp {
         }
         if setup.external {
             connection = connection.child(detail("Bot credentials come from your environment or .env file. Change or remove them there.", cx));
-        } else if credentials {
-            connection = connection.child(self.credential_settings(window, cx));
+        } else {
+            connection = connection.children(self.reveal.panel(
+                "credentials-reveal",
+                self.reveal.credentials,
+                self.credentials_visible(),
+                || self.credential_settings(window, cx).into_any_element(),
+            ));
         }
         connection
     }
@@ -547,10 +555,13 @@ impl PlayerApp {
             .child(detail("Remember stores the token in your OS credential vault. Session-only lasts until Quit; an older saved token may return next launch. Never use a personal Discord token or password.", cx))
             .child(div().flex().child(self.button("setup-help").ghost().small().label(if self.setup_help { "Hide bot setup guide" } else { "Create and invite a bot…" })
                 .on_click(cx.listener(|this, _, _, cx| { this.setup_help = !this.setup_help; cx.notify(); })).reveal("guide-control", &self.settings_scroll)))
-            .when(self.setup_help, |panel| panel.child(div().flex().flex_col().gap_2()
-                .child(detail("In the Discord Developer Portal, create an application. Open Bot and copy its bot token here. Keep it private: anyone with it can control your bot.", cx))
-                .child(detail("Under OAuth2 → URL Generator, choose bot with View Channels, Connect and Speak. Open the generated link to invite the bot to your server. No privileged intents are needed.", cx))
-                .child(self.button("developer-portal").label("Open Developer Portal").on_click(|_, _, cx| cx.open_url("https://discord.com/developers/applications")).reveal("portal-control", &self.settings_scroll))))
+            .children(self.reveal.panel("guide-reveal", self.reveal.guide, self.setup_help, || {
+                div().flex().flex_col().gap_2()
+                    .child(detail("In the Discord Developer Portal, create an application. Open Bot and copy its bot token here. Keep it private: anyone with it can control your bot.", cx))
+                    .child(detail("Under OAuth2 → URL Generator, choose bot with View Channels, Connect and Speak. Open the generated link to invite the bot to your server. No privileged intents are needed.", cx))
+                    .child(self.button("developer-portal").label("Open Developer Portal").on_click(|_, _, cx| cx.open_url("https://discord.com/developers/applications")).reveal("portal-control", &self.settings_scroll))
+                    .into_any_element()
+            }))
             .when(self.state.setup.bot.is_some() || matches!(self.state.setup.status, Status::Failed(_)) || self.state.setup.storage_notice.is_some(), |panel| panel
                 .child(div().flex().child(self.button("remove-token").ghost().label("Remove credentials and disconnect").disabled(busy)
                     .on_click(cx.listener(|this, _, _, _| { this.send(Command::Setup(Request::Remove)); })).reveal("remove-control", &self.settings_scroll)))
@@ -630,10 +641,13 @@ impl PlayerApp {
         div().flex().flex_none().flex_col().gap_2()
             .child(div().flex().child(self.button("preferences-disclosure").ghost().small().label(if self.preferences_open { "Hide preferences" } else { "Preferences…" })
                 .on_click(cx.listener(|this, _, _, cx| { this.preferences_open = !this.preferences_open; cx.notify(); })).reveal("preferences-control", &self.settings_scroll)))
-            .when(self.preferences_open, |panel| panel
-                .child(Switch::new("close-to-tray").focus_ring(self.focus.keyboard).label("Keep playing when the window closes").checked(self.state.close_to_tray)
-                    .on_change(cx.listener(|this, enabled, _, _| { this.send(Command::CloseToTray(*enabled)); })).reveal("tray-control", &self.settings_scroll))
-                .child(detail("Uses the system tray when available. Choose Quit in the tray to stop Grajek. Without a tray, closing the window quits.", cx)))
+            .children(self.reveal.panel("preferences-reveal", self.reveal.preferences, self.preferences_open, || {
+                div().flex().flex_col().gap_2()
+                    .child(Switch::new("close-to-tray").focus_ring(self.focus.keyboard).label("Keep playing when the window closes").checked(self.state.close_to_tray)
+                        .on_change(cx.listener(|this, enabled, _, _| { this.send(Command::CloseToTray(*enabled)); })).reveal("tray-control", &self.settings_scroll))
+                    .child(detail("Uses the system tray when available. Choose Quit in the tray to stop Grajek. Without a tray, closing the window quits.", cx))
+                    .into_any_element()
+            }))
     }
 
     fn authenticate(&mut self, remember: bool, window: &mut Window, cx: &mut Context<Self>) {

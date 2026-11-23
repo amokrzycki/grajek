@@ -16,6 +16,8 @@ mod components_live;
 mod composition;
 mod experience;
 mod favorites;
+mod height_reveal;
+mod menu_motion;
 mod motion;
 mod native_favorites;
 mod native_search;
@@ -24,6 +26,7 @@ mod queue_next;
 mod queue_next_native;
 mod search;
 mod seek;
+mod view_transition;
 
 fn state(phase: Phase) -> State {
     State {
@@ -521,6 +524,21 @@ fn bounds(
         window.find(id).bounds()
     })
     .expect("test window should expose the element")
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "window access failure must fail the frame-count assertion"
+)]
+fn requested(cx: &mut TestAppContext, window: AnyWindowHandle) -> usize {
+    cx.update_window(window, |_, window, cx| window.simulate_next_frame(cx))
+        .expect("test window should simulate the frame")
+}
+
+fn drawn(cx: &mut TestAppContext, window: AnyWindowHandle) {
+    act(cx, window, |window, cx| {
+        window.render_frame(cx);
+    });
 }
 
 #[expect(

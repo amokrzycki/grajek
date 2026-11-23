@@ -314,6 +314,11 @@ fn keyboard_reveals_controls_below_the_settings_fold(cx: &mut TestAppContext) {
     let ((window, _, _, _), _) = open_at(cx, State::default(), 420., 480.);
     click(cx, window, "settings");
     click(cx, window, "setup-help");
+    cx.executor()
+        .advance_clock(crate::app::height_reveal::REVEAL * 2);
+    act(cx, window, |window, cx| {
+        window.render_frame(cx);
+    });
     act(cx, window, |window, cx| {
         for _ in 0..20 {
             if window.find("developer-portal").focused() == Some(true) {
@@ -363,6 +368,8 @@ fn authentication_advances_to_destination_without_starting_playback(cx: &mut Tes
     authenticated.available = false;
     updates.send_replace(authenticated);
     cx.run_until_parked();
+    cx.executor()
+        .advance_clock(crate::app::height_reveal::REVEAL * 2);
     assert!(present(cx, window, "server-selector"));
     assert!(!present(cx, window, "bot-token"));
     assert!(

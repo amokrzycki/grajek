@@ -4,6 +4,7 @@ pub(super) mod composer;
 mod controls;
 mod favorites;
 mod focus;
+mod height_reveal;
 mod help;
 mod history;
 mod lists;
@@ -95,9 +96,12 @@ pub struct PlayerApp {
     state: State,
     motion: motion::Motion,
     frame: motion::Frame,
+    height_reveals: height_reveal::HeightReveals,
+    reveal: height_reveal::RevealFrame,
     /// Only a change of these messages starts a fade.
     shown_error: Option<String>,
     shown_notice: Option<String>,
+    shown_view: Option<bool>,
     /// Prevent duplicate input while keeping the authoritative playback snapshot visible.
     pending: Option<Pending>,
     transport_seq: u64,
@@ -284,8 +288,11 @@ impl PlayerApp {
             state,
             motion: motion::Motion::default(),
             frame: motion::Frame::default(),
+            height_reveals: height_reveal::HeightReveals::default(),
+            reveal: height_reveal::RevealFrame::default(),
             shown_error,
             shown_notice,
+            shown_view: None,
             pending: None,
             transport_seq,
             queue_scroll: lists::ListNavigation::new(),
@@ -827,7 +834,7 @@ impl PlayerApp {
 impl Render for PlayerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.focus = focus::FocusPresentation::from_window(window);
-        self.frame = self.motion.frame(window, cx);
+        self.frame = self.motion_frame(window, cx);
         if self.components.check_pending {
             self.check_components(cx);
         }
@@ -860,7 +867,7 @@ impl Render for PlayerApp {
         } else {
             self.active_player(window, cx).into_any_element()
         };
-        div()
+        self.entering_surface(div())
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
