@@ -4,8 +4,8 @@ use gpui_kit::{
     prelude::FluentBuilder,
 };
 
-use super::favorites::title_or_url_id;
 use super::fmt::label;
+use super::fmt::title_or_url_id;
 use super::sections::lists::{Tab, TabPrev};
 use super::ui::help::HelpExt;
 use super::{PlayerApp, Section};

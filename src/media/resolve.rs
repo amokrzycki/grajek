@@ -61,14 +61,6 @@ pub(super) fn title_args(tools: &Tools) -> Vec<OsString> {
 }
 
 pub async fn resolve(client: reqwest::Client, url: String) -> Result<Resolved> {
-    resolve_format(client, url, FORMAT).await
-}
-
-pub(super) async fn resolve_format(
-    client: reqwest::Client,
-    url: String,
-    format: &str,
-) -> Result<Resolved> {
     let execution = components::execution::acquire()
         .await
         .map_err(|_| tools().failure())?;
@@ -77,7 +69,7 @@ pub(super) async fn resolve_format(
     let result = timeout_at(deadline, async {
         // Songbird's query() does not kill yt-dlp on cancellation; own only that subprocess.
         let mut command = tools.command(Tool::YtDlp);
-        command.args(ytdlp_args(&tools, format)).arg(&url);
+        command.args(ytdlp_args(&tools, FORMAT)).arg(&url);
         let output = crate::ytdlp::spawn(command)
             .output()
             .await

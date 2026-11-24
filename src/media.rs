@@ -1,8 +1,6 @@
-#[path = "media/availability.rs"]
 mod availability;
 pub(crate) mod components;
 mod error;
-#[path = "media/range.rs"]
 mod range;
 mod resolve;
 mod tool;

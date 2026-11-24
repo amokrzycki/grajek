@@ -90,6 +90,27 @@ mod tests {
     use crate::playlist::ImportStatus;
 
     #[test]
+    fn every_controller_phase_selects_its_icon_at_startup() {
+        for (phase, expected) in [
+            (Phase::Initializing, Visual::Idle),
+            (Phase::Ready, Visual::Idle),
+            (Phase::Connecting, Visual::Idle),
+            (Phase::Resolving, Visual::Idle),
+            (Phase::Playing, Visual::Playing),
+            (Phase::Paused, Visual::Paused),
+            (Phase::Stopping, Visual::Idle),
+            (Phase::Disconnecting, Visual::Idle),
+            (Phase::Error, Visual::Error),
+        ] {
+            let state = State {
+                phase,
+                ..State::default()
+            };
+            assert_eq!(Visual::from(&state), expected);
+        }
+    }
+
+    #[test]
     fn local_collection_feedback_and_progress_do_not_change_the_icon() {
         let mut state = State {
             phase: Phase::Playing,

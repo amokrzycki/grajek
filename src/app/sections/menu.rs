@@ -7,7 +7,7 @@ use gpui_kit::{
 };
 
 use super::super::PlayerApp;
-use super::super::favorites::title_or_url_id;
+use super::super::fmt::title_or_url_id;
 use super::super::ui::help::HelpExt;
 use super::super::ui::menu::menu_enter;
 use super::Section;

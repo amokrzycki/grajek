@@ -6,7 +6,7 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, TestSupportExt, Window, div, px,
 };
 
-use super::fmt::label;
+use super::fmt::{label, title_or_url_id};
 use super::sections::lists::{Tab, TabPrev};
 use super::ui::help::HelpExt;
 use super::{PlayerApp, Section};
@@ -14,17 +14,9 @@ use crate::favorites::FavoriteEntry;
 use crate::player::{Command, State};
 use crate::search::SearchAction;
 
-pub(super) fn canonical_key(url: &str) -> Option<String> {
-    crate::youtube::video_url(url).ok()
-}
-
-pub(super) fn title_or_url_id(title: Option<&str>, url: &str) -> String {
-    title.map_or_else(|| crate::youtube::video_id(url).to_owned(), str::to_owned)
-}
-
 impl PlayerApp {
     pub(super) fn is_favorite_url(&self, url: &str) -> bool {
-        canonical_key(url).is_some_and(|canonical| self.state.is_favorite(&canonical))
+        crate::youtube::video_url(url).is_ok_and(|canonical| self.state.is_favorite(&canonical))
     }
 
     pub(super) fn favorite_action_title(&self, url: &str) -> String {
@@ -171,7 +163,7 @@ impl PlayerApp {
     }
 
     pub(super) fn saved_label_color(&self, url: &str, cx: &Context<Self>) -> gpui_kit::Hsla {
-        let canonical = canonical_key(url).unwrap_or_else(|| url.to_owned());
+        let canonical = crate::youtube::video_url(url).unwrap_or_else(|_| url.to_owned());
         let theme = cx.theme();
         self.frame
             .saved(&canonical, theme.muted_foreground, theme.primary)

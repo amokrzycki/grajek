@@ -25,6 +25,10 @@ pub(super) fn heading_size(window: &Window) -> Pixels {
     }
 }
 
+pub(super) fn title_or_url_id(title: Option<&str>, url: &str) -> String {
+    title.map_or_else(|| crate::youtube::video_id(url).to_owned(), str::to_owned)
+}
+
 pub(super) fn clock(position: Duration) -> String {
     let seconds = position.as_secs();
     format!("{:02}:{:02}", seconds / 60, seconds % 60)

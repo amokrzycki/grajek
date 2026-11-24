@@ -1,10 +1,7 @@
 use super::components::{Mode, tools};
 
 pub fn user_error(error: &anyhow::Error) -> String {
-    user_error_for(error, tools().mode)
-}
-
-fn user_error_for(error: &anyhow::Error, mode: Mode) -> String {
+    let mode = tools().mode;
     let detail = format!("{error:#}");
     let lower = detail.to_lowercase();
     if lower.contains("timed out") {
