@@ -1,7 +1,9 @@
 use super::*;
-use crate::player::{FavoriteRefusal, SearchAction, SearchPhase};
+use crate::favorites::FavoriteRefusal;
+use crate::favorites::{FAVORITES_LIMIT, FavoriteEntry};
 use crate::search::{Error, ResultItem, Results};
-use crate::store::{FAVORITES_LIMIT, FavoriteEntry};
+use crate::search::{SearchAction, SearchPhase};
+use crate::test_support::results;
 
 pub(super) struct Call {
     query: String,
@@ -17,19 +19,6 @@ fn listen(fake: &Fake) -> mpsc::UnboundedReceiver<Call> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = Some(sender);
     receiver
-}
-
-fn results(url: &str) -> Results {
-    Results {
-        items: vec![ResultItem {
-            url: url.into(),
-            title: Some("Factual title".into()),
-            channel: None,
-            duration: None,
-            live: false,
-        }],
-        rejected: 0,
-    }
 }
 
 async fn submit(rig: &mut Rig, id: u64, query: &str) -> Result<()> {
@@ -648,11 +637,14 @@ async fn search_favorite_saves_and_removes_through_the_envelope_without_consumin
 #[tokio::test]
 async fn search_favorite_prefers_selected_result_per_field_then_known_facts() -> Result<()> {
     let mut saved = Saved::default();
-    saved.record(HistoryEntry {
-        url: A.into(),
-        title: Some("From history".into()),
-        duration_secs: Some(120),
-    });
+    crate::history::record(
+        &mut saved.history,
+        HistoryEntry {
+            url: A.into(),
+            title: Some("From history".into()),
+            duration_secs: Some(120),
+        },
+    );
     let mut rig = Rig::start(saved);
     rig.until(|s| s.phase == Phase::Ready).await?;
     let mut calls = listen(&rig.fake);

@@ -1,0 +1,405 @@
+use super::super::PlayerApp;
+use super::super::fmt::{clock, label};
+use super::super::sections::lists::ROW_HEIGHT;
+use super::super::ui::help::HelpExt;
+use super::session::Choice;
+use crate::player::Placement;
+use crate::search::{ResultItem, SearchPhase};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, Sizable, button::ButtonVariants, scroll::ScrollableElement,
+};
+use gpui_kit::{
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, TestSupportExt, div, prelude::FluentBuilder, px,
+};
+
+impl PlayerApp {
+    fn search_row(&self, index: usize, item: &ResultItem, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let Some(session) = &self.search_ui.current else {
+            return div().into_any_element();
+        };
+        let selected = session.selected.as_deref() == Some(item.id());
+        let title = item.title.as_deref().unwrap_or("Title unavailable");
+        let channel = item.channel.as_deref().unwrap_or("Channel unavailable");
+        let duration = if item.live {
+            "Live".into()
+        } else {
+            item.duration
+                .map_or_else(|| "Duration unavailable".into(), clock)
+        };
+        let full = format!("{title} · {channel} · {duration}");
+        let video_id = item.id().to_owned();
+        div()
+            .id(format!("search-row-{index}"))
+            .role(gpui_kit::Role::ListBoxOption)
+            .aria_label(full.clone())
+            .aria_selected(selected)
+            .test_support()
+            .track_focus(&session.rows[index])
+            .tab_stop(true)
+            .cursor_pointer()
+            .flex_none()
+            .h(ROW_HEIGHT)
+            .w_full()
+            .min_w_0()
+            .px_2()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(if selected {
+                theme.primary
+            } else {
+                theme.transparent
+            })
+            .when(selected, |row| row.bg(theme.accent))
+            .hover(|row| row.bg(theme.muted))
+            .focus_visible(|row| row.border_color(theme.ring))
+            .help(full, &self.help)
+            .child(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .text_sm()
+                    .line_height(px(20.))
+                    .child(label(
+                        format!("search-title-{index}"),
+                        title.into(),
+                        &self.help,
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .gap_2()
+                    .text_xs()
+                    .line_height(px(16.))
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(channel.to_owned()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(theme.mono_font_family.clone())
+                            .child(duration),
+                    ),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if let Some(session) = &this.search_ui.current {
+                    window.focus(&session.rows[index], cx);
+                }
+                this.select_search(video_id.clone(), cx);
+            }))
+            .on_key_down(cx.listener(move |this, event, window, cx| {
+                this.search_row_key(index, event, window, cx);
+            }))
+            .into_any_element()
+    }
+
+    fn search_actions(&self, blocked: bool, title: &str, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .id("search-actions")
+            .flex_none()
+            .h(px(32.))
+            .flex()
+            .gap_2()
+            .test_support()
+            .child(
+                self.focus
+                    .button("search-play")
+                    .label("Play now")
+                    .accessibility_label(format!(
+                        "Play now: {title}. Replaces current playback; keeps the queue."
+                    ))
+                    .help(
+                        format!("Play now: {title}. Replaces current playback; keeps the queue."),
+                        &self.help,
+                    )
+                    .disabled(blocked || !self.play_enabled())
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.apply_search_action(Choice::Play, cx)),
+                    ),
+            )
+            .child(
+                self.focus
+                    .button("search-enqueue")
+                    .label("Add to queue")
+                    .accessibility_label(format!("Add to queue: {title}"))
+                    .help(
+                        format!("Add to queue: {title}. Appends without interrupting playback."),
+                        &self.help,
+                    )
+                    .disabled(blocked || !self.state.can_enqueue())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.apply_search_action(Choice::Enqueue(Placement::End), cx);
+                    })),
+            )
+            .child(
+                self.focus
+                    .button("search-enqueue-next")
+                    .label("Queue next")
+                    .accessibility_label(format!("Queue next: {title}"))
+                    .help(self.search_queue_next_help(title), &self.help)
+                    .disabled(blocked || !self.state.can_queue_next())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.apply_search_action(Choice::Enqueue(Placement::Next), cx);
+                    })),
+            )
+    }
+
+    fn search_queue_next_help(&self, title: &str) -> String {
+        let mut help =
+            format!("Queue next: {title}. Plays after the current track; does not interrupt it.");
+        if self.state.preferences.repeat == crate::player::RepeatMode::Track {
+            help.push(' ');
+            help.push_str(super::super::composer::REPEAT_TRACK_NOTE);
+        }
+        help
+    }
+
+    fn search_body(
+        &self,
+        phase: Option<&SearchPhase>,
+        message: &str,
+        cx: &Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let failed = matches!(phase, Some(SearchPhase::Failed(_)));
+        let mut body = div()
+            .id("search-list")
+            .role(if matches!(phase, Some(SearchPhase::Results(_))) {
+                gpui_kit::Role::ListBox
+            } else {
+                gpui_kit::Role::Group
+            })
+            .aria_label("YouTube search results")
+            .flex_1()
+            .min_h_0()
+            .relative()
+            .overflow_y_scroll()
+            .track_scroll(&self.search_ui.scroll)
+            .pr_3();
+        if let Some(SearchPhase::Results(results)) = phase {
+            body = body.children(
+                results
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| self.search_row(index, item, cx)),
+            );
+        } else {
+            body = body.child(
+                div()
+                    .id("search-message")
+                    .role(if failed {
+                        gpui_kit::Role::Alert
+                    } else {
+                        gpui_kit::Role::Status
+                    })
+                    .aria_label(message.to_owned())
+                    .text_sm()
+                    .text_color(if failed {
+                        cx.theme().danger
+                    } else {
+                        cx.theme().muted_foreground
+                    })
+                    .child(message.to_owned())
+                    .test_support(),
+            );
+        }
+        body
+    }
+
+    fn search_header(
+        &self,
+        phase: Option<&SearchPhase>,
+        message: String,
+        selected: Option<&ResultItem>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex_none()
+            .h(px(30.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .min_w_0()
+            .child(
+                div()
+                    .id("search-status")
+                    .role(gpui_kit::Role::Status)
+                    .min_w_0()
+                    .flex_1()
+                    .text_sm()
+                    .aria_label(if let Some(session) = &self.search_ui.current {
+                        format!("YouTube search: {} · {message}", session.query)
+                    } else {
+                        message.clone()
+                    })
+                    .child(label(
+                        "search-heading",
+                        if matches!(phase, Some(SearchPhase::Results(_))) {
+                            message
+                        } else {
+                            "YouTube search".into()
+                        },
+                        &self.help,
+                    ))
+                    .test_support(),
+            )
+            .child(self.search_favorite_control(selected, cx))
+            .child(
+                self.focus
+                    .button("search-cancel")
+                    .label(if matches!(phase, None | Some(SearchPhase::Loading)) {
+                        "Cancel"
+                    } else {
+                        "Back"
+                    })
+                    .ghost()
+                    .small()
+                    .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+            )
+    }
+
+    fn search_favorite_control(
+        &self,
+        selected: Option<&ResultItem>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let Some(item) = selected else {
+            return self
+                .focus
+                .button("search-favorite")
+                .label("Save")
+                .ghost()
+                .small()
+                .flex_none()
+                .disabled(true)
+                .help("Select a result, then save it to Favorites.", &self.help)
+                .into_any_element();
+        };
+        let saved = self.is_favorite_url(&item.url);
+        let title = item.title.clone().unwrap_or_else(|| "Untitled".into());
+        let session_id = self.search_ui.current.as_ref().map(|session| session.id);
+        let video_id = item.id().to_owned();
+        let label = if saved {
+            format!("Remove from Favorites: {title}")
+        } else {
+            format!("Save to Favorites: {title}")
+        };
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .when(saved, |row| {
+                row.child(Self::saved_label(
+                    "search-saved",
+                    self.saved_label_color(&item.url, cx),
+                ))
+            })
+            .child(
+                self.focus
+                    .button("search-favorite")
+                    .label(if saved { "Remove" } else { "Save" })
+                    .ghost()
+                    .small()
+                    .flex_none()
+                    .accessibility_label(label.clone())
+                    .help(label, &self.help)
+                    .disabled(!self.state.controller_ready || self.favorite_pending.is_some())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(id) = session_id {
+                            this.send_search_favorite(id, video_id.clone(), !saved, cx);
+                        }
+                    })),
+            )
+            .into_any_element()
+    }
+
+    pub(in crate::app) fn search_collection(&self, cx: &Context<Self>) -> AnyElement {
+        let phase = self.search_phase();
+        let message = match phase {
+            Some(SearchPhase::Results(results)) => {
+                format!("{} videos · select a result", results.items.len())
+            }
+            Some(SearchPhase::Empty { rejected: 0 }) => {
+                "No videos found. Edit your query and search again.".into()
+            }
+            Some(SearchPhase::Empty { .. }) => {
+                "No usable videos returned. Edit your query and search again.".into()
+            }
+            Some(SearchPhase::Failed(error)) => error.to_string(),
+            _ => "Searching YouTube…".into(),
+        };
+        let selected = self.selected_search_item();
+        let pending = self
+            .search_ui
+            .current
+            .as_ref()
+            .is_some_and(|session| session.action.is_some());
+        let title = selected
+            .and_then(|item| item.title.as_deref())
+            .unwrap_or("Title unavailable");
+        let status = self.local_hint.clone().or_else(|| {
+            self.state
+                .search
+                .status
+                .as_ref()
+                .filter(|_| phase.is_some())
+                .cloned()
+        });
+        let body = self.search_body(phase, &message, cx);
+        div()
+            .id("search-region")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(self.search_header(phase, message, selected, cx))
+            .child(
+                body.vertical_scrollbar(&self.search_ui.scroll)
+                    .test_support(),
+            )
+            .when(
+                matches!(
+                    phase,
+                    Some(SearchPhase::Failed(crate::search::Error::MissingComponents))
+                ),
+                |region| {
+                    region.child(
+                        self.focus
+                            .button("search-components")
+                            .label("Open playback components")
+                            .on_click(cx.listener(|this, _, _, cx| this.open_components(cx))),
+                    )
+                },
+            )
+            .when_some(status, |region, status| {
+                region.child(
+                    div()
+                        .id("search-action-status")
+                        .role(gpui_kit::Role::Alert)
+                        .aria_label(status.clone())
+                        .text_xs()
+                        .child(status)
+                        .test_support(),
+                )
+            })
+            .when(matches!(phase, Some(SearchPhase::Results(_))), |region| {
+                region.child(self.search_actions(selected.is_none() || pending, title, cx))
+            })
+            .test_support()
+            .into_any_element()
+    }
+}

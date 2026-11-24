@@ -1,15 +1,15 @@
-use std::{fmt, future::Future, process::Stdio, time::Duration};
+use std::{fmt, future::Future, time::Duration};
 
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _},
     process::Child,
     sync::watch,
     time::{Instant, timeout},
 };
 
-use crate::config::valid_video_id;
+use crate::{queue::Placement, youtube::valid_video_id};
 
-const ENTRY_LIMIT: usize = 5;
+pub(crate) const ENTRY_LIMIT: usize = 5;
+pub(crate) const QUERY_LIMIT: usize = 200;
 const STDOUT_LIMIT: usize = 256 * 1024;
 const STDERR_LIMIT: usize = 64 * 1024;
 const ACQUIRE_LIMIT: Duration = Duration::from_secs(5);
@@ -26,7 +26,7 @@ pub struct ResultItem {
 
 impl ResultItem {
     pub fn id(&self) -> &str {
-        self.url.rsplit_once("v=").map_or("", |(_, id)| id)
+        crate::youtube::video_id(&self.url)
     }
 }
 
@@ -34,6 +34,41 @@ impl ResultItem {
 pub struct Results {
     pub items: Vec<ResultItem>,
     pub rejected: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchState {
+    pub id: u64,
+    pub query: String,
+    pub phase: SearchPhase,
+    pub status: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SearchPhase {
+    #[default]
+    Idle,
+    Loading,
+    Results(Results),
+    Empty {
+        rejected: usize,
+    },
+    Failed(Error),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchAction {
+    Play,
+    Enqueue {
+        id: u64,
+        placement: Placement,
+    },
+    /// Desired-state membership for the selected search result; the controller routes it
+    /// before consuming Results.
+    Favorite {
+        id: u64,
+        saved: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,29 +85,50 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::InvalidQuery => "Enter a search query of at most 200 characters.",
-            Self::Tool => {
-                "Could not run YouTube search. Check the playback components and try again."
+        match self {
+            Self::InvalidQuery => {
+                write!(
+                    f,
+                    "Enter a search query of at most {QUERY_LIMIT} characters."
+                )
             }
-            Self::MissingComponents => {
-                "Playback components are missing, damaged, or busy. Open Settings to repair them."
+            Self::Tool => f.write_str(
+                "Could not run YouTube search. Check the playback components and try again.",
+            ),
+            Self::MissingComponents => f.write_str(
+                "Playback components are missing, damaged, or busy. Open Settings to repair them.",
+            ),
+            Self::Unavailable => {
+                f.write_str("YouTube search is unavailable. Check the network and try again.")
             }
-            Self::Unavailable => "YouTube search is unavailable. Check the network and try again.",
-            Self::Timeout => "YouTube search timed out. Check the network and try again.",
-            Self::OutputLimit => "Search metadata exceeded the safety limit. Try a shorter query.",
-            Self::Malformed => {
-                "YouTube returned invalid search metadata. Update yt-dlp and try again."
+            Self::Timeout => {
+                f.write_str("YouTube search timed out. Check the network and try again.")
             }
-            Self::Cancelled => "YouTube search was cancelled.",
-        })
+            Self::OutputLimit => {
+                f.write_str("Search metadata exceeded the safety limit. Try a shorter query.")
+            }
+            Self::Malformed => f.write_str(
+                "YouTube returned invalid search metadata. Update yt-dlp and try again.",
+            ),
+            Self::Cancelled => f.write_str("YouTube search was cancelled."),
+        }
     }
 }
 
 impl std::error::Error for Error {}
 
+impl From<crate::ytdlp::Failure> for Error {
+    fn from(failure: crate::ytdlp::Failure) -> Self {
+        match failure {
+            crate::ytdlp::Failure::Tool => Self::Tool,
+            crate::ytdlp::Failure::Unavailable => Self::Unavailable,
+            crate::ytdlp::Failure::OutputLimit => Self::OutputLimit,
+        }
+    }
+}
+
 pub fn query(input: &str) -> Result<String, Error> {
-    normalize(input, 200).ok_or(Error::InvalidQuery)
+    normalize(input, QUERY_LIMIT).ok_or(Error::InvalidQuery)
 }
 
 fn normalize(input: &str, max: usize) -> Option<String> {
@@ -90,28 +146,6 @@ fn normalize(input: &str, max: usize) -> Option<String> {
     }
 }
 
-fn args() -> [&'static str; 17] {
-    [
-        "--ignore-config",
-        "--no-plugin-dirs",
-        "--flat-playlist",
-        "--dump-single-json",
-        "--playlist-end",
-        "5",
-        "--lazy-playlist",
-        "--skip-download",
-        "--socket-timeout",
-        "15",
-        "--retries",
-        "0",
-        "--extractor-retries",
-        "0",
-        "--no-warnings",
-        "--no-progress",
-        "--",
-    ]
-}
-
 pub async fn extract(input: String, mut cancel: watch::Receiver<bool>) -> Result<Results, Error> {
     let query = query(&input)?;
     let started = Instant::now();
@@ -120,24 +154,17 @@ pub async fn extract(input: String, mut cancel: watch::Receiver<bool>) -> Result
         return Err(Error::Cancelled);
     }
     let acquire_for = ACQUIRE_LIMIT.min(budget.saturating_sub(started.elapsed()));
-    let execution = acquire_bounded(
-        &mut cancel,
-        acquire_for,
-        crate::media::components::execution::acquire(),
-    )
-    .await?;
+    let (execution, mut command) =
+        acquire_bounded(&mut cancel, acquire_for, crate::media::ytdlp_command()).await?;
     if started.elapsed() >= budget {
         return Err(Error::Timeout);
     }
-    let mut command = execution.tools.command(crate::media::Tool::YtDlp);
     command
-        .args(args())
-        .arg(format!("ytsearch5:{query}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let child = command.spawn().map_err(|_| Error::MissingComponents)?;
+        .args(crate::ytdlp::flat_args(ENTRY_LIMIT, false))
+        .arg(format!("ytsearch{ENTRY_LIMIT}:{query}"));
+    let child = crate::ytdlp::spawn(command)
+        .spawn()
+        .map_err(|_| Error::MissingComponents)?;
     let bytes = collect(
         child,
         cancel,
@@ -173,19 +200,6 @@ async fn acquire_bounded<T>(
     }
 }
 
-async fn read_bounded(reader: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>, Error> {
-    let mut bytes = Vec::new();
-    reader
-        .take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|_| Error::Tool)?;
-    if bytes.len() > limit {
-        return Err(Error::OutputLimit);
-    }
-    Ok(bytes)
-}
-
 async fn collect(
     mut child: Child,
     mut cancel: watch::Receiver<bool>,
@@ -198,20 +212,8 @@ async fn collect(
         let _ = child.wait().await;
         return Err(Error::Cancelled);
     }
-    let stdout = child.stdout.take().ok_or(Error::Tool)?;
-    let stderr = child.stderr.take().ok_or(Error::Tool)?;
     let result = {
-        let operation = async {
-            let (output, _diagnostics, status) = tokio::try_join!(
-                read_bounded(stdout, stdout_limit),
-                read_bounded(stderr, stderr_limit),
-                async { child.wait().await.map_err(|_| Error::Tool) },
-            )?;
-            if !status.success() {
-                return Err(Error::Unavailable);
-            }
-            Ok(output)
-        };
+        let operation = crate::ytdlp::read_output(&mut child, stdout_limit, stderr_limit);
         tokio::pin!(operation);
         tokio::select! {
             biased;
@@ -219,7 +221,10 @@ async fn collect(
                 let _ = changed;
                 Err(Error::Cancelled)
             }
-            result = timeout(deadline, &mut operation) => result.unwrap_or(Err(Error::Timeout)),
+            result = timeout(deadline, &mut operation) => match result {
+                Ok(result) => result.map_err(Error::from),
+                Err(_) => Err(Error::Timeout),
+            },
         }
     };
     if result.is_err() {
@@ -240,13 +245,7 @@ fn clean_text(value: &serde_json::Value, max: usize) -> Option<String> {
 
 fn parse(bytes: &[u8]) -> Result<Results, Error> {
     let root: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| Error::Malformed)?;
-    if root.get("_type").and_then(serde_json::Value::as_str) != Some("playlist") {
-        return Err(Error::Malformed);
-    }
-    let entries = root
-        .get("entries")
-        .and_then(serde_json::Value::as_array)
-        .ok_or(Error::Malformed)?;
+    let entries = crate::ytdlp::playlist_entries(&root).ok_or(Error::Malformed)?;
     if entries.len() > ENTRY_LIMIT {
         return Err(Error::Malformed);
     }
@@ -272,36 +271,13 @@ fn parse_item(entry: &serde_json::Value) -> Option<ResultItem> {
         .get("id")
         .and_then(serde_json::Value::as_str)
         .filter(|id| valid_video_id(id))?;
-    if entry
-        .get("_type")
-        .is_some_and(|value| !matches!(value.as_str(), Some("url" | "url_transparent" | "video")))
-        || entry
-            .get("ie_key")
-            .is_some_and(|value| value.as_str() != Some("Youtube"))
+    if crate::ytdlp::unavailable_entry(entry)
         || entry
             .get("extractor_key")
             .is_some_and(|value| value.as_str() != Some("Youtube"))
         || entry
             .get("extractor")
             .is_some_and(|value| !matches!(value.as_str(), Some("youtube" | "Youtube")))
-        || entry
-            .get("availability")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| {
-                matches!(
-                    value,
-                    "private" | "premium_only" | "subscriber_only" | "needs_auth" | "unavailable"
-                )
-            })
-        || entry
-            .get("title")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| {
-                matches!(
-                    value,
-                    "[Deleted video]" | "[Private video]" | "[Unavailable video]"
-                )
-            })
     {
         return None;
     }
@@ -330,7 +306,7 @@ fn parse_item(entry: &serde_json::Value) -> Option<ResultItem> {
             })
     };
     Some(ResultItem {
-        url: format!("https://www.youtube.com/watch?v={id}"),
+        url: crate::youtube::watch_url(id),
         title: entry.get("title").and_then(|v| clean_text(v, 4096)),
         channel: entry.get("channel").and_then(|v| clean_text(v, 512)),
         duration,
@@ -345,17 +321,14 @@ fn canonical_id(value: &str) -> Result<Option<String>, ()> {
     let Some(host) = url.host_str() else {
         return Ok(None);
     };
-    if matches!(host, "youtu.be" | "www.youtu.be") {
+    if crate::youtube::is_short_host(host) {
         let id = url
             .path_segments()
             .and_then(|mut paths| paths.next())
             .ok_or(())?;
         return valid_video_id(id).then(|| Some(id.to_owned())).ok_or(());
     }
-    if !matches!(
-        host,
-        "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com"
-    ) {
+    if !crate::youtube::is_watch_host(host) {
         return Ok(None);
     }
     let id = match url.path() {

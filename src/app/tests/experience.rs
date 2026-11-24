@@ -1,4 +1,7 @@
+use super::support::configured;
 use super::*;
+use crate::discord::setup::Status;
+use serenity::all::{ChannelId, GuildId};
 
 #[gpui_kit::test]
 fn save_failure_notice_is_visible_on_the_playing_queue(cx: &mut TestAppContext) {
@@ -9,63 +12,6 @@ fn save_failure_notice_is_visible_on_the_playing_queue(cx: &mut TestAppContext) 
     let (window, _, _, _) = open(cx, initial);
     assert!(present(cx, window, "notice"));
     assert!(present(cx, window, "pause-resume"));
-}
-use crate::setup::{Channel, Destination, Server, Status};
-use serenity::all::{ChannelId, GuildId, UserId};
-
-pub(super) fn configured() -> State {
-    let mut snapshot = state(Phase::Ready);
-    snapshot.setup.status = Status::Ready;
-    snapshot.setup.bot = Some(UserId::new(1));
-    snapshot.setup.browsing = Some(GuildId::new(2));
-    snapshot.setup.servers = vec![
-        Server {
-            id: GuildId::new(2),
-            name: "Friends’ listening room".into(),
-            available: true,
-        },
-        Server {
-            id: GuildId::new(4),
-            name: "Pracownia · 音楽と友達".into(),
-            available: true,
-        },
-        Server {
-            id: GuildId::new(5),
-            name: "Server temporarily offline".into(),
-            available: false,
-        },
-    ];
-    snapshot.setup.channels = vec![
-        Channel {
-            id: ChannelId::new(3),
-            name: "Music room".into(),
-            reason: None,
-        },
-        Channel {
-            id: ChannelId::new(6),
-            name: "夜の音楽 · Żółć · Привет · A very long channel name for listening together"
-                .into(),
-            reason: None,
-        },
-        Channel {
-            id: ChannelId::new(7),
-            name: "Private listening room".into(),
-            reason: Some("Needs View Channel, Connect and Speak".into()),
-        },
-        Channel {
-            id: ChannelId::new(8),
-            name: "Live stage".into(),
-            reason: Some("Stage channels are not supported".into()),
-        },
-    ];
-    snapshot.setup.destination = Some(Destination {
-        bot: UserId::new(1),
-        guild: GuildId::new(2),
-        channel: ChannelId::new(3),
-        guild_name: "Friends’ listening room".into(),
-        channel_name: "Music room".into(),
-    });
-    snapshot
 }
 
 #[gpui_kit::test]
@@ -116,7 +62,7 @@ fn server_browsing_and_channel_confirmation_keep_the_active_destination_truthful
     });
     cx.run_until_parked();
     assert!(
-        matches!(received.try_recv(), Ok(Command::Setup(crate::setup::Request::Channels(id))) if id == GuildId::new(4))
+        matches!(received.try_recv(), Ok(Command::Setup(crate::discord::setup::Request::Channels(id))) if id == GuildId::new(4))
     );
     let mut browsing = configured();
     browsing.setup.browsing = Some(GuildId::new(4));
@@ -162,7 +108,7 @@ fn server_browsing_and_channel_confirmation_keep_the_active_destination_truthful
     });
     cx.run_until_parked();
     let selected = match received.try_recv() {
-        Ok(Command::Setup(crate::setup::Request::Select(destination))) => {
+        Ok(Command::Setup(crate::discord::setup::Request::Select(destination))) => {
             Some((destination.guild.get(), destination.channel.get()))
         }
         _ => None,
@@ -314,8 +260,7 @@ fn keyboard_reveals_controls_below_the_settings_fold(cx: &mut TestAppContext) {
     let ((window, _, _, _), _) = open_at(cx, State::default(), 420., 480.);
     click(cx, window, "settings");
     click(cx, window, "setup-help");
-    cx.executor()
-        .advance_clock(crate::app::height_reveal::REVEAL * 2);
+    cx.executor().advance_clock(crate::app::motion::REVEAL * 2);
     act(cx, window, |window, cx| {
         window.render_frame(cx);
     });
@@ -368,8 +313,7 @@ fn authentication_advances_to_destination_without_starting_playback(cx: &mut Tes
     authenticated.available = false;
     updates.send_replace(authenticated);
     cx.run_until_parked();
-    cx.executor()
-        .advance_clock(crate::app::height_reveal::REVEAL * 2);
+    cx.executor().advance_clock(crate::app::motion::REVEAL * 2);
     assert!(present(cx, window, "server-selector"));
     assert!(!present(cx, window, "bot-token"));
     assert!(

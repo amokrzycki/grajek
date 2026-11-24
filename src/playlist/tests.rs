@@ -1,6 +1,8 @@
 use super::*;
 use anyhow::{Context as _, Result};
 use serde_json::json;
+use std::process::Stdio;
+use tokio::process::Child;
 
 #[test]
 fn flat_fixture_preserves_valid_order_duplicates_and_optional_titles() -> Result<()> {
@@ -58,7 +60,7 @@ fn scan_is_bounded_and_titles_use_existing_sanitization() -> Result<()> {
             .to_string()
             .as_bytes(),
     )?;
-    assert_eq!(playlist.entries.len(), 100);
+    assert_eq!(playlist.entries.len(), ENTRY_LIMIT);
     assert!(playlist.limited);
     assert_eq!(playlist.entries[0].title, Some("ż".repeat(200)));
     let one =
@@ -174,12 +176,12 @@ async fn public_playlist_metadata_only() -> Result<()> {
     let playlist =
         extract("https://www.youtube.com/playlist?list=PLBB231211A4F62143".into()).await?;
     assert_ne!(playlist.entries, Vec::<Entry>::new());
-    assert!(playlist.entries.len() <= 100);
+    assert!(playlist.entries.len() <= ENTRY_LIMIT);
     assert!(
         playlist
             .entries
             .iter()
-            .all(|entry| crate::config::video_url(&entry.url).is_ok_and(|url| url == entry.url))
+            .all(|entry| crate::youtube::video_url(&entry.url).is_ok_and(|url| url == entry.url))
     );
     assert!(playlist.entries.iter().any(|entry| entry.title.is_some()));
     Ok(())
@@ -187,7 +189,7 @@ async fn public_playlist_metadata_only() -> Result<()> {
 
 #[test]
 fn playlist_arguments_never_use_audio_or_single_video_extraction() {
-    let args = args();
+    let args = crate::ytdlp::flat_args(ENTRY_LIMIT, true);
     for required in [
         "--ignore-config",
         "--flat-playlist",
@@ -196,18 +198,40 @@ fn playlist_arguments_never_use_audio_or_single_video_extraction() {
         "--lazy-playlist",
         "--skip-download",
     ] {
-        assert!(args.contains(&required));
+        assert!(
+            args.iter().any(|arg| arg.as_str() == required),
+            "missing {required}"
+        );
     }
-    assert!(!args.contains(&"--no-playlist"));
-    assert!(!args.contains(&"-f"));
+    assert!(!args.iter().any(|arg| arg == "--no-playlist"));
+    assert!(!args.iter().any(|arg| arg == "-f"));
     assert!(!args.iter().any(|arg| arg.contains("cookies")));
+}
+
+#[test]
+fn shared_unavailable_rules_reject_every_entry_kind() {
+    for entry in [
+        json!({"id":"aaaaaaaaaaa","_type":"channel"}),
+        json!({"id":"aaaaaaaaaaa","availability":"needs_auth"}),
+        json!({"id":"aaaaaaaaaaa","title":"[Private video]"}),
+        json!({"id":"aaaaaaaaaaa","ie_key":"Vimeo"}),
+    ] {
+        assert_eq!(
+            parse(
+                json!({"_type":"playlist", "entries":[entry]})
+                    .to_string()
+                    .as_bytes()
+            ),
+            Err(Error::Empty)
+        );
+    }
 }
 
 #[test]
 fn declared_count_does_not_fabricate_a_scan_boundary() -> Result<()> {
     let playlist = parse(br#"{"_type":"playlist", "playlist_count":2, "entries":[{"id":"aaaaaaaaaaa", "title":"Available track"}]}"#)?;
     assert!(!playlist.limited, "only one source entry was inspected");
-    let status = crate::player::ImportStatus::Finished {
+    let status = crate::playlist::ImportStatus::Finished {
         added: playlist.entries.len(),
         unavailable: playlist.unavailable,
         omitted: 0,

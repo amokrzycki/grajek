@@ -2,19 +2,25 @@
 
 mod app;
 mod config;
+mod destination;
 mod discord;
-mod live;
+mod favorites;
+mod history;
+mod identity;
 mod media;
-mod native;
+mod paths;
+mod platform;
 mod player;
 mod playlist;
+mod preferences;
 mod queue;
 mod search;
-mod setup;
 mod store;
 mod style;
-mod tray;
-mod window;
+#[cfg(test)]
+mod test_support;
+mod youtube;
+mod ytdlp;
 
 use anyhow::{Context as _, Result};
 use gpui_kit::{
@@ -69,7 +75,7 @@ fn main() -> Result<()> {
     #[cfg(target_os = "windows")]
     let _app_mutex =
         grajek_smtc::hold_app_mutex().context("Could not create the Grajek installer mutex.")?;
-    let tools_dir = store::app_data_dir().map(|dir| dir.join("tools"));
+    let tools_dir = paths::tools_dir();
     if let Some(dir) = &tools_dir
         && let Err(error) = media::components::download::recover(dir)
     {
@@ -91,21 +97,25 @@ fn main() -> Result<()> {
     let (volume, volume_rx) = watch::channel(player::VolumeRequest::default());
     let (states, updates) = watch::channel(player::State::default());
     let (shutdown, shutdown_rx) = watch::channel(false);
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    let endpoint = native::Endpoint {
-        commands: commands.clone(),
-        states: updates.clone(),
-    };
     let (window_commands, window_requests) = mpsc::channel(16);
-    let tray_endpoint = tray::Endpoint {
-        player: endpoint.clone(),
+    let tray_endpoint = platform::tray::Endpoint {
+        player: platform::media::Endpoint {
+            commands: commands.clone(),
+            states: updates.clone(),
+        },
         window: window_commands,
-        available: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        available: platform::tray::TrayAvailability::default(),
     };
     #[cfg(target_os = "linux")]
-    let tray_session = runtime.spawn(tray::linux::run(tray_endpoint.clone(), shutdown_rx.clone()));
+    let tray_session = runtime.spawn(platform::tray::linux::run(
+        tray_endpoint.clone(),
+        shutdown_rx.clone(),
+    ));
     #[cfg(target_os = "linux")]
-    let media_session = runtime.spawn(native::linux::run(endpoint.clone(), shutdown_rx.clone()));
+    let media_session = runtime.spawn(platform::media::linux::run(
+        tray_endpoint.player.clone(),
+        shutdown_rx.clone(),
+    ));
     let controller = runtime.spawn(player::run(
         config,
         receiver,
@@ -117,7 +127,6 @@ fn main() -> Result<()> {
         commands,
         volume,
         updates,
-        endpoint,
         tray_endpoint,
         window_requests,
         runtime.handle().clone(),
@@ -126,20 +135,8 @@ fn main() -> Result<()> {
     runtime.block_on(async {
         #[cfg(target_os = "linux")]
         {
-            let mut tray_session = tray_session;
-            if tokio::time::timeout(Duration::from_secs(2), &mut tray_session)
-                .await
-                .is_err()
-            {
-                tray_session.abort();
-            }
-            let mut media_session = media_session;
-            if tokio::time::timeout(Duration::from_secs(2), &mut media_session)
-                .await
-                .is_err()
-            {
-                media_session.abort();
-            }
+            await_or_abort(tray_session).await;
+            await_or_abort(media_session).await;
         }
         let mut controller = controller;
         match tokio::time::timeout(Duration::from_secs(8), &mut controller).await {
@@ -155,17 +152,30 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+async fn await_or_abort(mut session: tokio::task::JoinHandle<()>) {
+    if tokio::time::timeout(Duration::from_secs(2), &mut session)
+        .await
+        .is_err()
+    {
+        session.abort();
+    }
+}
+
 fn window_options(cx: &gpui_kit::App) -> WindowOptions {
     WindowOptions {
-        app_id: Some("org.grajek.desktop".into()),
+        app_id: Some(identity::APP_ID.into()),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(520.), px(560.)),
             cx,
         ))),
-        window_min_size: Some(size(px(420.), px(480.))),
+        window_min_size: Some(size(
+            app::fmt::WINDOW_MIN_WIDTH,
+            app::fmt::WINDOW_MIN_HEIGHT,
+        )),
         titlebar: Some(TitlebarOptions {
-            title: Some("Grajek".into()),
+            title: Some(identity::APP_NAME.into()),
             ..Default::default()
         }),
         ..Default::default()
@@ -176,14 +186,13 @@ fn run_app(
     commands: mpsc::Sender<player::Command>,
     volume: watch::Sender<player::VolumeRequest>,
     updates: watch::Receiver<player::State>,
-    endpoint: native::Endpoint,
-    tray_endpoint: tray::Endpoint,
-    mut window_requests: mpsc::Receiver<tray::WindowAction>,
+    tray_endpoint: platform::tray::Endpoint,
+    mut window_requests: mpsc::Receiver<platform::tray::WindowAction>,
     runtime: tokio::runtime::Handle,
 ) {
-    #[cfg(not(target_os = "windows"))]
-    drop(endpoint);
-    let (application, visibility) = window::application();
+    #[cfg(target_os = "windows")]
+    let media_endpoint = tray_endpoint.player.clone();
+    let (application, visibility) = platform::window::application();
     application.with_assets(AppAssets).run(move |cx| {
         init(cx);
         style::init(cx);
@@ -195,12 +204,10 @@ fn run_app(
         .detach();
         let options = window_options(cx);
         #[cfg(target_os = "windows")]
-        let tray_task = tray::windows::attach(cx, tray_endpoint.clone());
+        let tray_task = platform::tray::windows::attach(cx, tray_endpoint.clone());
         let quit_endpoint = tray_endpoint.clone();
         cx.on_app_quit(move |_| {
-            quit_endpoint
-                .available
-                .store(false, std::sync::atomic::Ordering::Release);
+            quit_endpoint.available.mark_unavailable();
             async {}
         })
         .detach();
@@ -211,14 +218,14 @@ fn run_app(
                     // Dispatch outside the close callback, avoiding reentrant native events.
                     close_endpoint
                         .window
-                        .try_send(tray::WindowAction::Hide)
+                        .try_send(platform::tray::WindowAction::Hide)
                         .is_err()
                 } else {
                     true
                 }
             });
             #[cfg(target_os = "windows")]
-            let media = native::windows::attach(window, cx, &endpoint);
+            let media = platform::media::windows::attach(window, cx, &media_endpoint);
             cx.new(|cx| {
                 let app = app::PlayerApp::new(window, cx, commands, volume, updates);
                 let app = app.with_components(runtime);
@@ -234,25 +241,23 @@ fn run_app(
                     let _tray_task = tray_task;
                     while let Some(action) = window_requests.recv().await {
                         match action {
-                            tray::WindowAction::Quit => {
-                                tray_endpoint
-                                    .available
-                                    .store(false, std::sync::atomic::Ordering::Release);
+                            platform::tray::WindowAction::Quit => {
+                                tray_endpoint.available.mark_unavailable();
                                 window_requests.close();
                                 cx.update(|cx| cx.quit());
                                 break;
                             }
-                            tray::WindowAction::Show => {
+                            platform::tray::WindowAction::Show => {
                                 if let Err(error) = visibility(window, true, cx) {
                                     tracing::error!(%error, "Could not restore Grajek window");
                                 }
                             }
-                            tray::WindowAction::Hide if tray_endpoint.available() => {
+                            platform::tray::WindowAction::Hide if tray_endpoint.available() => {
                                 if let Err(error) = visibility(window, false, cx) {
                                     tracing::error!(%error, "Could not hide Grajek window");
                                 }
                             }
-                            tray::WindowAction::Hide => {}
+                            platform::tray::WindowAction::Hide => {}
                         }
                     }
                 })

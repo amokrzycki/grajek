@@ -385,11 +385,14 @@ async fn a_late_title_reply_fills_the_entry_at_its_new_position() -> Result<()> 
 #[tokio::test]
 async fn queue_next_reuses_a_title_known_from_history() -> Result<()> {
     let mut saved = Saved::default();
-    saved.record(crate::store::HistoryEntry {
-        url: X.into(),
-        title: Some("Known".into()),
-        duration_secs: None,
-    });
+    crate::history::record(
+        &mut saved.history,
+        crate::history::HistoryEntry {
+            url: X.into(),
+            title: Some("Known".into()),
+            duration_secs: None,
+        },
+    );
     let mut rig = Rig::start(saved);
     rig.until(|s| s.phase == Phase::Ready).await?;
     rig.enqueue(A).await?;

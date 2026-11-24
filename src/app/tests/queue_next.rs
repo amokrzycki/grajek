@@ -1,66 +1,13 @@
 //! Queue next and Move to next: every entry point, the acknowledgement-only feedback, and
 //! the focus and layout rules at both native sizes.
-use super::animation_fixes::focused;
-use super::composition::tab_until;
-use super::search::{results, snapshot};
+use super::support::*;
 use super::*;
-use crate::app::composer::Landing;
-use crate::player::{EnqueueResult, Placement, RepeatMode, SearchAction, SearchPhase};
+use crate::player::{Placement, RepeatMode};
+use crate::search::{SearchAction, SearchPhase};
 
 const VIDEO: &str = "https://youtu.be/aqz-KE-bpKQ";
 const CANONICAL: &str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
 const SIZES: [(f32, f32); 2] = [(520., 560.), (420., 480.)];
-
-fn status(cx: &mut TestAppContext, window: AnyWindowHandle) -> String {
-    let mut text = String::new();
-    act(cx, window, |window, _| {
-        text = window
-            .find("link-status")
-            .label()
-            .unwrap_or_default()
-            .to_owned();
-    });
-    text
-}
-
-fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
-    cx.run_until_parked();
-    act(cx, window, |window, cx| {
-        window.simulate_next_frame(cx);
-        window.render_frame(cx);
-        window.simulate_next_frame(cx);
-        window.render_frame(cx);
-    });
-}
-
-fn type_link(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) {
-    act(cx, window, |window, cx| {
-        window.click("url", cx);
-        window.press("ctrl-a", cx);
-        window.input(text, cx);
-    });
-}
-
-fn input(cx: &TestAppContext, view: &Entity<PlayerApp>) -> String {
-    cx.update(|cx| view.read(cx).input.read(cx).value().to_string())
-}
-
-fn answered(mut state: State, request_id: u64, item_id: Option<u64>) -> State {
-    state.enqueue_result = Some(EnqueueResult {
-        request_id,
-        item_id,
-    });
-    state
-}
-
-fn entry(id: u64, url: &str, title: &str) -> QueueItem {
-    QueueItem {
-        id,
-        url: url.into(),
-        title: Some(title.into()),
-        title_unavailable: false,
-    }
-}
 
 fn next_request(received: &mut TestCommands) -> Option<(u64, String)> {
     match received.try_recv() {
@@ -85,7 +32,7 @@ fn composer_queue_next_sends_one_request_and_claims_nothing_until_acknowledged(
     cx: &mut TestAppContext,
 ) {
     let initial = with_lists(Phase::Playing, 2, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     click(cx, window, "enqueue-next");
     assert_eq!(next_request(&mut received), Some((1, VIDEO.into())));
@@ -94,7 +41,7 @@ fn composer_queue_next_sends_one_request_and_claims_nothing_until_acknowledged(
         received.try_recv().is_err(),
         "an unanswered identical text is not resent"
     );
-    assert_eq!(input(cx, &view), VIDEO);
+    assert_eq!(input(cx, window), VIDEO);
     assert!(!status(cx, window).starts_with("Queued next"));
     states.send_replace(State {
         position: Duration::from_secs(1),
@@ -102,7 +49,7 @@ fn composer_queue_next_sends_one_request_and_claims_nothing_until_acknowledged(
     });
     settle(cx, window);
     assert_eq!(
-        input(cx, &view),
+        input(cx, window),
         VIDEO,
         "unrelated snapshots acknowledge nothing"
     );
@@ -110,9 +57,8 @@ fn composer_queue_next_sends_one_request_and_claims_nothing_until_acknowledged(
     acknowledged.queue.insert(0, entry(99, CANONICAL, "Aqua"));
     states.send_replace(answered(acknowledged, 1, Some(99)));
     settle(cx, window);
-    assert_eq!(input(cx, &view), "");
+    assert_eq!(input(cx, window), "");
     assert_eq!(status(cx, window), "Queued next · Aqua");
-    cx.update(|cx| assert_eq!(view.read(cx).added, Some((99, Landing::Next))));
 }
 
 #[gpui_kit::test]
@@ -138,13 +84,13 @@ fn queued_next_status_never_claims_a_stale_position(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_refused_queue_next_keeps_the_text_and_text_typed_since_survives(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Playing, 2, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     type_link(cx, window, VIDEO);
     click(cx, window, "enqueue-next");
     assert!(next_request(&mut received).is_some());
     states.send_replace(answered(initial.clone(), 1, None));
     settle(cx, window);
-    assert_eq!(input(cx, &view), VIDEO, "a refusal leaves the text");
+    assert_eq!(input(cx, window), VIDEO, "a refusal leaves the text");
     assert!(!status(cx, window).starts_with("Queued next"));
     click(cx, window, "enqueue-next");
     assert_eq!(next_request(&mut received), Some((2, VIDEO.into())));
@@ -153,7 +99,7 @@ fn a_refused_queue_next_keeps_the_text_and_text_typed_since_survives(cx: &mut Te
     acknowledged.queue.insert(0, entry(99, CANONICAL, "Aqua"));
     states.send_replace(answered(acknowledged, 2, Some(99)));
     settle(cx, window);
-    assert_eq!(input(cx, &view), "https://youtu.be/bbbbbbbbbbb");
+    assert_eq!(input(cx, window), "https://youtu.be/bbbbbbbbbbb");
     assert_eq!(status(cx, window), "Video link recognized.");
 }
 
@@ -197,8 +143,8 @@ fn queue_next_is_disabled_offline_or_full_while_add_to_queue_keeps_its_rule(
 fn the_composer_actions_fit_both_native_sizes_in_every_import_state(cx: &mut TestAppContext) {
     for (width, height) in SIZES {
         for import in [
-            crate::player::ImportStatus::Ready,
-            crate::player::ImportStatus::Importing,
+            crate::playlist::ImportStatus::Ready,
+            crate::playlist::ImportStatus::Importing,
         ] {
             let initial = State {
                 import,
@@ -220,19 +166,13 @@ fn the_composer_actions_fit_both_native_sizes_in_every_import_state(cx: &mut Tes
 #[gpui_kit::test]
 fn repeat_track_copy_appears_only_while_repeat_track_is_on(cx: &mut TestAppContext) {
     let mut initial = with_lists(Phase::Playing, 2, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     let note = "Repeat Track is on; press Next to play it.";
-    assert!(
-        !cx.update(|cx| view.read(cx).queue_next_help())
-            .contains(note)
-    );
+    assert!(!tooltip(cx, window, "enqueue-next").contains(note));
     initial.preferences.repeat = RepeatMode::Track;
     states.send_replace(initial.clone());
     settle(cx, window);
-    assert!(
-        cx.update(|cx| view.read(cx).queue_next_help())
-            .contains(note)
-    );
+    assert!(tooltip(cx, window, "enqueue-next").contains(note));
     type_link(cx, window, VIDEO);
     click(cx, window, "enqueue-next");
     assert!(next_request(&mut received).is_some());
@@ -323,7 +263,7 @@ fn search_offers_three_actions_inside_the_window_and_each_sends_its_own(cx: &mut
 
 #[gpui_kit::test]
 fn a_search_queue_next_acknowledgement_names_the_entry_and_returns_focus(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, with_lists(Phase::Playing, 2, 0));
+    let (window, _view, mut received, states) = open(cx, with_lists(Phase::Playing, 2, 0));
     type_link(cx, window, "Bach cello");
     act(cx, window, |window, cx| window.press("enter", cx));
     assert!(received.try_recv().is_ok());
@@ -342,7 +282,6 @@ fn a_search_queue_next_acknowledgement_names_the_entry_and_returns_focus(cx: &mu
     );
     states.send_replace(answered(accepted, 1, Some(42)));
     settle(cx, window);
-    cx.update(|cx| assert_eq!(view.read(cx).added, Some((42, Landing::Next))));
     assert_eq!(status(cx, window), "Queued next · Found");
     assert!(focused(cx, window, "url-editor"));
 }
@@ -395,7 +334,12 @@ fn history_menu_lists_queue_next_between_add_and_forget(cx: &mut TestAppContext)
         status(cx, window).is_empty() || status(cx, window).starts_with("Queued next"),
         "typing may hide the line but never wedges later actions"
     );
-    cx.update(|cx| assert!(view.read(cx).enqueue_pending.is_none()));
+    click(cx, window, ("history-next", 2_usize));
+    assert_eq!(
+        next_request(&mut received),
+        Some((2, history_entry(2).url)),
+        "the answered request released the slot"
+    );
 }
 
 #[gpui_kit::test]
@@ -406,20 +350,16 @@ fn typing_during_a_history_request_does_not_lose_its_acknowledgement(cx: &mut Te
     let url = history_entry(1).url;
     assert_eq!(next_request(&mut received), Some((1, url.clone())));
     type_link(cx, window, &url);
-    cx.update(|cx| assert!(view.read(cx).enqueue_pending.is_some()));
     let mut acknowledged = with_lists(Phase::Playing, 1, 3);
     acknowledged.queue.insert(0, entry(99, &url, "Played 1"));
     states.send_replace(answered(acknowledged, 1, Some(99)));
     settle(cx, window);
     assert_eq!(
-        input(cx, &view),
+        input(cx, window),
         url,
         "list-sourced requests never clear the composer"
     );
-    cx.update(|cx| {
-        assert!(view.read(cx).enqueue_pending.is_none());
-        assert_eq!(view.read(cx).added, Some((99, Landing::Next)));
-    });
+    assert_eq!(status(cx, window), "Queued next · Played 1");
 }
 
 #[gpui_kit::test]
@@ -469,7 +409,7 @@ fn move_to_next_is_off_for_the_first_row_and_on_for_a_full_queue(cx: &mut TestAp
 #[gpui_kit::test]
 fn move_to_next_confirms_only_after_the_controller_and_only_while_first(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Playing, 4, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     click(cx, window, ("queue-next", 13_u64));
     assert!(matches!(
         received.try_recv(),
@@ -485,7 +425,6 @@ fn move_to_next_confirms_only_after_the_controller_and_only_while_first(cx: &mut
     states.send_replace(answered(moved.clone(), 1, Some(13)));
     settle(cx, window);
     assert_eq!(status(cx, window), "Moved to next · Queued 13");
-    cx.update(|cx| assert_eq!(view.read(cx).added, Some((13, Landing::Moved))));
     let item = moved.queue.remove(1);
     moved.queue.insert(0, item);
     states.send_replace(moved);
@@ -496,16 +435,12 @@ fn move_to_next_confirms_only_after_the_controller_and_only_while_first(cx: &mut
 #[gpui_kit::test]
 fn a_stale_move_is_silent_and_releases_the_next_request(cx: &mut TestAppContext) {
     let initial = with_lists(Phase::Playing, 4, 0);
-    let (window, view, mut received, states) = open(cx, initial.clone());
+    let (window, _view, mut received, states) = open(cx, initial.clone());
     click(cx, window, ("queue-next", 12_u64));
     assert!(received.try_recv().is_ok());
     states.send_replace(answered(initial, 1, None));
     settle(cx, window);
-    assert_eq!(status(cx, window), "");
-    cx.update(|cx| {
-        assert!(view.read(cx).enqueue_pending.is_none());
-        assert!(view.read(cx).added.is_none());
-    });
+    assert_eq!(status(cx, window), "", "a refusal never claims a move");
     click(cx, window, ("queue-next", 12_u64));
     assert!(matches!(
         received.try_recv(),

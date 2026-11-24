@@ -1,9 +1,8 @@
 use super::{Backend, Controller};
 use crate::{
-    config::video_url,
-    player::{FavoriteRefusal, FavoriteResult, SearchPhase},
-    search::ResultItem,
-    store::{FAVORITES_LIMIT, FavoriteEntry},
+    favorites::{self, FavoriteEntry, FavoriteRefusal, FavoriteResult},
+    search::{ResultItem, SearchPhase},
+    youtube::video_url,
 };
 
 impl<B: Backend> Controller<B> {
@@ -109,13 +108,7 @@ impl<B: Backend> Controller<B> {
     }
 
     fn apply_favorite(&mut self, id: u64, canonical: String, saved: bool, entry: FavoriteEntry) {
-        // Runtime titles and channels obey the same bounds as persisted data.
-        let entry = FavoriteEntry {
-            title: entry.title.as_deref().and_then(crate::store::safe_title),
-            channel: entry.channel.as_deref().and_then(crate::store::safe_title),
-            ..entry
-        };
-        if let Err(refusal) = self.mutate_favorites(entry, saved) {
+        if let Err(refusal) = favorites::apply(&mut self.saved.favorites, entry, saved) {
             self.acknowledge_favorite(id, canonical, saved, Err(refusal));
         } else {
             // An accepted mutation always persists: re-issuing a desired state (including
@@ -123,47 +116,6 @@ impl<B: Backend> Controller<B> {
             // earlier failed write, without changing membership or order.
             self.persist();
             self.acknowledge_favorite(id, canonical, saved, Ok(()));
-        }
-    }
-
-    fn mutate_favorites(
-        &mut self,
-        entry: FavoriteEntry,
-        saved: bool,
-    ) -> Result<(), FavoriteRefusal> {
-        let existing = self
-            .saved
-            .favorites
-            .iter()
-            .position(|known| known.url == entry.url);
-        let Some(index) = existing else {
-            if !saved {
-                return Ok(());
-            }
-            if self.saved.favorites.len() >= FAVORITES_LIMIT {
-                return Err(FavoriteRefusal::Full);
-            }
-            self.saved.favorites.insert(0, entry);
-            return Ok(());
-        };
-        if saved {
-            let known = &mut self.saved.favorites[index];
-            if known.title.is_none() && entry.title.is_some() {
-                known.title = entry.title;
-            }
-            if known.channel.is_none() && entry.channel.is_some() {
-                known.channel = entry.channel;
-            }
-            if known.duration_secs.is_none() && entry.duration_secs.is_some() {
-                known.duration_secs = entry.duration_secs;
-            }
-            if !known.live && entry.live {
-                known.live = true;
-            }
-            Ok(())
-        } else {
-            self.saved.favorites.remove(index);
-            Ok(())
         }
     }
 

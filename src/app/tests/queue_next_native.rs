@@ -1,7 +1,7 @@
 //! Offline native cases for Queue next and Move to next. The window is driven through real
 //! input; the controller is a scripted snapshot source, so these prove window behavior only.
 use super::*;
-use crate::player::{EnqueueResult, Placement};
+use crate::player::Placement;
 use gpui_kit::{AsyncApp, BackgroundExecutor};
 use std::path::Path;
 
@@ -165,14 +165,6 @@ impl Fixture<'_> {
     pub(super) fn full(&self, base: &State, cx: &mut AsyncApp) {
         full_case(base, self, cx);
     }
-}
-
-fn answered(mut state: State, request_id: u64, item_id: Option<u64>) -> State {
-    state.enqueue_result = Some(EnqueueResult {
-        request_id,
-        item_id,
-    });
-    state
 }
 
 fn inserted(base: &State, url: &str, title: &str) -> (State, u64) {

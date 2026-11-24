@@ -88,7 +88,7 @@ impl Fixture<'_> {
             self.ui(cx, |window, _| {
                 assert_eq!(
                     window.try_find("collection-selector").is_some(),
-                    px(width) <= crate::app::collections::COLLECTION_BREAKPOINT
+                    px(width) <= crate::app::fmt::COLLECTION_BREAKPOINT
                 );
                 assert!(window.try_find("history-clear-cancel").is_some());
             });

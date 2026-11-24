@@ -1,5 +1,5 @@
 use super::*;
-use crate::native::Command as Media;
+use crate::player::MediaCommand as Media;
 
 #[tokio::test(start_paused = true)]
 async fn external_play_is_idempotent_and_stop_keeps_pending_queue_during_resolution() -> Result<()>

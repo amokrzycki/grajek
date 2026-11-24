@@ -1,5 +1,5 @@
 use super::*;
-use crate::player::{SearchPhase, SearchState};
+use crate::search::{SearchPhase, SearchState};
 
 pub(super) const CASES: [&str; 9] = [
     "search-loading",
@@ -19,7 +19,7 @@ pub(super) fn snapshot(name: &str, mut state: State, id: u64) -> State {
         "search-empty" => SearchPhase::Empty { rejected: 0 },
         "search-error" => SearchPhase::Failed(crate::search::Error::Unavailable),
         "search-missing" => {
-            let SearchPhase::Results(mut results) = super::search::results() else {
+            let SearchPhase::Results(mut results) = super::support::results() else {
                 unreachable!()
             };
             results.items[0].title = None;
@@ -29,10 +29,10 @@ pub(super) fn snapshot(name: &str, mut state: State, id: u64) -> State {
             results.items[1].duration = None;
             SearchPhase::Results(results)
         }
-        _ => super::search::results(),
+        _ => super::support::results(),
     };
     if name == "search-import-stress" {
-        state.import = crate::player::ImportStatus::Importing;
+        state.import = crate::playlist::ImportStatus::Importing;
         state.error = Some("Playback interrupted. Check the connection and try again.".into());
     }
     state.search = SearchState {

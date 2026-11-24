@@ -1,47 +1,17 @@
-use std::{fmt::Write as _, time::Duration};
+use std::time::Duration;
 
 use crate::{
+    favorites::{self, FavoriteEntry, FavoriteResult},
+    history::HistoryEntry,
     media::TrackInfo,
+    playlist::ImportStatus,
+    preferences::{Preferences, RepeatMode, VOLUME_MAX, clamp_volume},
     queue::{Placement, QueueItem},
-    store::{self, FavoriteEntry, HistoryEntry},
+    search::{SearchAction, SearchState},
+    store,
 };
 
-/// Completion policy; preferences from older releases default to ordinary FIFO.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RepeatMode {
-    Track,
-    Queue,
-    #[default]
-    #[serde(other)]
-    Off,
-}
-
-impl RepeatMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Off => "Repeat: Off",
-            Self::Track => "Repeat Track",
-            Self::Queue => "Repeat Queue",
-        }
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            Self::Off => Self::Track,
-            Self::Track => Self::Queue,
-            Self::Queue => Self::Off,
-        }
-    }
-}
-
-/// Saved queue/playback policies, independent of transient connection state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Preferences {
-    pub continue_on_error: bool,
-    pub remember_queue: bool,
-    pub repeat: RepeatMode,
-}
+use super::MediaCommand;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -88,89 +58,6 @@ impl Phase {
     }
 }
 
-/// Import feedback is independent of playback phase and errors.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum ImportStatus {
-    #[default]
-    Ready,
-    Importing,
-    Cancelled,
-    Finished {
-        added: usize,
-        unavailable: usize,
-        omitted: usize,
-        limited: bool,
-    },
-    Failed(String),
-}
-
-impl ImportStatus {
-    pub fn message(&self) -> String {
-        match self {
-            Self::Ready => "Playlist import · up to 100 pending tracks".into(),
-            Self::Importing => "Importing playlist…".into(),
-            Self::Cancelled => "Import cancelled.".into(),
-            Self::Failed(message) => message.clone(),
-            Self::Finished {
-                added,
-                unavailable,
-                omitted,
-                limited,
-            } => {
-                let mut message = format!(
-                    "Imported {added} {}.",
-                    if *added == 1 { "track" } else { "tracks" }
-                );
-                if *unavailable > 0 {
-                    let _ = write!(message, " {unavailable} entries unavailable.");
-                }
-                if *omitted > 0 {
-                    let _ = write!(message, " {omitted} did not fit; queue limit 100.");
-                }
-                if *limited {
-                    message.push_str(" First 100 playlist entries checked; more may remain.");
-                }
-                message
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SearchState {
-    pub id: u64,
-    pub query: String,
-    pub phase: SearchPhase,
-    pub status: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum SearchPhase {
-    #[default]
-    Idle,
-    Loading,
-    Results(crate::search::Results),
-    Empty {
-        rejected: usize,
-    },
-    Failed(crate::search::Error),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SearchAction {
-    Play,
-    Enqueue {
-        id: u64,
-        placement: Placement,
-    },
-    /// Desired-state membership for the selected search result; the controller routes it
-    /// before consuming Results.
-    Favorite {
-        id: u64,
-        saved: bool,
-    },
-}
-
 /// Answer to an insert or move request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnqueueResult {
@@ -178,24 +65,6 @@ pub struct EnqueueResult {
     /// The entry now at its requested place. None means the controller rejected or ignored the
     /// request; success remains visible after consumption.
     pub item_id: Option<u64>,
-}
-
-/// Why a favorites membership request was refused. Independent of playback phase and errors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FavoriteRefusal {
-    InvalidUrl,
-    StaleSearch,
-    Full,
-}
-
-/// Answer to a favorites membership request. `result` is `Ok` when the desired state was
-/// applied; `Err` carries a refusal without changing membership.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FavoriteResult {
-    pub request_id: u64,
-    pub url: String,
-    pub saved: bool,
-    pub result: Result<(), FavoriteRefusal>,
 }
 
 /// A snapshot of everything the window shows. The controller owns the truth; the GUI
@@ -207,7 +76,7 @@ pub struct FavoriteResult {
 )]
 pub struct State {
     pub close_to_tray: bool,
-    pub setup: crate::setup::Setup,
+    pub setup: crate::discord::setup::Setup,
     pub setup_busy: bool,
     pub confirm_setup: bool,
     /// Last UI transport request accepted by the controller; unrelated snapshots retain it.
@@ -218,7 +87,8 @@ pub struct State {
     /// Monotonic request to show the playback-components prompt; ordinary snapshots retain it.
     pub components_request: u64,
     pub available: bool,
-    /// Local queue/history edits need a running controller, even if the gateway is down.
+    /// Local queue/history/favorites edits need a running controller, even if the gateway is
+    /// down.
     pub controller_ready: bool,
     pub voice_connected: bool,
     pub preferences: Preferences,
@@ -253,7 +123,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             close_to_tray: false,
-            setup: crate::setup::Setup::default(),
+            setup: crate::discord::setup::Setup::default(),
             setup_busy: false,
             confirm_setup: false,
             transport_ack: 0,
@@ -296,7 +166,7 @@ impl State {
     pub fn can_import(&self) -> bool {
         self.controller_ready
             && self.import != ImportStatus::Importing
-            && self.queue.len() < crate::queue::QUEUE_LIMIT
+            && !crate::queue::is_full(self.queue.len())
     }
     pub fn can_leave_voice(&self) -> bool {
         self.controller_ready
@@ -349,7 +219,7 @@ impl State {
     }
     /// Queue next also needs a free slot; moving an existing entry never does.
     pub fn can_queue_next(&self) -> bool {
-        self.can_enqueue() && self.queue.len() < crate::queue::QUEUE_LIMIT
+        self.can_enqueue() && !crate::queue::is_full(self.queue.len())
     }
     /// The track to show: only while audio is actually playing or paused.
     pub fn visible_track(&self) -> Option<&TrackInfo> {
@@ -359,7 +229,7 @@ impl State {
     }
     /// Whether this snapshot holds a favorite with the given canonical URL.
     pub fn is_favorite(&self, url: &str) -> bool {
-        self.favorites.iter().any(|entry| entry.url == url)
+        favorites::contains(&self.favorites, url)
     }
     pub fn can_pause(&self) -> bool {
         self.available && self.phase == Phase::Playing
@@ -371,14 +241,14 @@ impl State {
 
 pub enum Command {
     CloseToTray(bool),
-    Setup(crate::setup::Request),
+    Setup(crate::discord::setup::Request),
     ConfirmSetup(bool),
     /// UI transport requests carry an identity so older snapshots cannot unlock newer input.
     Transport {
         id: u64,
         command: Box<Self>,
     },
-    Media(crate::native::Command),
+    Media(MediaCommand),
     Seek {
         track_id: u64,
         position: Duration,
@@ -456,7 +326,7 @@ impl Default for VolumeRequest {
 
 /// Songbird volume factor for a percentage: 0.0 to 1.0, never amplified.
 pub fn volume_factor(percent: u8) -> f32 {
-    f32::from(percent.min(100)) / 100.0
+    f32::from(clamp_volume(percent)) / f32::from(VOLUME_MAX)
 }
 
 /// Whole percent for a slider value; `None` for NaN or infinity.
@@ -468,5 +338,5 @@ pub fn volume_factor(percent: u8) -> f32 {
 pub fn percent_from(value: f32) -> Option<u8> {
     value
         .is_finite()
-        .then(|| value.round().clamp(0.0, 100.0) as u8)
+        .then(|| value.round().clamp(0.0, f32::from(VOLUME_MAX)) as u8)
 }

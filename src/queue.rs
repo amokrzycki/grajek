@@ -3,6 +3,24 @@ use std::collections::VecDeque;
 /// Pending entries the queue accepts before it reports itself full.
 pub const QUEUE_LIMIT: usize = 100;
 
+pub(crate) fn is_full(len: usize) -> bool {
+    len >= QUEUE_LIMIT
+}
+
+/// Capacity refusal that must carry the next action in the same sentence.
+pub(crate) fn full_message(action: &str) -> String {
+    format!("Queue full ({QUEUE_LIMIT} tracks). {action}")
+}
+
+pub(crate) fn full_notice() -> String {
+    format!("The queue is full ({QUEUE_LIMIT} tracks).")
+}
+
+/// Lowercase fragment spliced into a longer sentence.
+pub(crate) fn limit_note() -> String {
+    format!("queue limit {QUEUE_LIMIT}")
+}
+
 /// A queued video. Only the canonical URL and a known title are kept; stream URLs expire
 /// and are resolved when the entry starts playing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,17 +43,17 @@ impl QueueItem {
             "Loading title…"
         })
     }
-}
 
-/// `dQw4w9WgXcQ` from `https://www.youtube.com/watch?v=dQw4w9WgXcQ` or
-/// `https://youtu.be/dQw4w9WgXcQ`.
-pub fn video_id(url: &str) -> &str {
-    if let Some((_, id)) = url.rsplit_once("v=") {
-        id.split('&').next().unwrap_or(id)
-    } else if let Some((_, id)) = url.rsplit_once("youtu.be/") {
-        id.split('?').next().unwrap_or(id)
-    } else {
-        url
+    /// Hover text explaining why an entry still lacks its title.
+    pub fn tooltip(&self) -> String {
+        match &self.title {
+            Some(title) => title.clone(),
+            None if self.title_unavailable => format!(
+                "Could not load the title. Playback can still be attempted. {}",
+                self.url
+            ),
+            None => format!("Waiting for YouTube metadata. {}", self.url),
+        }
     }
 }
 
@@ -61,6 +79,10 @@ impl Queue {
         self.items.is_empty()
     }
 
+    pub fn is_full(&self) -> bool {
+        is_full(self.items.len())
+    }
+
     pub fn push(&mut self, url: String, title: Option<String>) -> Result<u64, Full> {
         self.insert(url, title, Placement::End)
     }
@@ -71,7 +93,7 @@ impl Queue {
         title: Option<String>,
         placement: Placement,
     ) -> Result<u64, Full> {
-        if self.items.len() >= QUEUE_LIMIT {
+        if self.is_full() {
             return Err(Full);
         }
         let id = self.next_id;
@@ -101,12 +123,12 @@ impl Queue {
         true
     }
 
-    /// Appends a deterministic prefix against the latest capacity in one controller turn.
-    pub fn append(&mut self, entries: Vec<crate::playlist::Entry>) -> usize {
+    /// Appends as many entries as currently free slots allow; returns how many fit.
+    pub fn append(&mut self, entries: impl IntoIterator<Item = (String, Option<String>)>) -> usize {
         let available = QUEUE_LIMIT.saturating_sub(self.items.len());
         let mut added = 0;
-        for entry in entries.into_iter().take(available) {
-            if self.push(entry.url, entry.title).is_ok() {
+        for (url, title) in entries.into_iter().take(available) {
+            if self.push(url, title).is_ok() {
                 added += 1;
             }
         }
@@ -118,11 +140,6 @@ impl Queue {
             .iter()
             .find(|item| item.url == url && item.title.is_some())
             .and_then(|item| item.title.clone())
-    }
-
-    #[cfg(test)]
-    pub fn pop_front(&mut self) -> Option<QueueItem> {
-        self.items.pop_front()
     }
 
     pub fn remove(&mut self, id: u64) -> bool {
@@ -171,7 +188,12 @@ impl Queue {
 
 #[cfg(test)]
 mod tests {
-    use super::{Full, Placement, QUEUE_LIMIT, Queue, QueueItem, video_id};
+    use super::{Full, Placement, QUEUE_LIMIT, Queue, QueueItem};
+
+    fn pop_front(queue: &mut Queue) -> Option<QueueItem> {
+        let item = queue.snapshot().into_iter().next()?;
+        queue.remove(item.id).then_some(item)
+    }
 
     fn urls(queue: &Queue) -> Vec<String> {
         queue.snapshot().into_iter().map(|item| item.url).collect()
@@ -188,18 +210,24 @@ mod tests {
     #[test]
     fn is_first_in_first_out() {
         let mut queue = filled(3);
-        assert_eq!(queue.pop_front().map(|item| item.url), Some("u0".into()));
-        assert_eq!(queue.pop_front().map(|item| item.url), Some("u1".into()));
+        assert_eq!(
+            pop_front(&mut queue).map(|item| item.url),
+            Some("u0".into())
+        );
+        assert_eq!(
+            pop_front(&mut queue).map(|item| item.url),
+            Some("u1".into())
+        );
         assert_eq!(urls(&queue), ["u2"]);
-        queue.pop_front();
-        assert!(queue.snapshot().is_empty() && queue.pop_front().is_none());
+        pop_front(&mut queue);
+        assert!(queue.snapshot().is_empty() && pop_front(&mut queue).is_none());
     }
 
     #[test]
     fn ids_are_never_reused() {
         let mut queue = Queue::default();
         let first = queue.push("a".into(), None);
-        queue.pop_front();
+        pop_front(&mut queue);
         assert_ne!(first, queue.push("b".into(), None));
     }
 
@@ -207,7 +235,7 @@ mod tests {
     fn holds_at_most_the_limit() {
         let mut queue = filled(QUEUE_LIMIT);
         assert_eq!(queue.push("extra".into(), None), Err(Full));
-        queue.pop_front();
+        pop_front(&mut queue);
         assert!(queue.push("extra".into(), None).is_ok());
         assert_eq!(queue.snapshot().len(), QUEUE_LIMIT);
     }
@@ -216,7 +244,7 @@ mod tests {
     fn removes_by_id_even_after_positions_change() {
         let mut queue = filled(4);
         let ids: Vec<u64> = queue.snapshot().iter().map(|item| item.id).collect();
-        queue.pop_front();
+        pop_front(&mut queue);
         assert!(!queue.remove(ids[0]), "already started entries are gone");
         assert!(queue.remove(ids[2]));
         assert!(!queue.remove(ids[2]));
@@ -298,7 +326,7 @@ mod tests {
         let before = queue.snapshot();
         assert_eq!(queue.insert("x".into(), None, Placement::Next), Err(Full));
         assert_eq!(queue.snapshot(), before);
-        queue.pop_front();
+        pop_front(&mut queue);
         assert!(queue.insert("x".into(), None, Placement::Next).is_ok());
         assert_eq!(queue.snapshot().len(), QUEUE_LIMIT);
         assert_eq!(queue.snapshot()[0].url, "x");
@@ -327,7 +355,7 @@ mod tests {
         assert!(queue.move_to_front(first));
         assert_eq!(urls(&queue), ["u0", "u1", "u2"]);
         assert!(!queue.move_to_front(999));
-        queue.pop_front();
+        pop_front(&mut queue);
         assert!(!queue.move_to_front(first), "a consumed ID is gone");
         assert_eq!(urls(&queue), ["u1", "u2"]);
     }
@@ -353,23 +381,6 @@ mod tests {
 
     #[test]
     fn untitled_entries_show_truthful_lookup_states() {
-        // Standard format
-        assert_eq!(
-            video_id("https://www.youtube.com/watch?v=BaW_jenozKc"),
-            "BaW_jenozKc"
-        );
-        // Short URL format
-        assert_eq!(video_id("https://youtu.be/BaW_jenozKc"), "BaW_jenozKc");
-        // With query parameters
-        assert_eq!(
-            video_id("https://www.youtube.com/watch?v=BaW_jenozKc&t=123"),
-            "BaW_jenozKc"
-        );
-        assert_eq!(
-            video_id("https://youtu.be/BaW_jenozKc?t=123"),
-            "BaW_jenozKc"
-        );
-
         let mut item = QueueItem {
             id: 0,
             url: "https://www.youtube.com/watch?v=BaW_jenozKc".into(),
@@ -377,9 +388,18 @@ mod tests {
             title_unavailable: false,
         };
         assert_eq!(item.label(), "Loading title…");
+        assert_eq!(
+            item.tooltip(),
+            "Waiting for YouTube metadata. https://www.youtube.com/watch?v=BaW_jenozKc"
+        );
         item.title_unavailable = true;
         assert_eq!(item.label(), "Title unavailable");
+        assert_eq!(
+            item.tooltip(),
+            "Could not load the title. Playback can still be attempted. https://www.youtube.com/watch?v=BaW_jenozKc"
+        );
         item.title = Some("Song".into());
         assert_eq!(item.label(), "Song");
+        assert_eq!(item.tooltip(), "Song");
     }
 }

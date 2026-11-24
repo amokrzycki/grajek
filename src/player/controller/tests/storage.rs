@@ -1,37 +1,11 @@
 use super::*;
-use std::{fs, path::PathBuf};
-
-struct Storage(PathBuf);
-
-impl Drop for Storage {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-#[tokio::test]
-async fn runtime_save_warning_precedes_long_startup_notices() {
-    let (mut controller, _fake, updates) = solo(Saved::default());
-    let startup = "Recovered history file with a very long storage path. ".repeat(20);
-    controller.notice = Some(startup.clone());
-    let (status, changes) = watch::channel(Some("Could not save history and settings."));
-    controller.saver_status = Some(changes);
-    controller.sync();
-    let warning = updates.borrow().notice.clone().unwrap_or_default();
-    assert!(warning.starts_with("Could not save history and settings."));
-    assert!(warning.contains(&startup));
-    status.send_replace(None);
-    controller.sync();
-    assert_eq!(updates.borrow().notice.as_deref(), Some(startup.as_str()));
-}
+use crate::test_support::Scratch;
+use std::fs;
 
 #[tokio::test]
 async fn save_failure_and_recovery_reach_playback_without_erasing_startup_notices() -> Result<()> {
-    let directory =
-        std::env::temp_dir().join(format!("grajek-saver-notice-{}", std::process::id()));
-    fs::create_dir(&directory)?;
-    let storage = Storage(directory);
-    let path = storage.0.join("state.json");
+    let storage = Scratch::new()?;
+    let path = storage.file("state.json");
     let initial = Saved {
         remember_queue: true,
         queue: vec![SavedQueueItem {
@@ -67,7 +41,7 @@ async fn save_failure_and_recovery_reach_playback_without_erasing_startup_notice
     )
     .await??;
 
-    let backup = storage.0.join("previous.json");
+    let backup = storage.file("previous.json");
     fs::rename(&path, &backup)?;
     fs::create_dir(&path)?;
     commands.send(Command::CloseToTray(true)).await?;
@@ -84,11 +58,14 @@ async fn save_failure_and_recovery_reach_playback_without_erasing_startup_notice
     .clone();
     assert_eq!(failed.phase, Phase::Playing);
     assert_eq!(failed.queue[0].url, B);
+    let notice = failed.notice.as_deref().unwrap_or_default();
     assert!(
-        failed
-            .notice
-            .as_deref()
-            .is_some_and(|notice| notice.contains("Startup warning."))
+        notice.starts_with("Could not save"),
+        "runtime warning leads"
+    );
+    assert!(
+        notice.contains("Startup warning."),
+        "startup warning is kept"
     );
 
     fs::remove_dir(&path)?;

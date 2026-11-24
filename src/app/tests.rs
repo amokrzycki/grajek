@@ -1,11 +1,14 @@
-use super::{Command, Phase, PlayerApp, Section, State, VolumeRequest, clock, format_progress};
-use crate::{media::TrackInfo, queue::QueueItem, store::HistoryEntry};
+use super::{Command, PlayerApp, Section, State, VolumeRequest};
+use crate::app::fmt::{clock, format_progress};
+use crate::player::Phase;
+use crate::{history::HistoryEntry, media::TrackInfo, queue::QueueItem};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AnyWindowHandle, AppContext, Bounds, ClipboardItem, ElementId, Entity, Focusable, ScrollDelta,
     TestAppContext, WindowBounds, WindowOptions, point, px, size,
 };
 use std::time::Duration;
+use support::focused;
 use tokio::sync::{mpsc, watch};
 
 pub(in crate::app) mod animation_fixes;
@@ -26,6 +29,7 @@ mod queue_next;
 mod queue_next_native;
 mod search;
 mod seek;
+mod support;
 mod view_transition;
 
 fn state(phase: Phase) -> State {
@@ -139,6 +143,78 @@ fn open_at(
 
 fn open(cx: &mut TestAppContext, initial: State) -> Harness {
     open_full(cx, initial).0
+}
+
+fn status(cx: &mut TestAppContext, window: AnyWindowHandle) -> String {
+    text(cx, window, "link-status")
+}
+
+fn text(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) -> String {
+    let id = id.into();
+    let mut text = String::new();
+    act(cx, window, |window, cx| {
+        window.render_frame(cx);
+        let snapshot = window.find(id);
+        text = snapshot.label().unwrap_or_default().to_owned();
+    });
+    text
+}
+
+fn tooltip(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) -> String {
+    let id = id.into();
+    act(cx, window, |window, cx| {
+        window.hover("player-header", cx);
+        window.hover(id, cx);
+    });
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    text(cx, window, "help-popup")
+}
+
+fn input(cx: &mut TestAppContext, window: AnyWindowHandle) -> String {
+    let mut text = String::new();
+    act(cx, window, |window, cx| {
+        window.render_frame(cx);
+        let snapshot = window.find("url-editor");
+        text = snapshot.value().unwrap_or_default().to_owned();
+    });
+    text
+}
+
+fn value(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<ElementId>) -> String {
+    let id = id.into();
+    let mut text = String::new();
+    act(cx, window, |window, cx| {
+        window.render_frame(cx);
+        let snapshot = window.find(id);
+        text = snapshot.value().unwrap_or_default().to_owned();
+    });
+    text
+}
+
+fn type_link(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) {
+    act(cx, window, |window, cx| {
+        window.click("url", cx);
+        window.press("ctrl-a", cx);
+        window.input(text, cx);
+    });
+}
+
+fn answered(mut state: State, request_id: u64, item_id: Option<u64>) -> State {
+    state.enqueue_result = Some(crate::player::EnqueueResult {
+        request_id,
+        item_id,
+    });
+    state
+}
+
+fn entry(id: u64, url: &str, title: &str) -> QueueItem {
+    QueueItem {
+        id,
+        url: url.into(),
+        title: Some(title.into()),
+        title_unavailable: false,
+    }
 }
 
 // Secondary actions are reached through the same native disclosure as production.
@@ -270,7 +346,7 @@ fn position_is_formatted_as_minutes_and_seconds() {
     reason = "GPUI's test macro requires a unit-returning callback; window setup failures must fail the test"
 )]
 fn paste_enter_duplicate_play_and_stop(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, states) = open(cx, state(Phase::Ready));
     cx.update_window(window, |_, window, cx| {
         window.click("url", cx);
         cx.write_to_clipboard(ClipboardItem::new_string(
@@ -307,7 +383,6 @@ fn paste_enter_duplicate_play_and_stop(cx: &mut TestAppContext) {
     assert!(
         matches!(received.try_recv(), Ok(Command::Play(url)) if url.contains("music.youtube.com"))
     );
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Ready));
 }
 
 #[gpui_kit::test]
@@ -335,22 +410,16 @@ fn pause_resume_button_follows_controller_state(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn failed_pause_never_leaves_a_false_paused_state(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, playing(Phase::Playing, Some("Song"), 12));
+    let (window, _view, mut received, states) = open(cx, playing(Phase::Playing, Some("Song"), 12));
     click(cx, window, "pause-resume");
     assert!(matches!(received.try_recv(), Ok(Command::Pause)));
     // The GUI did not guess Paused while waiting.
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Playing));
+    assert_eq!(button(cx, window, "pause-resume"), ("Pause".into(), true));
     states.send_replace(State {
         error: Some("Could not pause playback. The track is no longer active.".into()),
         ..state(Phase::Error)
     });
     cx.run_until_parked();
-    cx.update(|cx| {
-        let app = view.read(cx);
-        assert_eq!(app.state.phase, Phase::Error);
-        assert!(app.state.visible_track().is_none());
-        assert!(app.pending.is_none());
-    });
     assert!(
         !present(cx, window, "pause-resume"),
         "no inactive transport without a track"
@@ -360,11 +429,10 @@ fn failed_pause_never_leaves_a_false_paused_state(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn stop_works_while_paused(cx: &mut TestAppContext) {
-    let (window, view, mut received, _states) = open(cx, playing(Phase::Paused, Some("Song"), 30));
+    let (window, _view, mut received, _states) = open(cx, playing(Phase::Paused, Some("Song"), 30));
     assert!(!button(cx, window, "stop").1);
     click(cx, window, "stop");
     assert!(matches!(received.try_recv(), Ok(Command::Stop)));
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Paused));
     assert!(button(cx, window, "pause-resume").1);
 }
 
@@ -374,7 +442,7 @@ fn stop_works_while_paused(cx: &mut TestAppContext) {
     reason = "GPUI's test macro requires a unit-returning callback; window setup failures must fail the test"
 )]
 fn new_url_replaces_a_paused_track(cx: &mut TestAppContext) {
-    let (window, view, mut received, _states) = open(cx, playing(Phase::Paused, Some("Old"), 30));
+    let (window, _view, mut received, _states) = open(cx, playing(Phase::Paused, Some("Old"), 30));
     cx.update_window(window, |_, window, cx| {
         window.click("url", cx);
         window.input("https://youtu.be/BaW_jenozKc", cx);
@@ -384,22 +452,17 @@ fn new_url_replaces_a_paused_track(cx: &mut TestAppContext) {
     assert!(
         matches!(received.try_recv(), Ok(Command::Play(url)) if url == "https://youtu.be/BaW_jenozKc")
     );
-    cx.update(|cx| {
-        let app = view.read(cx);
-        assert_eq!(app.state.phase, Phase::Paused);
-        assert_eq!(
-            app.state
-                .visible_track()
-                .and_then(|track| track.title.as_deref()),
-            Some("Old")
-        );
-    });
+    assert_eq!(
+        text(cx, window, "title"),
+        "Old",
+        "a submitted link does not replace the paused track before the controller answers"
+    );
     assert!(button(cx, window, "pause-resume").1);
 }
 
 #[gpui_kit::test]
 fn missing_title_duration_and_long_titles_render(cx: &mut TestAppContext) {
-    let (window, view, _received, states) = open(cx, playing(Phase::Playing, None, 5));
+    let (window, _view, _received, states) = open(cx, playing(Phase::Playing, None, 5));
     let long = "Very long title ".repeat(80);
     for track in [
         TrackInfo {
@@ -424,7 +487,6 @@ fn missing_title_duration_and_long_titles_render(cx: &mut TestAppContext) {
             ..playing(Phase::Paused, None, 3725)
         });
         cx.run_until_parked();
-        cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Paused));
         // Layout must survive the frame; the window never grows or panics.
         assert_eq!(button(cx, window, "pause-resume"), ("Resume".into(), false));
     }
@@ -444,7 +506,7 @@ fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut Te
         available: false,
         ..State::default()
     });
-    let (window, view) = cx.update(|cx| {
+    let (window, _view) = cx.update(|cx| {
         gpui_kit::init(cx);
         crate::style::init(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
@@ -465,15 +527,12 @@ fn unavailable_configuration_disables_actions_but_keeps_input_usable(cx: &mut Te
     })
     .expect("test window should accept input and disabled actions");
     assert!(received.try_recv().is_err());
-    cx.update(|cx| {
-        assert_eq!(
-            view.read(cx).input.read(cx).value(),
-            "https://youtu.be/aqz-KE-bpKQ"
-        );
-    });
+    assert_eq!(
+        input(cx, window),
+        "https://youtu.be/aqz-KE-bpKQ",
+        "the field stays editable without Discord"
+    );
 }
-
-// ---- queue, history, volume --------------------------------------------------------
 
 fn queue_item(id: u64) -> QueueItem {
     QueueItem {
@@ -574,7 +633,7 @@ fn shown_volume(cx: &TestAppContext, view: &Entity<PlayerApp>) -> f32 {
     reason = "GPUI's test macro requires a unit-returning callback; window setup failures must fail the test"
 )]
 fn add_to_queue_button_and_ctrl_enter_do_not_play(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, states) = open(cx, state(Phase::Ready));
     cx.update_window(window, |_, window, cx| {
         window.click("url", cx);
         window.input("https://youtu.be/aqz-KE-bpKQ", cx);
@@ -593,8 +652,6 @@ fn add_to_queue_button_and_ctrl_enter_do_not_play(cx: &mut TestAppContext) {
         })
     ));
     assert!(received.try_recv().is_err());
-    // Queueing never changes what the window believes about playback.
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Ready));
     // It stays available while another request is in flight, but not before Discord is up.
     for phase in [
         Phase::Connecting,
@@ -618,7 +675,7 @@ fn add_to_queue_button_and_ctrl_enter_do_not_play(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn next_follows_the_queue_and_ignores_rapid_clicks(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, with_lists(Phase::Ready, 0, 0));
+    let (window, _view, mut received, states) = open(cx, with_lists(Phase::Ready, 0, 0));
     assert!(!present(cx, window, "next"), "nothing queued");
     assert!(received.try_recv().is_err());
     states.send_replace(with_lists(Phase::Ready, 2, 0));
@@ -628,7 +685,6 @@ fn next_follows_the_queue_and_ignores_rapid_clicks(cx: &mut TestAppContext) {
     click(cx, window, "next");
     assert!(matches!(received.try_recv(), Ok(Command::Next)));
     assert!(received.try_recv().is_err(), "a double click is one Next");
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Ready));
     assert!(button(cx, window, "next").1);
     // The controller's answer re-enables it for the remaining entry.
     states.send_replace(with_lists(Phase::Resolving, 1, 0));
@@ -646,7 +702,7 @@ fn next_follows_the_queue_and_ignores_rapid_clicks(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn tabs_switch_between_queue_and_history(cx: &mut TestAppContext) {
-    let (window, view, _received, states) = open(cx, with_lists(Phase::Ready, 2, 3));
+    let (window, _view, _received, states) = open(cx, with_lists(Phase::Ready, 2, 3));
     assert!(present(cx, window, ("queue-row", 10_u64)));
     assert!(!present(cx, window, ("history-row", 0_usize)));
     assert!(
@@ -656,14 +712,12 @@ fn tabs_switch_between_queue_and_history(cx: &mut TestAppContext) {
     act(cx, window, |window, cx| {
         window.within("sections").click(1_usize, cx);
     });
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::History));
     assert!(present(cx, window, ("history-row", 0_usize)));
     assert!(!present(cx, window, ("queue-row", 10_u64)));
     assert!(present(cx, window, "history-count"));
     act(cx, window, |window, cx| {
         window.within("sections").click(0_usize, cx);
     });
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::Queue));
     assert!(present(cx, window, ("queue-row", 11_u64)));
     // The tab title carries the pending count and follows controller updates.
     states.send_replace(with_lists(Phase::Ready, 0, 3));
@@ -673,14 +727,17 @@ fn tabs_switch_between_queue_and_history(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn ctrl_digits_switch_sections_from_the_keyboard(cx: &mut TestAppContext) {
-    let (window, view, _received, _states) = open(cx, with_lists(Phase::Ready, 1, 1));
+    let (window, _view, _received, _states) = open(cx, with_lists(Phase::Ready, 1, 1));
     act(cx, window, |window, cx| window.press("ctrl-2", cx));
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::History));
+    assert!(present(cx, window, ("history-row", 0_usize)));
+    assert!(!present(cx, window, ("queue-row", 10_u64)));
     act(cx, window, |window, cx| window.press("ctrl-1", cx));
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::Queue));
+    assert!(present(cx, window, ("queue-row", 10_u64)));
+    assert!(!present(cx, window, ("history-row", 0_usize)));
     // Plain digits belong to the URL field.
     act(cx, window, |window, cx| window.press("2", cx));
-    cx.update(|cx| assert_eq!(view.read(cx).section, Section::Queue));
+    assert!(present(cx, window, ("queue-row", 10_u64)));
+    assert!(!present(cx, window, ("history-row", 0_usize)));
 }
 
 #[gpui_kit::test]
@@ -737,8 +794,6 @@ fn history_rows_play_queue_and_forget(cx: &mut TestAppContext) {
     assert!(matches!(received.try_recv(), Ok(Command::ForgetHistory(sent)) if sent == url));
     click(cx, window, ("history-play", 1_usize));
     assert!(matches!(received.try_recv(), Ok(Command::Play(sent)) if sent == url));
-    // Play now replaces the track like Play URL: the window waits for the controller.
-    cx.update(|cx| assert_eq!(view.read(cx).state.phase, Phase::Ready));
     // While a request is in flight Play now is unavailable; queueing still works.
     assert!(button(cx, window, ("history-play", 0_usize)).1);
     assert!(!button(cx, window, ("history-queue", 0_usize)).1);
@@ -771,6 +826,16 @@ fn clearing_history_asks_first(cx: &mut TestAppContext) {
     click(cx, window, "history-clear");
     click(cx, window, "history-clear");
     assert!(matches!(received.try_recv(), Ok(Command::ClearHistory)));
+    assert!(received.try_recv().is_err());
+}
+
+#[gpui_kit::test]
+fn opening_the_playback_options_keeps_a_pending_clear_confirmation(cx: &mut TestAppContext) {
+    let (window, view, mut received, _states) = open(cx, with_lists(Phase::Ready, 0, 3));
+    show(cx, &view, Section::History);
+    click(cx, window, "history-clear");
+    click(cx, window, "queue-options");
+    assert_eq!(button(cx, window, "history-clear").0, "Yes, clear");
     assert!(received.try_recv().is_err());
 }
 
@@ -1062,12 +1127,10 @@ fn the_slider_shows_what_the_controller_applied(cx: &mut TestAppContext) {
         ..state(Phase::Error)
     });
     cx.run_until_parked();
-    assert!((shown_volume(cx, &view) - 20.0).abs() < f32::EPSILON);
-    assert_eq!(view_text(cx, &view), "20%");
-}
-
-fn view_text(cx: &TestAppContext, view: &Entity<PlayerApp>) -> String {
-    cx.update(|cx| format!("{}%", view.read(cx).volume.read(cx).value().end().round()))
+    assert!(
+        (shown_volume(cx, &view) - 20.0).abs() < f32::EPSILON,
+        "a refused request returns the slider to the applied volume"
+    );
 }
 
 #[gpui_kit::test]
@@ -1156,21 +1219,33 @@ fn compact_windows_keep_input_and_actions_usable(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn continue_on_error_uses_the_controller_preference(cx: &mut TestAppContext) {
-    let (window, view, mut received, states) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, states) = open(cx, state(Phase::Ready));
+    assert_eq!(
+        button(cx, window, "continue-on-error").0,
+        "Continue on error: Off"
+    );
     click(cx, window, "continue-on-error");
     assert!(matches!(
         received.try_recv(),
         Ok(Command::ContinueOnError(true))
     ));
-    cx.update(|cx| assert!(!view.read(cx).state.preferences.continue_on_error));
+    // The label waits for the controller's snapshot.
+    assert_eq!(
+        button(cx, window, "continue-on-error").0,
+        "Continue on error: Off"
+    );
     states.send_replace(State {
-        preferences: crate::player::Preferences {
+        preferences: crate::preferences::Preferences {
             continue_on_error: true,
             ..Default::default()
         },
         ..state(Phase::Ready)
     });
     cx.run_until_parked();
+    assert_eq!(
+        button(cx, window, "continue-on-error").0,
+        "Continue on error: On"
+    );
     click(cx, window, "continue-on-error");
     assert!(matches!(
         received.try_recv(),
@@ -1189,7 +1264,7 @@ fn queue_preferences_follow_snapshots_and_work_from_keyboard(cx: &mut TestAppCon
     );
     for mode in [RepeatMode::Off, RepeatMode::Track, RepeatMode::Queue] {
         states.send_replace(State {
-            preferences: crate::player::Preferences {
+            preferences: crate::preferences::Preferences {
                 repeat: mode,
                 ..Default::default()
             },
@@ -1226,7 +1301,7 @@ fn queue_preferences_follow_snapshots_and_work_from_keyboard(cx: &mut TestAppCon
         Ok(Command::RememberQueue(true))
     ));
     states.send_replace(State {
-        preferences: crate::player::Preferences {
+        preferences: crate::preferences::Preferences {
             remember_queue: true,
             ..Default::default()
         },
@@ -1394,10 +1469,11 @@ fn leave_voice_is_native_keyboard_accessible_and_waits_for_controller(cx: &mut T
     assert!(matches!(received.try_recv(), Ok(Command::LeaveVoice)));
     click(cx, window, "leave-voice");
     assert!(received.try_recv().is_err());
-    cx.update(|cx| {
-        assert!(view.read(cx).state.voice_connected);
-        assert_eq!(view.read(cx).state.phase, Phase::Paused);
-    });
+    assert_eq!(
+        button(cx, window, "leave-voice"),
+        ("Leave voice".into(), true),
+        "the control waits for the controller and stays on its track"
+    );
     assert_eq!(
         cx.update_window(window, |_, window, cx| view
             .read(cx)
@@ -1457,7 +1533,7 @@ fn queue_metadata_states_and_unicode_keep_row_actions_visible(cx: &mut TestAppCo
 
 #[gpui_kit::test]
 fn playlist_import_is_explicit_and_cancellation_recovers_focus(cx: &mut TestAppContext) {
-    use crate::player::ImportStatus;
+    use crate::playlist::ImportStatus;
     let initial = playing(Phase::Playing, Some("Current track"), 27);
     let (window, view, mut received, states) = open(cx, initial.clone());
     act(cx, window, |window, cx| {
@@ -1539,12 +1615,16 @@ fn playlist_import_is_explicit_and_cancellation_recovers_focus(cx: &mut TestAppC
     );
     act(cx, window, |window, cx| window.press("enter", cx));
     assert!(matches!(received.try_recv(), Ok(Command::Play(url)) if url.contains("list=")));
-    cx.update(|cx| assert_eq!(view.read(cx).state.position, Duration::from_secs(27)));
+    assert_eq!(
+        value(cx, window, "seek-slider"),
+        "00:27",
+        "submitting a link does not jump the shown playback position"
+    );
 }
 
 #[gpui_kit::test]
 fn import_feedback_and_actions_fit_both_native_sizes(cx: &mut TestAppContext) {
-    use crate::player::ImportStatus;
+    use crate::playlist::ImportStatus;
     for (width, height) in [(420., 480.), (520., 560.)] {
         for import in [
             ImportStatus::Importing,
@@ -1652,14 +1732,14 @@ fn first_run_token_controls_fit_minimum_size_and_clear_secret_after_submit(
     .expect("test window should render token entry");
     click(cx, window, "session-token");
     assert!(
-        matches!(received.try_recv(), Ok(Command::Setup(crate::setup::Request::Authenticate { token, remember: false })) if token == "test-bot-secret")
+        matches!(received.try_recv(), Ok(Command::Setup(crate::discord::setup::Request::Authenticate { token, remember: false })) if token == "test-bot-secret")
     );
     cx.update(|cx| assert_eq!(view.read(cx).token.read(cx).value().as_ref(), ""));
 }
 
 #[gpui_kit::test]
 fn secondary_actions_are_disclosed_and_activate_from_the_keyboard(cx: &mut TestAppContext) {
-    let (window, view, mut received, _) = open(cx, state(Phase::Ready));
+    let (window, _view, mut received, _) = open(cx, state(Phase::Ready));
     for id in [
         "repeat",
         "remember-queue",
@@ -1682,21 +1762,21 @@ fn secondary_actions_are_disclosed_and_activate_from_the_keyboard(cx: &mut TestA
     assert!(received.try_recv().is_err());
     // Exercise native trigger activation instead of the disclosure-aware helpers.
     for _ in 0..20 {
-        if animation_fixes::focused(cx, window, "queue-options") {
+        if focused(cx, window, "queue-options") {
             break;
         }
         act(cx, window, |window, cx| window.press("tab", cx));
     }
-    assert!(animation_fixes::focused(cx, window, "queue-options"));
+    assert!(focused(cx, window, "queue-options"));
     act(cx, window, |window, cx| window.press("enter", cx));
     assert!(present(cx, window, "repeat"));
     for _ in 0..8 {
-        if animation_fixes::focused(cx, window, "repeat") {
+        if focused(cx, window, "repeat") {
             break;
         }
         act(cx, window, |window, cx| window.press("tab", cx));
     }
-    assert!(animation_fixes::focused(cx, window, "repeat"));
+    assert!(focused(cx, window, "repeat"));
     act(cx, window, |window, cx| window.press("space", cx));
     assert!(matches!(
         received.try_recv(),
@@ -1705,27 +1785,26 @@ fn secondary_actions_are_disclosed_and_activate_from_the_keyboard(cx: &mut TestA
     act(cx, window, |window, cx| window.press("escape", cx));
     assert!(!present(cx, window, "repeat"));
     assert!(
-        animation_fixes::focused(cx, window, "queue-options"),
+        focused(cx, window, "queue-options"),
         "Escape returns to the menu trigger"
     );
     // Import playlist is a visible action; pasting never starts it, Space/Enter does.
     for _ in 0..20 {
-        if animation_fixes::focused(cx, window, "import-playlist") {
+        if focused(cx, window, "import-playlist") {
             break;
         }
         act(cx, window, |window, cx| window.press("shift-tab", cx));
     }
-    assert!(animation_fixes::focused(cx, window, "import-playlist"));
+    assert!(focused(cx, window, "import-playlist"));
     act(cx, window, |window, cx| window.press("space", cx));
     assert!(
         matches!(received.try_recv(), Ok(Command::ImportPlaylist(url)) if url.contains("list="))
     );
-    cx.update(|cx| {
-        assert_eq!(
-            view.read(cx).state.import,
-            crate::player::ImportStatus::Ready
-        );
-    });
+    assert_eq!(
+        button(cx, window, "import-playlist").0,
+        "Import playlist",
+        "the window waits for the controller before showing an import"
+    );
 }
 
 #[gpui_kit::test]
@@ -1739,10 +1818,10 @@ fn full_queue_and_long_discord_context_fit_with_real_transport(cx: &mut TestAppC
         snapshot.voice_connected = true;
         snapshot.queue = with_lists(Phase::Paused, 100, 3).queue;
         snapshot.history = with_lists(Phase::Paused, 0, 3).history;
-        snapshot.import = crate::player::ImportStatus::Importing;
+        snapshot.import = crate::playlist::ImportStatus::Importing;
         snapshot.error = Some("A failed seek with a long diagnosis and recovery. ".repeat(10));
         snapshot.preferences.repeat = crate::player::RepeatMode::Queue;
-        snapshot.setup.destination = Some(crate::setup::Destination {
+        snapshot.setup.destination = Some(crate::discord::setup::Destination {
             bot: serenity::all::UserId::new(1),
             guild: serenity::all::GuildId::new(2),
             channel: serenity::all::ChannelId::new(3),

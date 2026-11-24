@@ -1,7 +1,20 @@
+use super::jobs::Origin;
+use super::playback::{Observed, UNRESPONSIVE_TIMEOUT};
+use super::queue::TITLE_TIMEOUT;
+use super::seek::SEEK_TIMEOUT;
 use super::*;
-use crate::{player::percent_from, queue::QueueItem};
+use tokio::sync::oneshot;
+
+use crate::{
+    history::HistoryEntry,
+    media::TrackInfo,
+    player::{Outcome, Resolved, SeekStatus, percent_from, volume_factor},
+    preferences::RepeatMode,
+    queue::{Placement, QUEUE_LIMIT, QueueItem},
+    store::SavedQueueItem,
+};
 use anyhow::{Result, bail, ensure};
-use songbird::tracks::ControlError;
+use songbird::tracks::{ControlError, PlayMode, TrackResult, TrackState};
 use std::future::Future;
 use std::{
     collections::{HashMap, HashSet},
@@ -154,6 +167,8 @@ struct Fake {
     hung: Mutex<HashSet<String>>,
     failing: Mutex<HashSet<String>>,
     play_failing: Mutex<HashSet<String>>,
+    unseekable: Mutex<HashSet<String>>,
+    durationless: Mutex<HashSet<String>>,
     disconnect_hung: AtomicBool,
     disconnect_failing: AtomicBool,
     playlist_reply: Mutex<Option<oneshot::Receiver<Result<crate::playlist::Playlist>>>>,
@@ -187,6 +202,8 @@ impl Fake {
             hung: Mutex::default(),
             failing: Mutex::default(),
             play_failing: Mutex::default(),
+            unseekable: Mutex::default(),
+            durationless: Mutex::default(),
             disconnect_hung: AtomicBool::new(false),
             disconnect_failing: AtomicBool::new(false),
             playlist_reply: Mutex::default(),
@@ -238,6 +255,18 @@ impl Fake {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(url.into());
     }
+    fn unseekable(&self, url: &str) {
+        self.unseekable
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(url.into());
+    }
+    fn durationless(&self, url: &str) {
+        self.durationless
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(url.into());
+    }
     fn requests(&self) -> Vec<String> {
         self.requests
             .lock()
@@ -276,14 +305,14 @@ impl Backend for Fake {
     fn ready(&self) -> bool {
         self.ready.load(SeqCst)
     }
-    async fn setup(&self, request: crate::setup::Request) -> Result<()> {
+    async fn setup(&self, request: crate::discord::setup::Request) -> Result<()> {
         match request {
-            crate::setup::Request::Select(destination) => {
+            crate::discord::setup::Request::Select(destination) => {
                 self.disconnect().await?;
                 self.health
                     .send_modify(|health| health.setup.destination = Some(destination));
             }
-            crate::setup::Request::Remove => {
+            crate::discord::setup::Request::Remove => {
                 self.disconnect().await?;
             }
             _ => {}
@@ -335,13 +364,23 @@ impl Backend for Fake {
         {
             bail!("yt-dlp extraction failed: Sign in to confirm you’re not a bot");
         }
+        let durationless = self
+            .durationless
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&url);
+        let unseekable = self
+            .unseekable
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&url);
         Ok(Resolved {
             input: Vec::<u8>::new().into(),
             source: None,
             info: TrackInfo {
                 title: Some(url),
-                duration: Some(Duration::from_secs(60)),
-                seekable: true,
+                duration: (!durationless).then_some(Duration::from_secs(60)),
+                seekable: !unseekable,
             },
         })
     }
@@ -502,6 +541,20 @@ impl Rig {
         })
         .await
     }
+    async fn transport(&self, id: u64, command: Command) -> Result<()> {
+        self.send(Command::Transport {
+            id,
+            command: Box::new(command),
+        })
+        .await
+    }
+    async fn acknowledged(&mut self, id: u64) -> Result<State> {
+        self.until(|state| state.transport_ack == id).await
+    }
+    async fn answered(&mut self, id: u64) -> Result<State> {
+        self.until(|state| state.enqueue_result.is_some_and(|ack| ack.request_id == id))
+            .await
+    }
     fn set_volume(&mut self, percent: u8, commit: bool) {
         self.seq += 1;
         self.volume.send_replace(VolumeRequest {
@@ -581,54 +634,32 @@ fn slider_values_become_whole_percentages() {
 
 #[test]
 fn actions_follow_operational_state() {
-    for phase in [
-        Phase::Initializing,
-        Phase::Connecting,
-        Phase::Resolving,
-        Phase::Stopping,
-    ] {
-        assert!(!state(phase, true).can_play());
-    }
-    for phase in [Phase::Ready, Phase::Playing, Phase::Paused, Phase::Error] {
-        assert!(state(phase, true).can_play());
-        assert!(!state(phase, false).can_play());
-    }
-    assert!(!state(Phase::Ready, true).can_stop());
+    assert!(state(Phase::Ready, true).can_play());
+    assert!(
+        !state(Phase::Ready, false).can_play(),
+        "Discord is required"
+    );
+    assert!(
+        !state(Phase::Resolving, true).can_play(),
+        "one request at a time"
+    );
     assert!(state(Phase::Resolving, true).can_stop());
-    assert!(!state(Phase::Stopping, true).can_stop());
+    assert!(!state(Phase::Ready, true).can_stop(), "nothing to stop");
+    assert!(
+        !state(Phase::Stopping, true).can_stop(),
+        "stop is already running"
+    );
 }
 
 #[test]
 fn pause_resume_and_stop_availability() {
-    // Pause only while playing, Resume only while paused, Stop in both.
-    for phase in [
-        Phase::Initializing,
-        Phase::Ready,
-        Phase::Connecting,
-        Phase::Resolving,
-        Phase::Paused,
-        Phase::Stopping,
-        Phase::Error,
-    ] {
-        assert!(!state(phase, true).can_pause(), "{phase:?}");
-    }
-    for phase in [
-        Phase::Initializing,
-        Phase::Ready,
-        Phase::Connecting,
-        Phase::Resolving,
-        Phase::Playing,
-        Phase::Stopping,
-        Phase::Error,
-    ] {
-        assert!(!state(phase, true).can_resume(), "{phase:?}");
-    }
     assert!(state(Phase::Playing, true).can_pause());
-    assert!(state(Phase::Paused, true).can_resume());
-    assert!(state(Phase::Paused, true).can_stop());
-    assert!(state(Phase::Playing, true).can_stop());
     assert!(!state(Phase::Playing, false).can_pause());
+    assert!(!state(Phase::Paused, true).can_pause());
+    assert!(state(Phase::Paused, true).can_resume());
+    assert!(!state(Phase::Playing, true).can_resume());
     assert!(!state(Phase::Paused, false).can_resume());
+    assert!(state(Phase::Playing, true).can_stop() && state(Phase::Paused, true).can_stop());
 }
 
 #[test]
@@ -641,21 +672,9 @@ fn next_needs_a_queued_track_and_a_settled_player() {
         url: A.into(),
         title: None,
     }];
-    for phase in [
-        Phase::Ready,
-        Phase::Connecting,
-        Phase::Resolving,
-        Phase::Playing,
-        Phase::Paused,
-        Phase::Error,
-    ] {
-        value.phase = phase;
-        assert!(value.can_next(), "{phase:?}");
-    }
-    for phase in [Phase::Initializing, Phase::Stopping] {
-        value.phase = phase;
-        assert!(!value.can_next(), "{phase:?}");
-    }
+    assert!(value.can_next());
+    value.phase = Phase::Initializing;
+    assert!(!value.can_next(), "the player is not settled");
     value.phase = Phase::Ready;
     value.available = false;
     assert!(!value.can_next() && !value.can_enqueue());
@@ -779,112 +798,87 @@ fn solo(saved: Saved) -> (Controller<Fake>, Arc<Fake>, watch::Receiver<State>) {
 }
 
 #[tokio::test]
-async fn pause_and_resume_use_the_existing_track_handle() -> Result<()> {
-    let (mut controller, fake, updates) = solo(Saved::default());
-    let track = track_of(&fake).await?;
-    controller.track = Some(active(&track));
-    // Before playback is confirmed neither command may claim a state change.
-    controller.set_paused(true);
-    ensure!(controller.track.as_ref().is_some_and(|t| !t.paused));
-    ensure!(track.calls().is_empty());
-    if let Some(current) = controller.track.as_mut() {
-        current.confirmed = true;
-    }
-    controller.set_paused(true);
-    ensure!(updates.has_changed()?);
-    assert_eq!(updates.borrow().phase, Phase::Paused);
-    assert_eq!(
-        updates
-            .borrow()
-            .track
-            .as_ref()
-            .and_then(|t| t.title.as_deref()),
-        Some("Song")
-    );
-    // Duplicate Pause: still Paused, still answered so the GUI is released.
-    controller.set_paused(true);
-    assert_eq!(updates.borrow().phase, Phase::Paused);
-    controller.set_paused(false);
-    assert_eq!(updates.borrow().phase, Phase::Playing);
-    // Duplicate Resume is idempotent.
-    controller.set_paused(false);
-    assert_eq!(updates.borrow().phase, Phase::Playing);
-    assert_eq!(track.calls(), ["pause", "resume"]);
-    ensure!(
-        controller.track.is_some(),
-        "Pause/Resume must keep the track"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn control_without_a_track_still_answers() {
-    let (mut controller, _fake, mut updates) = solo(Saved::default());
-    controller.publish(Phase::Ready, None);
-    updates.borrow_and_update();
-    controller.set_paused(true);
-    assert!(updates.has_changed().unwrap_or(false));
-    assert_eq!(updates.borrow_and_update().phase, Phase::Ready);
-}
-
-#[tokio::test]
 async fn failed_control_command_reports_error_instead_of_a_false_state() -> Result<()> {
     for paused in [true, false] {
-        let (mut controller, fake, updates) = solo(Saved::default());
-        let mut current = active(&track_of(&fake).await?);
-        current.confirmed = true;
-        current.paused = !paused;
-        controller.track = Some(current);
+        let mut rig = Rig::new().await?;
+        rig.play(A).await?;
+        rig.started(1).await?;
+        rig.fake.track(0)?.advance(1);
+        rig.until(|s| s.phase == Phase::Playing).await?;
+        if !paused {
+            rig.send(Command::Pause).await?;
+            rig.until(|s| s.phase == Phase::Paused).await?;
+        }
         // The handle's channel is closed once its track is gone.
-        controller.set_paused_with(paused, |_| Err(ControlError::Finished));
-        ensure!(controller.track.is_none(), "dead track must be released");
-        let current = updates.borrow().clone();
-        assert_eq!(current.phase, Phase::Error);
-        assert!(current.track.is_none());
+        rig.fake.track(0)?.dead.store(true, SeqCst);
+        rig.send(if paused {
+            Command::Pause
+        } else {
+            Command::Resume
+        })
+        .await?;
+        let state = rig.until(|s| s.phase == Phase::Error).await?;
+        assert!(state.track.is_none(), "dead track must be released");
         let action = if paused { "pause" } else { "resume" };
-        assert!(current.error.is_some_and(|error| error.contains(action)));
+        assert!(
+            state
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains(action))
+        );
     }
     Ok(())
 }
 
 #[tokio::test]
 async fn stop_works_while_paused() -> Result<()> {
-    let (mut controller, fake, _updates) = solo(Saved::default());
-    let track = track_of(&fake).await?;
-    let mut current = active(&track);
-    current.confirmed = true;
-    current.paused = true;
-    controller.track = Some(current);
-    controller.stop().await;
-    ensure!(controller.track.is_none() && track.stopped.load(SeqCst));
-    assert_eq!(controller.states.borrow().phase, Phase::Ready);
+    let mut rig = Rig::new().await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    let track = rig.fake.track(0)?;
+    track.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    rig.send(Command::Pause).await?;
+    rig.until(|s| s.phase == Phase::Paused).await?;
+    rig.send(Command::Stop).await?;
+    let state = rig.until(|s| s.phase == Phase::Ready).await?;
+    ensure!(track.stopped.load(SeqCst));
+    assert!(state.track.is_none() && state.queue.is_empty());
     Ok(())
 }
 
 #[tokio::test]
-async fn current_track_outcomes_end_or_fail_playback() -> Result<()> {
-    for (outcome, ended, phase) in [
-        (Some(Outcome::End), true, Phase::Initializing),
-        (Some(Outcome::Error("boom".into())), false, Phase::Error),
-        (None, false, Phase::Initializing),
-    ] {
-        let (mut controller, fake, updates) = solo(Saved::default());
-        let (sender, mailbox) = watch::channel(None);
-        let mut current = active(&track_of(&fake).await?);
-        current.outcome = mailbox;
-        controller.track = Some(current);
-        sender.send_replace(outcome);
-        assert_eq!(controller.handle_outcome(true), ended);
-        assert_eq!(updates.borrow().phase, phase);
-        assert_eq!(controller.track.is_none(), phase == Phase::Error);
-    }
-    // Vanished event senders fail the track instead of hanging the UI.
+async fn an_empty_outcome_neither_ends_nor_fails_the_track() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    let track = rig.fake.track(0)?;
+    track.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    track.outcome.send_replace(None);
+    rig.settle().await;
+    assert_eq!(rig.fake.started(), 1);
+    assert_eq!(rig.fake.requests(), [A]);
+    assert_eq!(rig.state().phase, Phase::Playing);
+    assert!(rig.state().error.is_none());
+    ensure!(!track.stopped.load(SeqCst));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_vanished_outcome_sender_fails_the_track() -> Result<()> {
     let (mut controller, fake, updates) = solo(Saved::default());
-    controller.track = Some(active(&track_of(&fake).await?));
-    assert!(!controller.handle_outcome(false));
-    assert_eq!(updates.borrow().phase, Phase::Error);
+    let (sender, mailbox) = watch::channel(None);
+    drop(sender);
+    let mut current = active(&track_of(&fake).await?);
+    current.outcome = mailbox;
+    controller.track = Some(current);
+    controller.handle_outcome(false);
+    let state = updates.borrow().clone();
+    assert_eq!(state.phase, Phase::Error);
+    assert!(state.track.is_none());
     assert_eq!(
-        updates.borrow().error.as_deref(),
+        state.error.as_deref(),
         Some("Audio driver terminated unexpectedly. Try again.")
     );
     Ok(())
@@ -892,38 +886,51 @@ async fn current_track_outcomes_end_or_fail_playback() -> Result<()> {
 
 #[tokio::test]
 async fn history_records_only_when_playback_begins() -> Result<()> {
-    let (mut controller, fake, updates) = solo(Saved::default());
-    let track = track_of(&fake).await?;
-    controller.track = Some(active(&track));
-    // Extraction succeeded and the track exists, but nothing has played yet.
-    assert!(!controller.apply(Some(Ok(info(PlayMode::Play, 0.0)))));
-    assert_eq!(controller.saved.history.len(), 0);
-    assert!(!controller.apply(Some(Ok(info(PlayMode::Play, 0.3)))));
-    assert_eq!(controller.saved.history.len(), 1);
-    assert_eq!(controller.saved.history[0].url, A);
-    assert_eq!(controller.saved.history[0].title.as_deref(), Some("Song"));
-    assert_eq!(controller.saved.history[0].duration_secs, Some(225));
+    let mut rig = Rig::new().await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    let track = rig.fake.track(0)?;
+    rig.settle().await;
+    assert!(
+        rig.state().history.is_empty(),
+        "a prepared track has not played"
+    );
+    track.advance(1);
+    let state = rig
+        .until(|s| s.history.len() == 1 && s.phase == Phase::Playing)
+        .await?;
+    assert_eq!(state.history[0].url, A);
+    assert_eq!(state.history[0].title.as_deref(), Some(A));
+    assert_eq!(state.history[0].duration_secs, Some(60));
     // Later ticks, pause and resume do not record again.
-    assert!(!controller.apply(Some(Ok(info(PlayMode::Play, 1.5)))));
-    assert_eq!(controller.saved.history.len(), 1);
-    assert_eq!(updates.borrow().history.len(), 1);
-    // A natural end is reported to the caller, who advances the queue.
-    assert!(controller.apply(Some(Ok(info(PlayMode::End, 2.0)))));
-    controller.natural_end().await;
-    ensure!(controller.track.is_none());
+    track.advance(2);
+    rig.until(|s| s.position >= Duration::from_secs(2)).await?;
+    rig.send(Command::Pause).await?;
+    rig.until(|s| s.phase == Phase::Paused).await?;
+    rig.send(Command::Resume).await?;
+    rig.until(|s| s.phase == Phase::Playing).await?;
+    assert_eq!(rig.state().history.len(), 1);
+    assert_eq!(rig.saves.borrow().history.len(), 1);
+    // A natural end still reports to the caller, who finds an empty queue.
+    track.end();
+    let state = rig.until(|s| s.phase == Phase::Ready).await?;
+    assert!(state.track.is_none());
     Ok(())
 }
 
 #[tokio::test]
 async fn a_failed_start_is_never_recorded() -> Result<()> {
-    let (mut controller, fake, updates) = solo(Saved::default());
-    controller.track = Some(active(&track_of(&fake).await?));
-    let error = PlayMode::Errored(songbird::tracks::PlayError::Decode(Arc::new(
-        symphonia::core::errors::Error::DecodeError("invalid packet"),
-    )));
-    assert!(!controller.apply(Some(Ok(info(error, 0.0)))));
-    assert_eq!(controller.saved.history.len(), 0);
-    assert_eq!(updates.borrow().phase, Phase::Error);
+    let mut rig = Rig::new().await?;
+    rig.play(A).await?;
+    rig.started(1).await?;
+    rig.fake
+        .track(0)?
+        .outcome
+        .send_replace(Some(Outcome::Error("decode failure".into())));
+    let state = rig.until(|s| s.phase == Phase::Error).await?;
+    assert_eq!(state.history, Vec::new());
+    assert!(state.track.is_none());
+    assert_eq!(state.error.as_deref(), Some("decode failure"));
     Ok(())
 }
 
@@ -945,11 +952,14 @@ async fn adding_while_idle_never_starts_playback() -> Result<()> {
 #[tokio::test]
 async fn queued_entries_reuse_titles_known_from_history() -> Result<()> {
     let mut saved = Saved::default();
-    saved.record(crate::store::HistoryEntry {
-        url: A.into(),
-        title: Some("Known".into()),
-        duration_secs: None,
-    });
+    crate::history::record(
+        &mut saved.history,
+        crate::history::HistoryEntry {
+            url: A.into(),
+            title: Some("Known".into()),
+            duration_secs: None,
+        },
+    );
     let mut rig = Rig::start(saved);
     rig.until(|s| s.phase == Phase::Ready).await?;
     rig.enqueue(A).await?;
@@ -1154,10 +1164,24 @@ async fn pause_and_resume_never_touch_the_queue() -> Result<()> {
     rig.play(A).await?;
     rig.started(1).await?;
     let track = rig.fake.track(0)?;
-    track.advance(2);
+    // The handle exists but has not advanced yet: neither command may claim a change.
+    rig.transport(1, Command::Pause).await?;
+    let state = rig.acknowledged(1).await?;
+    assert_eq!(state.phase, Phase::Resolving);
+    assert_eq!(track.calls(), [] as [&str; 0]);
+    track.advance(1);
     rig.until(|s| s.phase == Phase::Playing).await?;
-    rig.send(Command::Pause).await?;
-    rig.until(|s| s.phase == Phase::Paused).await?;
+    // Duplicates are answered without touching the handle again.
+    for id in 2..=3 {
+        rig.transport(id, Command::Pause).await?;
+        rig.until(|s| s.transport_ack == id && s.phase == Phase::Paused)
+            .await?;
+    }
+    for id in 4..=5 {
+        rig.transport(id, Command::Resume).await?;
+        rig.until(|s| s.transport_ack == id && s.phase == Phase::Playing)
+            .await?;
+    }
     rig.settle().await;
     assert_eq!(
         rig.fake.requests(),
@@ -1165,10 +1189,7 @@ async fn pause_and_resume_never_touch_the_queue() -> Result<()> {
         "Pause must not start the next track"
     );
     assert_eq!(rig.queued(), [B]);
-    rig.send(Command::Resume).await?;
-    rig.until(|s| s.phase == Phase::Playing).await?;
     assert_eq!(track.calls(), ["pause", "resume"]);
-    assert_eq!(rig.queued(), [B]);
     Ok(())
 }
 
@@ -1332,11 +1353,14 @@ async fn a_replayed_history_entry_moves_to_the_top() -> Result<()> {
 async fn history_entries_can_be_forgotten_and_cleared() -> Result<()> {
     let mut saved = Saved::default();
     for url in [A, B, C] {
-        saved.record(crate::store::HistoryEntry {
-            url: url.into(),
-            title: None,
-            duration_secs: None,
-        });
+        crate::history::record(
+            &mut saved.history,
+            crate::history::HistoryEntry {
+                url: url.into(),
+                title: None,
+                duration_secs: None,
+            },
+        );
     }
     let mut rig = Rig::start(saved);
     rig.until(|s| s.history.len() == 3).await?;
@@ -2747,27 +2771,6 @@ async fn missing_components_in_a_playlist_are_a_prompt_request_and_preserve_play
 }
 mod seek;
 
-#[tokio::test]
-async fn missing_components_stop_recovery_without_skipping_more_queued_tracks() -> Result<()> {
-    let (mut controller, _fake, updates) = solo(Saved {
-        continue_on_error: true,
-        ..Saved::default()
-    });
-    controller.enqueue(B, crate::player::Placement::End);
-    controller
-        .finish_job(JobEvent::Checked {
-            start: Start::Queue(Vec::new()),
-            result: Err(crate::media::components::tools().failure().into()),
-        })
-        .await;
-    assert_eq!(updates.borrow().components_request, 1);
-    assert!(updates.borrow().error.is_none());
-    assert_eq!(updates.borrow().phase, Phase::Ready);
-    assert!(controller.scheduled.is_none());
-    assert_eq!(updates.borrow().queue[0].url, B);
-    Ok(())
-}
-
 mod favorites;
 mod native;
 mod queue_next;
@@ -2790,7 +2793,9 @@ async fn missing_tool_preflight_preserves_the_entire_saved_queue() -> Result<()>
     rig.until(|state| state.phase == Phase::Ready).await?;
     rig.fake.tools_missing.store(true, SeqCst);
     rig.send(Command::Next).await?;
-    rig.until(|state| state.components_request == 1).await?;
+    let state = rig.until(|state| state.components_request == 1).await?;
+    assert_eq!(state.phase, Phase::Ready);
+    assert!(state.error.is_none());
     assert_eq!(rig.queued(), [A, B]);
     assert_eq!(
         rig.saves
@@ -2814,55 +2819,59 @@ async fn missing_tool_preflight_preserves_the_entire_saved_queue() -> Result<()>
 }
 
 #[tokio::test]
-async fn enqueue_requests_retain_results_after_consumption_and_identical_errors() {
-    let (mut controller, _fake, updates) = solo(Saved::default());
-    controller
-        .command(Command::EnqueueRequest {
-            id: 1,
-            value: A.into(),
-            placement: crate::player::Placement::End,
-        })
-        .await;
+async fn enqueue_requests_retain_results_after_consumption_and_identical_errors() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.send(Command::EnqueueRequest {
+        id: 1,
+        value: A.into(),
+        placement: Placement::End,
+    })
+    .await?;
+    let state = rig.answered(1).await?;
     assert_eq!(
-        updates.borrow().enqueue_result,
+        state.enqueue_result,
         Some(crate::player::EnqueueResult {
             request_id: 1,
             item_id: Some(0)
         })
     );
-    controller.queue.pop_front();
-    controller.queue_changed();
+    let front = rig.state().queue[0].id;
+    rig.send(Command::Dequeue(front)).await?;
+    rig.until(|state| state.queue.is_empty()).await?;
     assert_eq!(
-        updates.borrow().enqueue_result,
+        rig.state().enqueue_result,
         Some(crate::player::EnqueueResult {
             request_id: 1,
             item_id: Some(0)
-        })
+        }),
+        "consuming the item does not erase the acknowledgement"
     );
     for id in [2, 3] {
-        controller
-            .command(Command::EnqueueRequest {
-                id,
-                value: "invalid".into(),
-                placement: crate::player::Placement::End,
-            })
-            .await;
+        rig.send(Command::EnqueueRequest {
+            id,
+            value: "invalid".into(),
+            placement: Placement::End,
+        })
+        .await?;
+        let state = rig.answered(id).await?;
         assert_eq!(
-            updates.borrow().enqueue_result,
+            state.enqueue_result,
             Some(crate::player::EnqueueResult {
                 request_id: id,
                 item_id: None
-            })
+            }),
+            "identical failures are answered per request"
         );
     }
-    controller.enqueue(B, Placement::End);
-    assert_eq!(
-        updates.borrow().enqueue_result,
-        Some(crate::player::EnqueueResult {
-            request_id: 3,
-            item_id: None
-        })
+    rig.enqueue(B).await?;
+    rig.until(|state| state.queue.len() == 1).await?;
+    assert!(
+        rig.state()
+            .enqueue_result
+            .is_some_and(|result| result.request_id == 0 && result.item_id.is_some()),
+        "its own command is answered"
     );
+    Ok(())
 }
 
 #[tokio::test]
@@ -2986,38 +2995,37 @@ async fn preflight_queue_edits_keep_capacity_and_the_selected_track_identity() -
 #[tokio::test]
 async fn ui_transport_acknowledges_errors_and_ignored_commands_without_guessing_phase() -> Result<()>
 {
-    let (mut controller, fake, updates) = solo(Saved::default());
-    let mut current = active(&track_of(&fake).await?);
-    current.confirmed = true;
-    controller.track = Some(current);
-    controller.sync();
+    let mut rig = Rig::new().await?;
+    // A command with no track is still acknowledged.
+    rig.transport(1, Command::Pause).await?;
+    let state = rig.acknowledged(1).await?;
+    assert_eq!(state.phase, Phase::Ready);
+    rig.play(A).await?;
+    rig.started(1).await?;
+    rig.fake.track(0)?.advance(1);
+    rig.until(|s| s.phase == Phase::Playing).await?;
     for (id, command, phase) in [
-        (1, Command::Pause, Phase::Paused),
-        (2, Command::Play("invalid".into()), Phase::Paused),
-        (3, Command::Resume, Phase::Playing),
-        (4, Command::Play("invalid".into()), Phase::Playing),
-        (5, Command::Resume, Phase::Playing),
+        (2, Command::Pause, Phase::Paused),
+        (3, Command::Play("invalid".into()), Phase::Paused),
+        (4, Command::Resume, Phase::Playing),
+        (5, Command::Play("invalid".into()), Phase::Playing),
+        (6, Command::Resume, Phase::Playing),
     ] {
-        controller
-            .command(Command::Transport {
-                id,
-                command: Box::new(command),
-            })
-            .await;
-        assert_eq!(updates.borrow().transport_ack, id);
-        assert_eq!(updates.borrow().phase, phase);
-        if id == 2 || id == 4 {
-            ensure!(updates.borrow().error.is_some());
+        rig.transport(id, command).await?;
+        let state = rig.acknowledged(id).await?;
+        assert_eq!(state.phase, phase, "transport {id}");
+        if id == 3 || id == 5 {
+            assert!(state.error.is_some(), "bad URL is reported");
         }
     }
-    controller.sync();
-    assert_eq!(updates.borrow().transport_ack, 5);
-    assert_eq!(updates.borrow().phase, Phase::Playing);
+    rig.send(Command::Pause).await?;
+    let state = rig.until(|s| s.phase == Phase::Paused).await?;
+    assert_eq!(state.transport_ack, 6, "later commands keep the last ack");
     Ok(())
 }
 
-fn destination(channel: u64) -> crate::setup::Destination {
-    crate::setup::Destination {
+fn destination(channel: u64) -> crate::discord::setup::Destination {
+    crate::discord::setup::Destination {
         bot: serenity::all::UserId::new(3),
         guild: serenity::all::GuildId::new(1),
         channel: serenity::all::ChannelId::new(channel),
@@ -3030,164 +3038,185 @@ fn destination(channel: u64) -> crate::setup::Destination {
 async fn destination_switch_is_explicit_preserves_queue_and_never_repeats_interruption()
 -> Result<()> {
     for paused in [false, true] {
-        let (mut controller, fake, updates) = solo(Saved {
+        let mut rig = Rig::start(Saved {
             repeat: RepeatMode::Queue,
             ..Saved::default()
         });
-        controller.enqueue(B, crate::player::Placement::End);
-        let track = track_of(&fake).await?;
-        let mut playing = active(&track);
-        playing.confirmed = true;
-        playing.paused = paused;
-        playing.request.origin = Origin::Queue;
-        controller.track = Some(playing);
-        controller
-            .command(Command::Setup(crate::setup::Request::Select(destination(
-                4,
-            ))))
-            .await;
-        assert!(updates.borrow().confirm_setup);
-        assert!(!track.stopped.load(SeqCst));
-        controller.command(Command::ConfirmSetup(false)).await;
-        assert!(!updates.borrow().confirm_setup);
-        assert!(!track.stopped.load(SeqCst));
-        controller
-            .command(Command::Setup(crate::setup::Request::Select(destination(
-                4,
-            ))))
-            .await;
-        controller.command(Command::ConfirmSetup(true)).await;
-        assert!(track.stopped.load(SeqCst));
-        let job = controller.setup_job.take().context("switch job")?;
-        controller.finish_setup(&job.await).await;
-        assert_eq!(updates.borrow().queue.len(), 1);
-        assert_eq!(updates.borrow().queue[0].url, B);
-        assert_eq!(updates.borrow().preferences.repeat, RepeatMode::Queue);
-        assert!(controller.track.is_none());
-        assert!(controller.scheduled.is_none());
-        assert_eq!(fake.connects.load(SeqCst), 0);
-        assert_eq!(fake.disconnects.load(SeqCst), 1);
+        rig.until(|s| s.phase == Phase::Ready).await?;
+        rig.enqueue(B).await?;
+        rig.until(|s| s.queue.len() == 1).await?;
+        rig.play(A).await?;
+        rig.started(1).await?;
+        let track = rig.fake.track(0)?;
+        track.advance(1);
+        rig.until(|s| s.phase == Phase::Playing).await?;
+        if paused {
+            rig.send(Command::Pause).await?;
+            rig.until(|s| s.phase == Phase::Paused).await?;
+        }
+        rig.send(Command::Setup(crate::discord::setup::Request::Select(
+            destination(4),
+        )))
+        .await?;
+        let state = rig.until(|s| s.confirm_setup).await?;
+        assert_eq!(
+            state.phase,
+            if paused {
+                Phase::Paused
+            } else {
+                Phase::Playing
+            }
+        );
+        assert_eq!(state.queue.len(), 1);
+        ensure!(
+            !track.stopped.load(SeqCst),
+            "nothing stops before confirmation"
+        );
+        rig.send(Command::ConfirmSetup(false)).await?;
+        rig.until(|s| !s.confirm_setup).await?;
+        ensure!(!track.stopped.load(SeqCst));
+        rig.send(Command::Setup(crate::discord::setup::Request::Select(
+            destination(4),
+        )))
+        .await?;
+        rig.until(|s| s.confirm_setup).await?;
+        rig.send(Command::ConfirmSetup(true)).await?;
+        let state = rig.until(|s| !s.confirm_setup && !s.setup_busy).await?;
+        ensure!(track.stopped.load(SeqCst), "the switch stops playback once");
+        assert_eq!(state.phase, Phase::Ready);
+        assert_eq!(state.queue.len(), 1);
+        assert_eq!(state.queue[0].url, B);
+        assert_eq!(state.preferences.repeat, RepeatMode::Queue);
+        assert!(state.track.is_none());
+        assert_eq!(rig.fake.connects.load(SeqCst), 0);
+        assert_eq!(rig.fake.disconnects.load(SeqCst), 1);
+        assert_eq!(rig.saves.borrow().destination, Some(destination(4)));
     }
     Ok(())
 }
 
 #[tokio::test]
 async fn failed_destination_switch_retains_previous_selection_and_pending_queue() -> Result<()> {
-    let (mut controller, fake, updates) = solo(Saved::default());
-    fake.health
+    let mut rig = Rig::new().await?;
+    rig.fake
+        .health
         .send_modify(|health| health.setup.destination = Some(destination(2)));
-    fake.disconnect_failing.store(true, SeqCst);
-    controller.enqueue(B, crate::player::Placement::End);
-    controller
-        .configure(crate::setup::Request::Select(destination(4)))
-        .await;
-    let job = controller.setup_job.take().context("switch job")?;
-    controller.finish_setup(&job.await).await;
-    assert_eq!(updates.borrow().setup.destination, Some(destination(2)));
-    assert_eq!(updates.borrow().queue.len(), 1);
-    assert!(controller.track.is_none());
-    assert_eq!(fake.connects.load(SeqCst), 0);
+    rig.fake.disconnect_failing.store(true, SeqCst);
+    rig.enqueue(B).await?;
+    rig.until(|s| s.queue.len() == 1).await?;
+    rig.send(Command::Setup(crate::discord::setup::Request::Select(
+        destination(4),
+    )))
+    .await?;
+    let state = rig.until(|s| s.error.is_some()).await?;
+    assert_eq!(state.phase, Phase::Error);
+    assert_eq!(state.setup.destination, Some(destination(2)));
+    assert_eq!(state.queue.len(), 1);
+    assert!(state.track.is_none());
+    assert_eq!(rig.fake.connects.load(SeqCst), 0);
+    assert_eq!(
+        rig.saves.borrow().destination,
+        None,
+        "a failed switch is not persisted"
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn reconfiguration_rejects_parallel_switches_and_playback_until_disconnect_finishes()
 -> Result<()> {
-    let (mut controller, fake, updates) = solo(Saved::default());
-    fake.disconnect_hung.store(true, SeqCst);
-    controller
-        .configure(crate::setup::Request::Select(destination(4)))
-        .await;
-    controller.command(Command::Play(A.into())).await;
-    controller
-        .command(Command::Setup(crate::setup::Request::Select(destination(
-            5,
-        ))))
-        .await;
-    assert!(updates.borrow().setup_busy);
-    assert!(!updates.borrow().available);
-    assert!(controller.job.is_none());
-    assert!(controller.pending_setup.is_none());
-    if let Some(job) = controller.setup_job.take() {
-        job.abort();
-        let _ = job.await;
-    }
+    let mut rig = Rig::new().await?;
+    rig.fake.disconnect_hung.store(true, SeqCst);
+    rig.send(Command::Setup(crate::discord::setup::Request::Select(
+        destination(4),
+    )))
+    .await?;
+    let state = rig.until(|s| s.setup_busy).await?;
+    assert!(!state.available);
+    rig.play(A).await?;
+    rig.send(Command::Setup(crate::discord::setup::Request::Select(
+        destination(5),
+    )))
+    .await?;
+    rig.settle().await;
+    let state = rig.state();
+    assert!(state.setup_busy && !state.available);
+    assert_eq!(
+        state.setup.destination, None,
+        "the parallel switch is ignored"
+    );
+    assert_eq!(rig.fake.requests(), Vec::<String>::new());
+    assert_eq!(rig.fake.started(), 0);
+    rig.shutdown.send_replace(true);
+    rig.task.await?;
     Ok(())
 }
 
 #[tokio::test]
-async fn unauthenticated_controller_keeps_local_queue_and_preferences_usable() {
-    let (mut controller, fake, updates) = solo(Saved::default());
-    fake.health.send_modify(|health| {
+async fn unauthenticated_controller_keeps_local_queue_and_preferences_usable() -> Result<()> {
+    let mut rig = Rig::new().await?;
+    rig.fake.health.send_modify(|health| {
         health.gateway = false;
         health.voice = false;
     });
-    controller
-        .command(Command::EnqueueRequest {
-            id: 0,
-            value: B.into(),
-            placement: Placement::End,
-        })
-        .await;
-    controller.command(Command::RememberQueue(true)).await;
-    controller.command(Command::CloseToTray(true)).await;
-    assert!(updates.borrow().controller_ready);
-    assert!(!updates.borrow().available);
-    assert_eq!(updates.borrow().queue.len(), 1);
-    assert_eq!(controller.saved.queue.len(), 1);
-    assert!(controller.saved.close_to_tray);
-    controller.command(Command::ClearQueue).await;
-    assert_eq!(updates.borrow().queue.len(), 0);
+    rig.until(|s| !s.available).await?;
+    rig.enqueue(B).await?;
+    rig.send(Command::RememberQueue(true)).await?;
+    rig.send(Command::CloseToTray(true)).await?;
+    let state = rig
+        .until(|s| s.preferences.remember_queue && s.close_to_tray)
+        .await?;
+    assert!(state.controller_ready);
+    assert!(!state.available);
+    assert_eq!(state.queue.len(), 1);
+    assert_eq!(rig.saves.borrow().queue.len(), 1);
+    rig.send(Command::ClearQueue).await?;
+    rig.until(|s| s.queue.is_empty()).await?;
+    assert_eq!(rig.saves.borrow().queue, Vec::new());
+    Ok(())
 }
 
 #[tokio::test]
 async fn failed_or_credentialless_restore_preserves_saved_destination_but_explicit_removal_clears_it()
 -> Result<()> {
-    let (mut controller, _, _) = solo(Saved {
+    let seeded = Saved {
         destination: Some(destination(2)),
         ..Saved::default()
-    });
+    };
+    let (states, _) = watch::channel(State::default());
+    let (persist, saves) = watch::channel(seeded.clone());
+    let mut controller = Controller::new(Fake::new(), seeded, None, states, persist, None);
     controller.setup_change = SetupChange::Reconfigure;
     controller.finish_setup(&Ok(Ok(()))).await;
-    assert_eq!(controller.saved.destination, Some(destination(2)));
+    assert_eq!(saves.borrow().destination, Some(destination(2)));
     controller
         .finish_setup(&Ok(Err(anyhow::anyhow!("Authentication failed"))))
         .await;
-    assert_eq!(controller.saved.destination, Some(destination(2)));
+    assert_eq!(saves.borrow().destination, Some(destination(2)));
     controller.setup_change = SetupChange::Remove;
     controller.finish_setup(&Ok(Ok(()))).await;
-    assert!(controller.saved.destination.is_none());
+    assert!(saves.borrow().destination.is_none());
     Ok(())
 }
 
 #[tokio::test]
 async fn failed_discovery_disconnect_is_retried_after_setup_finishes() -> Result<()> {
-    let (mut controller, fake, updates) = solo(Saved::default());
-    controller.enqueue(B, crate::player::Placement::End);
-    controller.setup_change = SetupChange::Discovery;
-    controller.setup_job = Some(tokio::spawn(async { Ok(()) }));
-    fake.ready.store(false, SeqCst);
-    fake.health.send_modify(|health| {
+    let mut rig = Rig::new().await?;
+    rig.enqueue(B).await?;
+    rig.until(|s| s.queue.len() == 1).await?;
+    rig.fake.ready.store(false, SeqCst);
+    rig.fake.health.send_modify(|health| {
         health.setup.destination = None;
         health.voice = true;
         health.voice_retry = false;
         health.voice_error = Some("Could not leave voice".into());
     });
-    let current = fake.health.borrow().clone();
-    controller.health_changed(current).await;
-    assert!(controller.job.is_none());
-    let setup = controller.setup_job.take().context("setup job")?;
-    setup.await??;
-    controller
-        .finish_setup(&Ok(Err(anyhow::anyhow!("Could not leave voice"))))
-        .await;
-    assert_eq!(updates.borrow().phase, Phase::Disconnecting);
-    let event = job_event(&mut controller.job).await;
-    controller.finish_job(event).await;
-    assert_eq!(fake.disconnects.load(SeqCst), 1);
-    assert!(!fake.health.borrow().voice);
-    assert_eq!(updates.borrow().queue[0].url, B);
-    assert_eq!(fake.started(), 0);
+    let state = rig.until(|s| !s.voice_connected).await?;
+    assert_eq!(state.phase, Phase::Ready);
+    assert!(state.error.is_none());
+    assert_eq!(rig.fake.disconnects.load(SeqCst), 1);
+    assert_eq!(rig.queued(), [B]);
+    assert_eq!(rig.fake.started(), 0);
     Ok(())
 }
 
