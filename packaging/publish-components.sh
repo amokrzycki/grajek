@@ -40,7 +40,8 @@ if ! [[ $pub_hex =~ ^[0-9a-f]{64}$ ]]; then
   echo "error: $pub must contain exactly 64 lowercase hex characters" >&2
   exit 1
 fi
-printf '302a300506032b6570032100%s' "$pub_hex" | xxd -r -p > "$tmp/key.der"
+ed25519_spki_der_prefix=302a300506032b6570032100
+printf '%s%s' "$ed25519_spki_der_prefix" "$pub_hex" | xxd -r -p > "$tmp/key.der"
 openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$tmp/key.der" \
   -in "$out/components.json" -sigfile "$out/components.json.sig"
 
