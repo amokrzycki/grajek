@@ -283,7 +283,7 @@ fn stored_newer_manifest_reports_update_need() -> Result<()> {
     let (signing, key) = component_keypair();
     let mut value = component_manifest()?;
     value["yt-dlp"]["version"] = "2099.1.1".into();
-    let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, embedded.serial + 1, "0.1.0")?;
     super::channel::store_manifest(root.path(), &bytes, &signature)?;
     assert_eq!(
         tools.need_on(None, || pins_with(Some(root.path()), &key)),

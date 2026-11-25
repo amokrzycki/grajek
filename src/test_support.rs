@@ -84,6 +84,10 @@ pub(crate) fn component_keypair() -> (ed25519_dalek::SigningKey, ed25519_dalek::
     (signing, verifying)
 }
 
+pub(crate) fn embedded_serial() -> anyhow::Result<u64> {
+    Ok(crate::media::components::embedded_pins()?.serial)
+}
+
 pub(crate) fn component_manifest() -> anyhow::Result<serde_json::Value> {
     Ok(serde_json::from_str(include_str!(
         "../packaging/components.json"

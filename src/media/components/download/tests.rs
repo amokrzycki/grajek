@@ -45,9 +45,10 @@ async fn server(bytes: Vec<u8>, truncated: bool) -> Result<Server> {
 fn archive() -> Result<Vec<u8>> {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
+    let pins = super::super::embedded_pins()?;
     for (name, version) in [
-        ("yt-dlp_linux", "2026.10.26"),
-        ("deno", "deno 2.9.8 (stable)"),
+        ("yt-dlp_linux", pins.ytdlp.version.clone()),
+        ("deno", format!("deno {} (stable)", pins.deno.version)),
     ] {
         zip.start_file(name, options)?;
         write!(
@@ -69,14 +70,17 @@ fn archive() -> Result<Vec<u8>> {
             (|| -> Result<Vec<u8>> {
                 let dir = Scratch::new()?;
                 let source = dir.path().join("fixture.rs");
+                let pins = super::super::embedded_pins()?;
                 std::fs::write(
                     &source,
                     r#"fn main() {
                 let exe = std::env::current_exe().unwrap();
                 if exe.file_name().unwrap() == "deno.exe" {
-                    println!("deno 2.9.8 (stable)");
-                } else { println!("2026.10.26"); }
-            }"#,
+                    println!("deno DENO_VERSION (stable)");
+                } else { println!("YTDLP_VERSION"); }
+            }"#
+                    .replace("DENO_VERSION", &pins.deno.version)
+                    .replace("YTDLP_VERSION", &pins.ytdlp.version),
                 )?;
                 let binary = dir.path().join("fixture.exe");
                 let output = std::process::Command::new("rustc")
@@ -175,8 +179,8 @@ async fn verified_archives_publish_a_complete_pair_and_marker() -> Result<()> {
     );
     let marker: super::super::Versions =
         serde_json::from_slice(&std::fs::read(dir.file("tools").join("components.json"))?)?;
-    assert_eq!(marker.ytdlp, "2026.10.26");
-    assert_eq!(marker.deno, "2.9.8");
+    assert_eq!(marker.ytdlp, pins.ytdlp.version);
+    assert_eq!(marker.deno, pins.deno.version);
     assert!(!dir.path().join("tools.partial").exists());
     assert!(!dir.path().join("tools.old").exists());
     assert_eq!(*rx.borrow(), Progress::Checking);

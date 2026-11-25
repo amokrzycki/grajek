@@ -5,7 +5,9 @@ use crate::{
         channel::{self, Accepted, CheckError, Rejection, fetch},
         embedded_pins,
     },
-    test_support::{Scratch, component_keypair, component_manifest, server, signed_manifest},
+    test_support::{
+        Scratch, component_keypair, component_manifest, embedded_serial, server, signed_manifest,
+    },
 };
 
 #[test]
@@ -43,7 +45,8 @@ fn newer_serial_with_same_versions_is_up_to_date() -> anyhow::Result<()> {
     let scratch = Scratch::new()?;
     let (signing, key) = component_keypair();
     let mut manifest = component_manifest()?;
-    let (bytes, signature) = signed_manifest(&signing, &mut manifest, 2, "0.1.0")?;
+    let base = embedded_serial()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut manifest, base + 1, "0.1.0")?;
     assert_eq!(
         channel::accept(scratch.path(), &bytes, &signature, &key),
         Ok(Accepted::Stored)
