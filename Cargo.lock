@@ -3572,6 +3572,7 @@ version = "0.6.0"
 dependencies = [
  "anyhow",
  "dotenvy",
+ "ed25519-dalek",
  "embed-resource",
  "futures-lite",
  "gpui-kit",

@@ -10,6 +10,8 @@ use super::Tool;
 static TOOLS: OnceLock<RwLock<Tools>> = OnceLock::new();
 pub(crate) static EXECUTIONS: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
+#[cfg(test)]
+pub(crate) mod channel;
 pub(crate) mod download;
 pub(crate) mod execution;
 
@@ -37,6 +39,11 @@ pub(crate) struct Pins {
     #[serde(rename = "yt-dlp")]
     pub ytdlp: Pin,
     pub deno: Pin,
+    #[serde(default)]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the update check"))]
+    pub serial: u64,
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the update check"))]
+    pub min_app: String,
 }
 
 pub(crate) fn pins() -> anyhow::Result<Pins> {
