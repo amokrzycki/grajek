@@ -1,37 +1,16 @@
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::Signer as _;
 
-use super::{MAX_MANIFEST, Rejection, embedded_key, verify};
-
-fn keypair() -> (SigningKey, VerifyingKey) {
-    let signing = SigningKey::from_bytes(&[7u8; 32]);
-    let verifying = signing.verifying_key();
-    (signing, verifying)
-}
-
-fn manifest() -> anyhow::Result<serde_json::Value> {
-    Ok(serde_json::from_str(include_str!(
-        "../../../../packaging/components.json"
-    ))?)
-}
-
-fn signed(
-    signing: &SigningKey,
-    value: &mut serde_json::Value,
-    serial: u64,
-    min_app: &str,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    value["serial"] = serial.into();
-    value["min_app"] = min_app.into();
-    let bytes = serde_json::to_vec(value)?;
-    let signature = signing.sign(&bytes);
-    Ok((bytes, signature.to_bytes().to_vec()))
-}
+use super::{
+    MANIFEST_FILE, MAX_MANIFEST, Rejection, SIGNATURE_FILE, embedded_key, store_manifest,
+    stored_pins, verify,
+};
+use crate::test_support::{Scratch, component_keypair, component_manifest, signed_manifest};
 
 #[test]
 fn valid_newer_manifest_is_accepted() -> anyhow::Result<()> {
-    let (signing, verifying) = keypair();
-    let mut value = manifest()?;
-    let (bytes, signature) = signed(&signing, &mut value, 2, "0.1.0")?;
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
     let accepted = verify(&bytes, &signature, &verifying, 1);
     assert!(matches!(accepted, Ok(pins) if pins.serial == 2));
     Ok(())
@@ -39,9 +18,9 @@ fn valid_newer_manifest_is_accepted() -> anyhow::Result<()> {
 
 #[test]
 fn equal_serial_is_up_to_date() -> anyhow::Result<()> {
-    let (signing, verifying) = keypair();
-    let mut value = manifest()?;
-    let (bytes, signature) = signed(&signing, &mut value, 1, "0.1.0")?;
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 1, "0.1.0")?;
     assert!(matches!(
         verify(&bytes, &signature, &verifying, 1),
         Err(Rejection::NotNewer)
@@ -51,9 +30,9 @@ fn equal_serial_is_up_to_date() -> anyhow::Result<()> {
 
 #[test]
 fn tampered_byte_fails_signature() -> anyhow::Result<()> {
-    let (signing, verifying) = keypair();
-    let mut value = manifest()?;
-    let (mut bytes, signature) = signed(&signing, &mut value, 2, "0.1.0")?;
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (mut bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
     let last = bytes.len() - 1;
     bytes[last] ^= 0xFF;
     assert!(matches!(
@@ -81,8 +60,8 @@ fn untrusted_artifact_url_is_rejected() -> anyhow::Result<()> {
         "http://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux.zip",
     ];
     for url in urls {
-        let (signing, verifying) = keypair();
-        let mut value = manifest()?;
+        let (signing, verifying) = component_keypair();
+        let mut value = component_manifest()?;
         #[cfg(target_os = "linux")]
         {
             value["yt-dlp"]["linux"]["url"] = url.into();
@@ -91,7 +70,7 @@ fn untrusted_artifact_url_is_rejected() -> anyhow::Result<()> {
         {
             value["yt-dlp"]["windows"]["url"] = url.into();
         }
-        let (bytes, signature) = signed(&signing, &mut value, 2, "0.1.0")?;
+        let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
         assert!(
             matches!(
                 verify(&bytes, &signature, &verifying, 1),
@@ -106,9 +85,9 @@ fn untrusted_artifact_url_is_rejected() -> anyhow::Result<()> {
 #[test]
 fn newer_min_app_is_rejected() -> anyhow::Result<()> {
     for min_app in ["99.0.0", "abc"] {
-        let (signing, verifying) = keypair();
-        let mut value = manifest()?;
-        let (bytes, signature) = signed(&signing, &mut value, 2, min_app)?;
+        let (signing, verifying) = component_keypair();
+        let mut value = component_manifest()?;
+        let (bytes, signature) = signed_manifest(&signing, &mut value, 2, min_app)?;
         assert!(
             matches!(
                 verify(&bytes, &signature, &verifying, 1),
@@ -129,12 +108,71 @@ fn embedded_key_parses() -> anyhow::Result<()> {
 
 #[test]
 fn short_signature_is_rejected() -> anyhow::Result<()> {
-    let (signing, verifying) = keypair();
-    let mut value = manifest()?;
-    let (bytes, signature) = signed(&signing, &mut value, 2, "0.1.0")?;
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
     assert!(matches!(
         verify(&bytes, &signature[..63], &verifying, 1),
         Err(Rejection::BadSignature)
     ));
+    Ok(())
+}
+
+#[test]
+fn stored_manifest_with_bad_signature_falls_back_to_embedded() -> anyhow::Result<()> {
+    let dir = Scratch::new()?;
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
+    store_manifest(dir.path(), &bytes, &signature)?;
+
+    let mut flipped = signature.clone();
+    flipped[0] ^= 0xFF;
+    std::fs::write(dir.path().join(SIGNATURE_FILE), &flipped)?;
+    assert!(stored_pins(dir.path(), &verifying, 1).is_none());
+    assert_eq!(
+        super::super::pins_with(Some(dir.path()), &verifying)?.serial,
+        super::super::embedded_pins()?.serial
+    );
+
+    std::fs::write(dir.path().join(SIGNATURE_FILE), &signature[..63])?;
+    assert!(stored_pins(dir.path(), &verifying, 1).is_none());
+
+    let corrupt = b"{not json";
+    let corrupt_signature = signing.sign(corrupt).to_bytes().to_vec();
+    std::fs::write(dir.path().join(MANIFEST_FILE), corrupt)?;
+    std::fs::write(dir.path().join(SIGNATURE_FILE), &corrupt_signature)?;
+    assert!(stored_pins(dir.path(), &verifying, 1).is_none());
+    Ok(())
+}
+
+#[test]
+fn embedded_pins_win_when_serial_is_higher() -> anyhow::Result<()> {
+    let dir = Scratch::new()?;
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 1, "0.1.0")?;
+    store_manifest(dir.path(), &bytes, &signature)?;
+    assert!(stored_pins(dir.path(), &verifying, 2).is_none());
+
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 3, "0.1.0")?;
+    store_manifest(dir.path(), &bytes, &signature)?;
+    assert!(matches!(stored_pins(dir.path(), &verifying, 2), Some(pins) if pins.serial == 3));
+    Ok(())
+}
+
+#[test]
+fn store_manifest_round_trips() -> anyhow::Result<()> {
+    let dir = Scratch::new()?;
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
+    store_manifest(dir.path(), &bytes, &signature)?;
+    assert!(matches!(stored_pins(dir.path(), &verifying, 1), Some(pins) if pins.serial == 2));
+    let leftovers = std::fs::read_dir(dir.path())?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+        .count();
+    assert_eq!(leftovers, 0);
     Ok(())
 }

@@ -194,3 +194,13 @@ fn failed_download_can_be_retried_and_success_returns_without_playing(cx: &mut T
     click(cx, window, "components-later");
     assert!(commands.try_recv().is_err());
 }
+
+#[test]
+fn pending_update_does_not_auto_open_components() {
+    use crate::app::components::opens_at_startup;
+    use crate::media::components::Need;
+    assert!(!opens_at_startup(Some(Need::Update)));
+    assert!(!opens_at_startup(None));
+    assert!(opens_at_startup(Some(Need::Missing)));
+    assert!(opens_at_startup(Some(Need::Repair)));
+}

@@ -1,6 +1,15 @@
+use std::{
+    fs,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
 use ed25519_dalek::{Signature, VerifyingKey};
 
 use super::{Pins, version_parts};
+
+const MANIFEST_FILE: &str = "component-manifest.json";
+const SIGNATURE_FILE: &str = "component-manifest.json.sig";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Rejection {
@@ -61,6 +70,63 @@ pub(crate) fn verify(
         return Err(Rejection::NotNewer);
     }
     Ok(pins)
+}
+
+#[cfg(test)]
+pub(crate) fn store_manifest(dir: &Path, manifest: &[u8], signature: &[u8]) -> anyhow::Result<()> {
+    fs::create_dir_all(dir)?;
+    write_atomic(&dir.join(MANIFEST_FILE), manifest)?;
+    write_atomic(&dir.join(SIGNATURE_FILE), signature)?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = fs::File::create(&temp)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+pub(super) fn stored_pins(dir: &Path, key: &VerifyingKey, floor: u64) -> Option<Pins> {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    let warn_once = |what: &str| {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!("Ignoring stored component manifest: {what}");
+        }
+    };
+    let manifest = match fs::read(dir.join(MANIFEST_FILE)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn_once(&format!("unreadable manifest ({error})"));
+            return None;
+        }
+    };
+    let signature = match fs::read(dir.join(SIGNATURE_FILE)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn_once(&format!("unreadable signature ({error})"));
+            return None;
+        }
+    };
+    match verify(&manifest, &signature, key, floor) {
+        Ok(pins) => Some(pins),
+        Err(rejection) => {
+            warn_once(&format!("verification rejected it ({rejection:?})"));
+            None
+        }
+    }
 }
 
 #[cfg(test)]

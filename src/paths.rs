@@ -39,6 +39,10 @@ pub fn tools_dir() -> Option<PathBuf> {
     app_data_dir().map(|dir| dir.join("tools"))
 }
 
+pub(crate) fn component_manifest_dir() -> Option<PathBuf> {
+    app_data_dir()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{data_dir, windows_data_dir};

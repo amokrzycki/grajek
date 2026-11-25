@@ -120,7 +120,7 @@ fn artifact_mut(pin: &mut super::super::Pin) -> &mut super::super::Artifact {
 }
 
 fn pins_for(url: &str, bytes: &[u8]) -> Result<Pins> {
-    let mut pins = super::super::pins()?;
+    let mut pins = super::super::embedded_pins()?;
     let unpacked_size = u64::try_from(
         zip::ZipArchive::new(Cursor::new(bytes))?
             .decompressed_size()

@@ -72,3 +72,29 @@ pub(crate) fn results(url: &str) -> Results {
         rejected: 0,
     }
 }
+
+pub(crate) fn component_keypair() -> (ed25519_dalek::SigningKey, ed25519_dalek::VerifyingKey) {
+    let signing = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let verifying = signing.verifying_key();
+    (signing, verifying)
+}
+
+pub(crate) fn component_manifest() -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::from_str(include_str!(
+        "../packaging/components.json"
+    ))?)
+}
+
+pub(crate) fn signed_manifest(
+    signing: &ed25519_dalek::SigningKey,
+    value: &mut serde_json::Value,
+    serial: u64,
+    min_app: &str,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    use ed25519_dalek::Signer as _;
+    value["serial"] = serial.into();
+    value["min_app"] = min_app.into();
+    let bytes = serde_json::to_vec(value)?;
+    let signature = signing.sign(&bytes);
+    Ok((bytes, signature.to_bytes().to_vec()))
+}

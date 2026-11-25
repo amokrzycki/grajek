@@ -224,7 +224,7 @@ fn cheap_startup_checks_find_missing_and_outdated_components_without_processes()
     let dir = Scratch::new()?;
     let system = Tools::select(true, None);
     assert_eq!(
-        system.need_on(Some(dir.path().as_os_str())),
+        system.need_on(Some(dir.path().as_os_str()), embedded_pins),
         Some(Need::Missing)
     );
     for name in ["yt-dlp", "deno"] {
@@ -234,13 +234,16 @@ fn cheap_startup_checks_find_missing_and_outdated_components_without_processes()
             std::fs::Permissions::from_mode(0o755),
         )?;
     }
-    assert_eq!(system.need_on(Some(dir.path().as_os_str())), None);
+    assert_eq!(
+        system.need_on(Some(dir.path().as_os_str()), embedded_pins),
+        None
+    );
     std::fs::write(
         dir.path().join("components.json"),
         r#"{"yt-dlp":"2025.01.01","yt-dlp-ejs":"0.8.0","deno":"2.9.8"}"#,
     )?;
     let managed = Tools::select(false, Some(dir.path().to_path_buf()));
-    assert_eq!(managed.need_on(None), Some(Need::Repair));
+    assert_eq!(managed.need_on(None, embedded_pins), Some(Need::Repair));
     for (folder, name) in [("yt-dlp", "yt-dlp_linux"), ("deno", "deno")] {
         std::fs::remove_file(dir.path().join(folder))?;
         std::fs::create_dir(dir.path().join(folder))?;
@@ -250,6 +253,41 @@ fn cheap_startup_checks_find_missing_and_outdated_components_without_processes()
             std::fs::Permissions::from_mode(0o755),
         )?;
     }
-    assert_eq!(managed.need_on(None), Some(Need::Update));
+    assert_eq!(managed.need_on(None, embedded_pins), Some(Need::Update));
+    Ok(())
+}
+
+#[test]
+fn stored_newer_manifest_reports_update_need() -> Result<()> {
+    use crate::test_support::{component_keypair, component_manifest, signed_manifest};
+    let root = Scratch::new()?;
+    let tools_dir = root.path().join("tools");
+    std::fs::create_dir(&tools_dir)?;
+    let embedded = embedded_pins()?;
+    std::fs::write(
+        tools_dir.join("components.json"),
+        serde_json::to_vec(&embedded.versions())?,
+    )?;
+    for tool in [Tool::YtDlp, Tool::Deno] {
+        let path = tools_dir.join(tool.name()).join(tool.filename());
+        std::fs::create_dir_all(path.parent().ok_or_else(|| anyhow::anyhow!("no parent"))?)?;
+        std::fs::write(&path, b"stub")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+    let tools = Tools::select(false, Some(tools_dir));
+    assert_eq!(tools.need_on(None, embedded_pins), None);
+    let (signing, key) = component_keypair();
+    let mut value = component_manifest()?;
+    value["yt-dlp"]["version"] = "2099.1.1".into();
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
+    super::channel::store_manifest(root.path(), &bytes, &signature)?;
+    assert_eq!(
+        tools.need_on(None, || pins_with(Some(root.path()), &key)),
+        Some(Need::Update)
+    );
     Ok(())
 }

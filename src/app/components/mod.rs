@@ -1,7 +1,7 @@
 mod view;
 
 use crate::media::components::{
-    self,
+    self, Need,
     download::{self, Download, Progress},
     status::{ComponentReport, ComponentState},
     system_override,
@@ -9,6 +9,10 @@ use crate::media::components::{
 use gpui_kit::{Context, FocusHandle, Focusable, ScrollHandle, Task, Window};
 
 use super::PlayerApp;
+
+pub(super) fn opens_at_startup(need: Option<Need>) -> bool {
+    matches!(need, Some(Need::Missing | Need::Repair))
+}
 
 #[expect(
     clippy::struct_excessive_bools,
@@ -93,7 +97,7 @@ impl PlayerApp {
     }
     pub fn with_components(mut self, runtime: tokio::runtime::Handle) -> Self {
         self.components.runtime = Some(runtime);
-        self.components.open = components::tools().need().is_some();
+        self.components.open = opens_at_startup(components::tools().need());
         self.components.focus_pending = self.components.open;
         self.components.check_pending = true;
         self
@@ -214,7 +218,9 @@ impl PlayerApp {
             let directory = crate::paths::tools_dir().ok_or_else(|| {
                 anyhow::anyhow!("No writable application data directory is available.")
             })?;
-            download::start(runtime, directory)
+            let pins =
+                components::effective_pins(crate::paths::component_manifest_dir().as_deref())?;
+            download::start(runtime, directory, pins)
         })();
         let job = match result {
             Ok(job) => job,
