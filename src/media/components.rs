@@ -59,8 +59,11 @@ fn pins_with(
         .unwrap_or(embedded))
 }
 
-pub(crate) fn effective_pins(manifest_dir: Option<&Path>) -> anyhow::Result<Pins> {
-    pins_with(manifest_dir, &channel::embedded_key()?)
+pub(crate) fn effective_pins() -> anyhow::Result<Pins> {
+    pins_with(
+        crate::paths::component_manifest_dir().as_deref(),
+        &channel::embedded_key()?,
+    )
 }
 
 impl Pins {
@@ -251,9 +254,7 @@ impl Tools {
     }
 
     pub(crate) fn need(&self) -> Option<Need> {
-        self.need_on(std::env::var_os("PATH").as_deref(), || {
-            effective_pins(crate::paths::component_manifest_dir().as_deref())
-        })
+        self.need_on(std::env::var_os("PATH").as_deref(), effective_pins)
     }
 
     fn need_on(

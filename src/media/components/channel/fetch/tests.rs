@@ -1,8 +1,5 @@
-use super::{FetchError, check, fetch};
-use crate::{
-    media::components::channel::CheckError,
-    test_support::{Scratch, server},
-};
+use super::{CheckError, Rejection, check, fetch};
+use crate::test_support::{Scratch, server};
 
 #[tokio::test]
 async fn fetch_returns_manifest_and_signature() -> anyhow::Result<()> {
@@ -29,7 +26,7 @@ async fn missing_manifest_is_unavailable() -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     assert!(matches!(
         fetch(&client, &server.base).await,
-        Err(FetchError::Unavailable)
+        Err(CheckError::Unavailable)
     ));
     Ok(())
 }
@@ -44,7 +41,7 @@ async fn oversized_manifest_is_rejected_while_streaming() -> anyhow::Result<()> 
     let client = reqwest::Client::new();
     assert!(matches!(
         fetch(&client, &server.base).await,
-        Err(FetchError::TooLarge)
+        Err(CheckError::Rejected(Rejection::TooLarge))
     ));
     Ok(())
 }
@@ -59,7 +56,7 @@ async fn long_signature_is_rejected() -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     assert!(matches!(
         fetch(&client, &server.base).await,
-        Err(FetchError::TooLarge)
+        Err(CheckError::Rejected(Rejection::TooLarge))
     ));
     Ok(())
 }

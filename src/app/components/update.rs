@@ -104,7 +104,7 @@ impl PlayerApp {
         self.components.remote = outcome(
             result,
             components::tools().need(),
-            components::effective_pins(paths::component_manifest_dir().as_deref()),
+            components::effective_pins(),
         );
     }
 }

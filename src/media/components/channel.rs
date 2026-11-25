@@ -138,22 +138,16 @@ pub(super) fn stored_pins(dir: &Path, key: &VerifyingKey, floor: u64) -> Option<
             tracing::warn!("Ignoring stored component manifest: {what}");
         }
     };
-    let manifest = match fs::read(dir.join(MANIFEST_FILE)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+    let read = |name: &str| match fs::read(dir.join(name)) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
-            warn_once(&format!("unreadable manifest ({error})"));
-            return None;
+            warn_once(&format!("unreadable {name} ({error})"));
+            None
         }
     };
-    let signature = match fs::read(dir.join(SIGNATURE_FILE)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            warn_once(&format!("unreadable signature ({error})"));
-            return None;
-        }
-    };
+    let manifest = read(MANIFEST_FILE)?;
+    let signature = read(SIGNATURE_FILE)?;
     match verify(&manifest, &signature, key, floor) {
         Ok(pins) => Some(pins),
         Err(rejection) => {

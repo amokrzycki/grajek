@@ -132,9 +132,7 @@ impl PlayerApp {
             .text_size(px(12.))
             .line_height(px(16.))
             .text_color(theme.muted_foreground);
-        if let Ok(pins) =
-            components::effective_pins(crate::paths::component_manifest_dir().as_deref())
-        {
+        if let Ok(pins) = components::effective_pins() {
             let megabytes =
                 (pins.ytdlp.artifact().size + pins.deno.artifact().size).div_ceil(1_000_000);
             details = details.child(format!("Downloads the verified pair (about {megabytes} MB) from official GitHub releases. No administrator access or PATH changes."))

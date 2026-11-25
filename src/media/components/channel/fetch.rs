@@ -7,12 +7,6 @@ pub(crate) const MANIFEST_BASE: &str =
 
 const MAX_SIGNATURE: usize = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FetchError {
-    Unavailable,
-    TooLarge,
-}
-
 pub(crate) fn client() -> reqwest::Result<reqwest::Client> {
     super::super::download::http_builder()
         .https_only(true)
@@ -23,7 +17,7 @@ pub(crate) fn client() -> reqwest::Result<reqwest::Client> {
 pub(crate) async fn fetch(
     client: &reqwest::Client,
     base: &str,
-) -> Result<(Vec<u8>, Vec<u8>), FetchError> {
+) -> Result<(Vec<u8>, Vec<u8>), CheckError> {
     let manifest = body(client, &format!("{base}/components.json"), MAX_MANIFEST).await?;
     let signature = body(
         client,
@@ -34,23 +28,23 @@ pub(crate) async fn fetch(
     Ok((manifest, signature))
 }
 
-async fn body(client: &reqwest::Client, url: &str, limit: usize) -> Result<Vec<u8>, FetchError> {
+async fn body(client: &reqwest::Client, url: &str, limit: usize) -> Result<Vec<u8>, CheckError> {
     let mut response = client
         .get(url)
         .send()
         .await
-        .map_err(|_| FetchError::Unavailable)?
+        .map_err(|_| CheckError::Unavailable)?
         .error_for_status()
-        .map_err(|_| FetchError::Unavailable)?;
+        .map_err(|_| CheckError::Unavailable)?;
     let mut body = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| FetchError::Unavailable)?
+        .map_err(|_| CheckError::Unavailable)?
     {
         body.extend_from_slice(&chunk);
         if body.len() > limit {
-            return Err(FetchError::TooLarge);
+            return Err(CheckError::Rejected(Rejection::TooLarge));
         }
     }
     Ok(body)
@@ -61,11 +55,7 @@ pub(crate) async fn check(
     base: &str,
     dir: &Path,
 ) -> Result<Accepted, CheckError> {
-    let (manifest, signature) = match fetch(client, base).await {
-        Ok(parts) => parts,
-        Err(FetchError::Unavailable) => return Err(CheckError::Unavailable),
-        Err(FetchError::TooLarge) => return Err(CheckError::Rejected(Rejection::TooLarge)),
-    };
+    let (manifest, signature) = fetch(client, base).await?;
     let key = embedded_key().map_err(|_| CheckError::Unavailable)?;
     accept(dir, &manifest, &signature, &key)
 }

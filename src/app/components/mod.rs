@@ -230,8 +230,7 @@ impl PlayerApp {
             let directory = crate::paths::tools_dir().ok_or_else(|| {
                 anyhow::anyhow!("No writable application data directory is available.")
             })?;
-            let pins =
-                components::effective_pins(crate::paths::component_manifest_dir().as_deref())?;
+            let pins = components::effective_pins()?;
             download::start(runtime, directory, pins)
         })();
         let job = match result {
