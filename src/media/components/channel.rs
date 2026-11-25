@@ -37,7 +37,10 @@ pub(crate) fn embedded_key() -> anyhow::Result<VerifyingKey> {
 
 fn parse_key(hex: &str) -> anyhow::Result<VerifyingKey> {
     let hex = hex.trim();
-    anyhow::ensure!(hex.len() == 64, "public key must be 64 hex chars");
+    anyhow::ensure!(
+        hex.len() == 64,
+        "The component public key must be 64 hex characters."
+    );
     let (chunks, _) = hex.as_bytes().as_chunks::<2>();
     let mut bytes = [0u8; 32];
     for (slot, chunk) in bytes.iter_mut().zip(chunks) {
