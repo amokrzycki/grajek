@@ -44,7 +44,7 @@ Paste a YouTube video URL, import a public playlist into the pending queue, play
 - External Play resumes Paused or starts a pending queue from Ready/Error. Loading/empty Play is a no-op; Stop retains pending items. Seeks validate the current track identity and capabilities at controller consumption. Confirmed seek serials support discontinuity signals without polling.
 - Linux keeps existing XDG storage/dotenv behavior. Windows uses LOCALAPPDATA/Grajek for compatible JSON state and first-choice .env, then .env beside the executable. Explicit environment variables win; no token enters state or distribution artifacts.
 - Signal Ledger stays shared across platforms; Windows selects installed Segoe UI, Linux retains its font preference. Native titlebar, 520×560 default and 420×480 minimum, controls, focus and shortcuts remain.
-- Only target-specific native dependencies are added. No remote visual assets, web rendering, installer, updater, commit, push or release publishing. Windows native runtime acceptance remains pending; cross-compilation and Wine tests do not establish it.
+- Only target-specific native dependencies are added. No remote visual assets, web rendering, installer, commit, push or release publishing. No app self-updater. Only managed playback components may update, from an Ed25519-signed manifest, after an explicit click. Windows native runtime acceptance remains pending; cross-compilation and Wine tests do not establish it.
 
 ## Brand Commitments
 Name: Grajek. Contemporary, elegant, premium, restrained and recognizable, with warmth from the Polish name. No retro hardware skin, cartoon, music-note ornament, SaaS dashboard or streaming-service clone.

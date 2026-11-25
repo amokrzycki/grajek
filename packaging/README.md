@@ -72,6 +72,35 @@ gets the new pair through a new Setup. Linux prompts Update and keeps old tools
 on Later. `GRAJEK_TOOLS=system` remains an explicit diagnostic override; managed
 failures never mix the two pairs or fall back to PATH automatically.
 
+## Publishing a component update
+
+Bump `serial` in `packaging/components.json` and keep `min_app` at the lowest app
+version that understands the manifest. With the offline private key:
+
+```sh
+packaging/publish-components.sh <private-key.pem> <output-dir>
+gh release upload components <output-dir>/components.json <output-dir>/components.json.sig --clobber
+```
+
+The script checks the pinned artifacts with `--platform linux` (run
+`--platform windows` on Windows), signs the exact manifest bytes, verifies the
+detached signature against `packaging/components.pub`, and refuses a `components`
+release that is missing or not a prerelease. It prints the upload command instead
+of running it.
+
+Cross-check the published files with the Rust verifier:
+
+```sh
+GRAJEK_SIGNED_MANIFEST=<output-dir>/components.json \
+GRAJEK_SIGNED_MANIFEST_SIG=<output-dir>/components.json.sig \
+  cargo test --locked --all-features script_signature_matches_rust_verifier -- --ignored
+```
+
+Re-run that check after any key rotation. The private key never enters the
+repository, CI or GitHub secrets. Commit the bumped `components.json` together
+with the published manifest so the embedded and published serials stay
+consistent.
+
 ## Rust license notices
 
 Use cargo-about **0.9.3**, with its explicit `cli` feature:

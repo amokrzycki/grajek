@@ -37,10 +37,11 @@ clean-Windows checks; cross-compilation does not establish that they work.
 Quit Grajek from the tray before updating or uninstalling. Setup detects running
 mutex-aware instances (0.6.0+), including a hidden window. Older portable builds
 must be quit manually. Settings → **Playback components** lists yt-dlp and Deno
-separately, checks whether they can run, and offers **Download missing components**
-or **Repair components**. Nothing downloads without your consent. You can cancel,
-retry, or keep a download running in the background. Repairs verify the complete
-pair before activation and keep previous tools if download or verification fails.
+separately, checks whether they can run, and offers **Download missing components**,
+**Check for component updates** or **Repair components**. Nothing downloads without
+your consent. You can cancel, retry, or keep a download running in the background.
+Repairs verify the complete pair before activation and keep previous tools if
+download or verification fails.
 Recovered tools live in `%LOCALAPPDATA%\Grajek\tools`, take precedence over Setup's
 tools, and need no administrator permissions. Re-running Setup remains an option
 for repairing its bundled copy. Uninstall removes the program and its bundled tools;
@@ -72,12 +73,16 @@ components** to fetch verified upstream files, or **Not now** to defer. Download
 you can cancel or retry. Tools live in `$XDG_DATA_HOME/grajek/tools` (normally
 `~/.local/share/grajek/tools`), with upstream executable name `yt-dlp_linux`.
 Neither PATH nor system packages are changed. GitHub access is required for the
-first download and any requested update; playback itself still needs the network.
+first download and any requested update, including the **Check for component
+updates** manifest check; playback itself still needs the network.
 
 Settings offers **Check components** and **Repair components**, even when version
-checks pass but playback still fails. A newer AppImage can offer newer pinned components; **Not now** keeps the
-installed versions. Updates always require a click. A failed download keeps the
-previous complete set. Pinned versions are yt-dlp **2026.10.26**, EJS **0.8.0**,
+checks pass but playback still fails. **Check for component updates** in Playback
+components fetches the signed component manifest from GitHub; **Update components**
+installs what it offers with the same verification. **Not now** keeps the installed
+versions. Updates always require a click. A failed download keeps the previous
+complete set. With system tools, the dialog says "System tools are updated outside
+Grajek." Pinned versions are yt-dlp **2026.10.26**, EJS **0.8.0**,
 Deno **2.9.8**; downloaded Deno requires glibc 2.27, below the app's 2.35 floor.
 
 On KDE Wayland, an AppImage without desktop integration (for example Gear Lever
@@ -97,8 +102,12 @@ managed files cause a repair prompt, with no silent fallback to system tools.
 System mode retains `--remote-components ejs:npm`; managed mode uses the embedded
 EJS and an absolute Deno path without remote components. Both disable plugins.
 
-If YouTube changes its challenges, managed playback may require a new Grajek
-release. Advanced users can temporarily use updated system tools and the override.
+If YouTube changes its challenges, newer pinned yt-dlp, EJS and Deno builds can be
+published without a new Grajek release. **Check for component updates** in
+Playback components fetches the Ed25519-signed manifest from GitHub and offers
+**Update components** when a newer set passes verification. Updates always
+require a click. Advanced users can temporarily use updated system tools and the
+override.
 Portable ZIP/tar.gz archives remain for the 0.6.0 transition release and need the
 source-mode prerequisites below. `cargo run` and `make install` create no tool
 marker. When no managed marker exists, tools on PATH retain system mode.
@@ -447,7 +456,7 @@ unwritable storage also produces a warning; playback can continue without saving
 | Missing configuration or rejected token | Replace placeholders with a bot token and numeric IDs, invite the bot to the server and restart.                                                                                                                                                                                                              |
 | Cannot join voice                       | Check server/channel IDs, permissions and overrides, channel capacity and outbound voice UDP access.                                                                                                                                                                                                          |
 | Playing but no audible output           | Check server mute, Grajek's volume and your Discord volume for the bot. Playing confirms track progress, not what a listener hears.                                                                                                                                                                           |
-| YouTube extraction or challenge failure | Managed mode: update Grajek. System mode: update `yt-dlp`, `deno` and `yt-dlp-ejs` together.                                                                                                                                                                                                                                                            |
+| YouTube extraction or challenge failure | Managed mode: **Check for component updates** in Playback components, then update Grajek if none is available. System mode: update `yt-dlp`, `deno` and `yt-dlp-ejs` together.                                                                                                                                |
 | No window                               | On Windows check graphics drivers/Direct3D support and use a native release build. On Linux use a graphical session and a working Vulkan driver. For X11/XWayland, try `env -u WAYLAND_DISPLAY cargo run`. An unreachable Wayland socket does not automatically fall back to X11. Leave `ZED_HEADLESS` unset. |
 | Playback stops after a disconnect       | Connectivity recovery does not restart interrupted audio. Once the gateway is ready, use Play URL or Play Queue. Fatal configuration/gateway startup failures require a restart.                                                                                                                              |
 

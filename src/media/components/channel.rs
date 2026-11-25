@@ -32,8 +32,12 @@ const TRUSTED_PREFIXES: [&str; 3] = [
 ];
 
 pub(crate) fn embedded_key() -> anyhow::Result<VerifyingKey> {
-    let hex = include_str!("../../../packaging/components.pub").trim();
-    anyhow::ensure!(hex.len() == 64, "embedded key must be 64 hex chars");
+    parse_key(include_str!("../../../packaging/components.pub"))
+}
+
+fn parse_key(hex: &str) -> anyhow::Result<VerifyingKey> {
+    let hex = hex.trim();
+    anyhow::ensure!(hex.len() == 64, "public key must be 64 hex chars");
     let (chunks, _) = hex.as_bytes().as_chunks::<2>();
     let mut bytes = [0u8; 32];
     for (slot, chunk) in bytes.iter_mut().zip(chunks) {

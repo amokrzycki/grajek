@@ -2,7 +2,7 @@ use ed25519_dalek::Signer as _;
 
 use super::{
     Accepted, CheckError, MANIFEST_FILE, MAX_MANIFEST, Rejection, SIGNATURE_FILE, accept,
-    embedded_key, store_manifest, stored_pins, verify,
+    embedded_key, parse_key, store_manifest, stored_pins, verify,
 };
 use crate::test_support::{Scratch, component_keypair, component_manifest, signed_manifest};
 
@@ -215,6 +215,19 @@ fn accept_rejects_bad_signature_without_storing() -> anyhow::Result<()> {
         Err(CheckError::Rejected(Rejection::BadSignature))
     );
     assert!(matches!(stored_pins(dir.path(), &verifying, 1), Some(pins) if pins.serial == 2));
+    Ok(())
+}
+
+#[test]
+#[ignore = "reads GRAJEK_SIGNED_MANIFEST and GRAJEK_SIGNED_MANIFEST_SIG; see packaging/README.md"]
+fn script_signature_matches_rust_verifier() -> anyhow::Result<()> {
+    let manifest = std::fs::read(std::env::var("GRAJEK_SIGNED_MANIFEST")?)?;
+    let signature = std::fs::read(std::env::var("GRAJEK_SIGNED_MANIFEST_SIG")?)?;
+    let key = match std::env::var("GRAJEK_COMPONENTS_PUB") {
+        Ok(path) => parse_key(&std::fs::read_to_string(path)?)?,
+        Err(_) => embedded_key()?,
+    };
+    verify(&manifest, &signature, &key, 0).map_err(|rejection| anyhow::anyhow!("{rejection:?}"))?;
     Ok(())
 }
 
