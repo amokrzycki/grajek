@@ -1,8 +1,8 @@
 use ed25519_dalek::Signer as _;
 
 use super::{
-    MANIFEST_FILE, MAX_MANIFEST, Rejection, SIGNATURE_FILE, embedded_key, store_manifest,
-    stored_pins, verify,
+    Accepted, CheckError, MANIFEST_FILE, MAX_MANIFEST, Rejection, SIGNATURE_FILE, accept,
+    embedded_key, store_manifest, stored_pins, verify,
 };
 use crate::test_support::{Scratch, component_keypair, component_manifest, signed_manifest};
 
@@ -158,6 +158,63 @@ fn embedded_pins_win_when_serial_is_higher() -> anyhow::Result<()> {
     let (bytes, signature) = signed_manifest(&signing, &mut value, 3, "0.1.0")?;
     store_manifest(dir.path(), &bytes, &signature)?;
     assert!(matches!(stored_pins(dir.path(), &verifying, 2), Some(pins) if pins.serial == 3));
+    Ok(())
+}
+
+#[test]
+fn accept_stores_newer_manifest() -> anyhow::Result<()> {
+    let dir = Scratch::new()?;
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
+    assert_eq!(
+        accept(dir.path(), &bytes, &signature, &verifying),
+        Ok(Accepted::Stored)
+    );
+    assert!(matches!(stored_pins(dir.path(), &verifying, 1), Some(pins) if pins.serial == 2));
+    Ok(())
+}
+
+#[test]
+fn accept_reports_equal_serial_as_current() -> anyhow::Result<()> {
+    let dir = Scratch::new()?;
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
+    assert_eq!(
+        accept(dir.path(), &bytes, &signature, &verifying),
+        Ok(Accepted::Stored)
+    );
+    assert_eq!(
+        accept(dir.path(), &bytes, &signature, &verifying),
+        Ok(Accepted::Current)
+    );
+    Ok(())
+}
+
+#[test]
+fn accept_rejects_bad_signature_without_storing() -> anyhow::Result<()> {
+    let (signing, verifying) = component_keypair();
+    let mut value = component_manifest()?;
+    let (bytes, signature) = signed_manifest(&signing, &mut value, 2, "0.1.0")?;
+    let (mut newer, newer_signature) = signed_manifest(&signing, &mut value, 3, "0.1.0")?;
+    let last = newer.len() - 1;
+    newer[last] ^= 0xFF;
+
+    let empty = Scratch::new()?;
+    assert_eq!(
+        accept(empty.path(), &newer, &newer_signature, &verifying),
+        Err(CheckError::Rejected(Rejection::BadSignature))
+    );
+    assert_eq!(std::fs::read_dir(empty.path())?.count(), 0);
+
+    let dir = Scratch::new()?;
+    store_manifest(dir.path(), &bytes, &signature)?;
+    assert_eq!(
+        accept(dir.path(), &newer, &newer_signature, &verifying),
+        Err(CheckError::Rejected(Rejection::BadSignature))
+    );
+    assert!(matches!(stored_pins(dir.path(), &verifying, 1), Some(pins) if pins.serial == 2));
     Ok(())
 }
 

@@ -14,6 +14,7 @@ use crate::media::{
 
 use super::super::ui::escape;
 use super::PlayerApp;
+use super::update::{RemoteCheck, update_check_visible};
 
 impl PlayerApp {
     pub(in crate::app) fn component_rows(&self, cx: &Context<Self>) -> AnyElement {
@@ -78,6 +79,47 @@ impl PlayerApp {
         rows.into_any_element()
     }
 
+    fn component_update_row(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let tools = components::tools();
+        if !update_check_visible(tools.mode, tools.need(), system_override()) {
+            return div()
+                .id("components-update-status")
+                .text_size(px(12.))
+                .text_color(theme.muted_foreground)
+                .child("System tools are updated outside Grajek.")
+                .into_any_element();
+        }
+        let checking = matches!(self.components.remote, RemoteCheck::Checking { .. });
+        let mut row = div().flex().flex_col().items_start().gap_1().child(
+            self.focus
+                .button("components-update-check")
+                .ghost()
+                .disabled(self.components.busy() || checking)
+                .label("Check for component updates")
+                .on_click(cx.listener(|this, _, _, cx| this.check_component_updates(cx))),
+        );
+        if let Some(status) = self.components.remote.status() {
+            row = row.child(
+                div()
+                    .id("components-update-status")
+                    .test_support()
+                    .role(gpui_kit::Role::Status)
+                    .aria_label(status.clone())
+                    .text_size(px(12.))
+                    .text_color(
+                        if matches!(self.components.remote, RemoteCheck::Failed(_)) {
+                            theme.danger
+                        } else {
+                            theme.muted_foreground
+                        },
+                    )
+                    .child(status),
+            );
+        }
+        row.into_any_element()
+    }
+
     fn components_details(&self, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let tools = components::tools();
@@ -137,6 +179,7 @@ impl PlayerApp {
             self.components.focus.focus(window, cx);
             self.components.focus_pending = false;
         }
+        let update_row = self.component_update_row(cx);
         let theme = cx.theme();
         let busy = self.components.busy();
         let checking = self
@@ -144,7 +187,9 @@ impl PlayerApp {
             .reports
             .iter()
             .any(|r| r.state == ComponentState::Checking);
-        let complete = self.components.progress == Progress::Complete && self.components.ready();
+        let complete = self.components.progress == Progress::Complete
+            && self.components.ready()
+            && !matches!(self.components.remote, RemoteCheck::Available { .. });
         let status = match &self.components.progress {
             Progress::Ready if busy => "Starting download…".into(),
             Progress::Ready if checking => "Checking your playback components…".into(),
@@ -191,7 +236,8 @@ impl PlayerApp {
                         "Grajek needs both components to play YouTube audio. Your queue and settings stay safe."
                     }),
             )
-            .child(self.component_rows(cx));
+            .child(self.component_rows(cx))
+            .child(update_row);
         if system_override() {
             content = content.child(div().text_size(px(12.)).text_color(theme.danger)
                 .child("GRAJEK_TOOLS=system is set. Remove it and restart Grajek to use downloads, or repair your system tools."));

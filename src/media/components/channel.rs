@@ -8,6 +8,8 @@ use ed25519_dalek::{Signature, VerifyingKey};
 
 use super::{Pins, version_parts};
 
+pub(crate) mod fetch;
+
 const MANIFEST_FILE: &str = "component-manifest.json";
 const SIGNATURE_FILE: &str = "component-manifest.json.sig";
 
@@ -72,7 +74,36 @@ pub(crate) fn verify(
     Ok(pins)
 }
 
-#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Accepted {
+    Stored,
+    Current,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CheckError {
+    Unavailable,
+    Rejected(Rejection),
+}
+
+pub(crate) fn accept(
+    dir: &Path,
+    manifest: &[u8],
+    signature: &[u8],
+    key: &VerifyingKey,
+) -> Result<Accepted, CheckError> {
+    let embedded = super::embedded_pins().map_err(|_| CheckError::Unavailable)?;
+    let stored = stored_pins(dir, key, 0).map_or(0, |pins| pins.serial);
+    let floor = embedded.serial.max(stored);
+    match verify(manifest, signature, key, floor) {
+        Ok(_) => store_manifest(dir, manifest, signature)
+            .map_err(|_| CheckError::Unavailable)
+            .map(|()| Accepted::Stored),
+        Err(Rejection::NotNewer) => Ok(Accepted::Current),
+        Err(rejection) => Err(CheckError::Rejected(rejection)),
+    }
+}
+
 pub(crate) fn store_manifest(dir: &Path, manifest: &[u8], signature: &[u8]) -> anyhow::Result<()> {
     fs::create_dir_all(dir)?;
     write_atomic(&dir.join(MANIFEST_FILE), manifest)?;
@@ -80,7 +111,6 @@ pub(crate) fn store_manifest(dir: &Path, manifest: &[u8], signature: &[u8]) -> a
     Ok(())
 }
 
-#[cfg(test)]
 fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let temp = path.with_extension(format!("tmp-{}", std::process::id()));
     let result = (|| -> anyhow::Result<()> {

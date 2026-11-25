@@ -1,4 +1,7 @@
+mod update;
 mod view;
+
+pub(in crate::app) use update::RemoteCheck;
 
 use crate::media::components::{
     self, Need,
@@ -23,6 +26,7 @@ pub(super) struct Panel {
     pub check_pending: bool,
     pub reports: Vec<ComponentReport>,
     pub progress: Progress,
+    pub remote: RemoteCheck,
     pub details: bool,
     focus_pending: bool,
     focus: FocusHandle,
@@ -33,6 +37,7 @@ pub(super) struct Panel {
     check: Option<Task<()>>,
     check_abort: Option<tokio::task::AbortHandle>,
     generation: u64,
+    remote_generation: u64,
 }
 
 impl Panel {
@@ -42,6 +47,7 @@ impl Panel {
             check_pending: false,
             reports: components::tools().inspect(),
             progress: Progress::Ready,
+            remote: RemoteCheck::Idle,
             details: false,
             focus_pending: false,
             focus: cx.focus_handle(),
@@ -52,6 +58,7 @@ impl Panel {
             check: None,
             check_abort: None,
             generation: 0,
+            remote_generation: 0,
         }
     }
 
@@ -107,6 +114,9 @@ impl PlayerApp {
         if self.components.busy() {
             return "Download progress";
         }
+        if matches!(self.components.remote, RemoteCheck::Available { .. }) {
+            return "Update components";
+        }
         if self
             .components
             .reports
@@ -121,6 +131,8 @@ impl PlayerApp {
             .any(|r| r.state == ComponentState::Missing)
         {
             "Download missing components"
+        } else if components::tools().need() == Some(Need::Update) {
+            "Update components"
         } else {
             "Repair components"
         }
@@ -231,6 +243,7 @@ impl PlayerApp {
             }
         };
         let mut updates = job.progress.clone();
+        self.components.remote = RemoteCheck::Idle;
         self.components.job = Some(job);
         self.components.progress = Progress::Ready;
         self.components.updates = Some(cx.spawn_in(window, async move |entity, cx| {

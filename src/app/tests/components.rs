@@ -1,7 +1,12 @@
 use super::*;
+use crate::app::components::RemoteCheck;
 use crate::media::{
     Tool,
-    components::status::{ComponentReport, ComponentState},
+    components::{
+        channel::{Accepted, CheckError},
+        download::Progress,
+        status::{ComponentReport, ComponentState},
+    },
 };
 
 fn text(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) -> String {
@@ -203,4 +208,43 @@ fn pending_update_does_not_auto_open_components() {
     assert!(!opens_at_startup(None));
     assert!(opens_at_startup(Some(Need::Missing)));
     assert!(opens_at_startup(Some(Need::Repair)));
+}
+
+#[gpui_kit::test]
+fn check_is_ignored_while_busy_and_stale_results_are_dropped(cx: &mut TestAppContext) {
+    let ((_window, app, _commands, _), _) = open_full(cx, state(Phase::Ready));
+    app.update(cx, |app, cx| {
+        app.components.progress = Progress::Downloading { bytes: 0, total: 1 };
+        app.check_component_updates(cx);
+        assert_eq!(app.components.remote, RemoteCheck::Idle);
+        app.components.progress = Progress::Ready;
+        app.components.remote = RemoteCheck::Checking { generation: 5 };
+        app.check_component_updates(cx);
+        assert_eq!(
+            app.components.remote,
+            RemoteCheck::Checking { generation: 5 }
+        );
+        app.finish_component_update_check(4, Ok(Accepted::Stored));
+        assert_eq!(
+            app.components.remote,
+            RemoteCheck::Checking { generation: 5 }
+        );
+        app.finish_component_update_check(5, Err(CheckError::Unavailable));
+        assert_eq!(
+            app.components.remote,
+            RemoteCheck::Failed("Couldn't check for updates. Try again later.")
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn available_update_offers_existing_download_action(cx: &mut TestAppContext) {
+    let ((_window, app, _commands, _), _) = open_full(cx, state(Phase::Ready));
+    app.update(cx, |app, _| {
+        app.components.remote = RemoteCheck::Available {
+            ytdlp: "2099.1.1".into(),
+            deno: "2.9.8".into(),
+        };
+        assert_eq!(app.components_action(), "Update components");
+    });
 }
