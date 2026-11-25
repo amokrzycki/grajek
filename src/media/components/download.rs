@@ -60,8 +60,11 @@ pub(crate) fn http_builder() -> reqwest::ClientBuilder {
         .read_timeout(Duration::from_secs(15))
 }
 
-pub(crate) fn start(runtime: &tokio::runtime::Handle, directory: PathBuf) -> Result<Download> {
-    let pins = super::pins()?;
+pub(crate) fn start(
+    runtime: &tokio::runtime::Handle,
+    directory: PathBuf,
+    pins: Pins,
+) -> Result<Download> {
     let client = http_builder().https_only(true).build()?;
     let (progress, updates) = watch::channel(Progress::Ready);
     let (cancel, cancelled) = watch::channel(false);

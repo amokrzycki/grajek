@@ -1,7 +1,10 @@
+mod update;
 mod view;
 
+pub(in crate::app) use update::RemoteCheck;
+
 use crate::media::components::{
-    self,
+    self, Need,
     download::{self, Download, Progress},
     status::{ComponentReport, ComponentState},
     system_override,
@@ -9,6 +12,10 @@ use crate::media::components::{
 use gpui_kit::{Context, FocusHandle, Focusable, ScrollHandle, Task, Window};
 
 use super::PlayerApp;
+
+pub(super) fn opens_at_startup(need: Option<Need>) -> bool {
+    matches!(need, Some(Need::Missing | Need::Repair))
+}
 
 #[expect(
     clippy::struct_excessive_bools,
@@ -19,6 +26,7 @@ pub(super) struct Panel {
     pub check_pending: bool,
     pub reports: Vec<ComponentReport>,
     pub progress: Progress,
+    pub remote: RemoteCheck,
     pub details: bool,
     focus_pending: bool,
     focus: FocusHandle,
@@ -29,6 +37,7 @@ pub(super) struct Panel {
     check: Option<Task<()>>,
     check_abort: Option<tokio::task::AbortHandle>,
     generation: u64,
+    remote_generation: u64,
 }
 
 impl Panel {
@@ -38,6 +47,7 @@ impl Panel {
             check_pending: false,
             reports: components::tools().inspect(),
             progress: Progress::Ready,
+            remote: RemoteCheck::Idle,
             details: false,
             focus_pending: false,
             focus: cx.focus_handle(),
@@ -48,6 +58,7 @@ impl Panel {
             check: None,
             check_abort: None,
             generation: 0,
+            remote_generation: 0,
         }
     }
 
@@ -93,7 +104,7 @@ impl PlayerApp {
     }
     pub fn with_components(mut self, runtime: tokio::runtime::Handle) -> Self {
         self.components.runtime = Some(runtime);
-        self.components.open = components::tools().need().is_some();
+        self.components.open = opens_at_startup(components::tools().need());
         self.components.focus_pending = self.components.open;
         self.components.check_pending = true;
         self
@@ -102,6 +113,9 @@ impl PlayerApp {
     pub(super) fn components_action(&self) -> &'static str {
         if self.components.busy() {
             return "Download progress";
+        }
+        if matches!(self.components.remote, RemoteCheck::Available { .. }) {
+            return "Update components";
         }
         if self
             .components
@@ -117,6 +131,8 @@ impl PlayerApp {
             .any(|r| r.state == ComponentState::Missing)
         {
             "Download missing components"
+        } else if components::tools().need() == Some(Need::Update) {
+            "Update components"
         } else {
             "Repair components"
         }
@@ -214,7 +230,8 @@ impl PlayerApp {
             let directory = crate::paths::tools_dir().ok_or_else(|| {
                 anyhow::anyhow!("No writable application data directory is available.")
             })?;
-            download::start(runtime, directory)
+            let pins = components::effective_pins()?;
+            download::start(runtime, directory, pins)
         })();
         let job = match result {
             Ok(job) => job,
@@ -225,6 +242,7 @@ impl PlayerApp {
             }
         };
         let mut updates = job.progress.clone();
+        self.components.remote = RemoteCheck::Idle;
         self.components.job = Some(job);
         self.components.progress = Progress::Ready;
         self.components.updates = Some(cx.spawn_in(window, async move |entity, cx| {

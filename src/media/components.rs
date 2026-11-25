@@ -10,6 +10,7 @@ use super::Tool;
 static TOOLS: OnceLock<RwLock<Tools>> = OnceLock::new();
 pub(crate) static EXECUTIONS: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
+pub(crate) mod channel;
 pub(crate) mod download;
 pub(crate) mod execution;
 
@@ -37,12 +38,32 @@ pub(crate) struct Pins {
     #[serde(rename = "yt-dlp")]
     pub ytdlp: Pin,
     pub deno: Pin,
+    #[serde(default)]
+    pub serial: u64,
+    pub min_app: String,
 }
 
-pub(crate) fn pins() -> anyhow::Result<Pins> {
+pub(crate) fn embedded_pins() -> anyhow::Result<Pins> {
     Ok(serde_json::from_str(include_str!(
         "../../packaging/components.json"
     ))?)
+}
+
+fn pins_with(
+    manifest_dir: Option<&Path>,
+    key: &ed25519_dalek::VerifyingKey,
+) -> anyhow::Result<Pins> {
+    let embedded = embedded_pins()?;
+    Ok(manifest_dir
+        .and_then(|dir| channel::stored_pins(dir, key, embedded.serial))
+        .unwrap_or(embedded))
+}
+
+pub(crate) fn effective_pins() -> anyhow::Result<Pins> {
+    pins_with(
+        crate::paths::component_manifest_dir().as_deref(),
+        &channel::embedded_key()?,
+    )
 }
 
 impl Pins {
@@ -233,10 +254,14 @@ impl Tools {
     }
 
     pub(crate) fn need(&self) -> Option<Need> {
-        self.need_on(std::env::var_os("PATH").as_deref())
+        self.need_on(std::env::var_os("PATH").as_deref(), effective_pins)
     }
 
-    fn need_on(&self, path: Option<&OsStr>) -> Option<Need> {
+    fn need_on(
+        &self,
+        path: Option<&OsStr>,
+        expected: impl FnOnce() -> anyhow::Result<Pins>,
+    ) -> Option<Need> {
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt as _;
         let executable = |path: &std::path::Path| {
@@ -268,7 +293,7 @@ impl Tools {
         {
             return Some(Need::Repair);
         }
-        let expected = pins().ok()?.versions();
+        let expected = expected().ok()?.versions();
         [
             (&versions.ytdlp, &expected.ytdlp),
             (&versions.ejs, &expected.ejs),

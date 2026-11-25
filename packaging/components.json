@@ -1,18 +1,20 @@
 {
+  "serial": 2,
+  "min_app": "0.6.0",
   "yt-dlp": {
-    "version": "2026.10.26",
+    "version": "2026.11.23",
     "ejs": "0.8.0",
     "windows": {
-      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_win.zip",
-      "sha256": "fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419",
-      "size": 23885596,
-      "unpacked_size": 41340247
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp_win.zip",
+      "sha256": "824860984b96ca01de09f98f7bfd74ed7bbdce72a3340b51af8b9dc5ee037a5f",
+      "size": 23918721,
+      "unpacked_size": 41394739
     },
     "linux": {
-      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux.zip",
-      "sha256": "f34053415136e55073dd64ba5326d161ecc23ce0e98c081d8752867b37809450",
-      "size": 41236547,
-      "unpacked_size": 98866816
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp_linux.zip",
+      "sha256": "cc4a3aa98fb438a1dac04a6fb006fe57acbeed00fc12db9ec84e3036dbbe6ccb",
+      "size": 41243981,
+      "unpacked_size": 98872844
     }
   },
   "deno": {

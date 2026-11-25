@@ -11,6 +11,11 @@ use crate::{
     history::HistoryEntry,
     search::{ResultItem, Results},
 };
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    task::JoinHandle,
+};
 
 /// An empty directory unique to this process and call, removed on drop.
 pub(crate) struct Scratch(PathBuf);
@@ -71,4 +76,82 @@ pub(crate) fn results(url: &str) -> Results {
         }],
         rejected: 0,
     }
+}
+
+pub(crate) fn component_keypair() -> (ed25519_dalek::SigningKey, ed25519_dalek::VerifyingKey) {
+    let signing = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let verifying = signing.verifying_key();
+    (signing, verifying)
+}
+
+pub(crate) fn embedded_serial() -> anyhow::Result<u64> {
+    Ok(crate::media::components::embedded_pins()?.serial)
+}
+
+pub(crate) fn component_manifest() -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::from_str(include_str!(
+        "../packaging/components.json"
+    ))?)
+}
+
+pub(crate) fn signed_manifest(
+    signing: &ed25519_dalek::SigningKey,
+    value: &mut serde_json::Value,
+    serial: u64,
+    min_app: &str,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    use ed25519_dalek::Signer as _;
+    value["serial"] = serial.into();
+    value["min_app"] = min_app.into();
+    let bytes = serde_json::to_vec(value)?;
+    let signature = signing.sign(&bytes);
+    Ok((bytes, signature.to_bytes().to_vec()))
+}
+
+pub(crate) struct Server {
+    pub(crate) base: String,
+    task: JoinHandle<()>,
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+pub(crate) async fn server(routes: Vec<(&'static str, u16, Vec<u8>)>) -> anyhow::Result<Server> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let base = format!("http://{}", listener.local_addr()?);
+    let task = tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+                match socket.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let request = String::from_utf8_lossy(&request);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("");
+            let (status, body) = routes
+                .iter()
+                .find(|(route, _, _)| path == *route)
+                .map_or((404, Vec::new()), |(_, status, body)| {
+                    (*status, body.clone())
+                });
+            let reason = if status == 200 { "OK" } else { "Not Found" };
+            let header = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = socket.write_all(header.as_bytes()).await;
+            let _ = socket.write_all(&body).await;
+        }
+    });
+    Ok(Server { base, task })
 }
