@@ -183,7 +183,7 @@ fn a_marker_without_binaries_asks_for_repair_instead_of_claiming_versions() -> R
     let dir = Scratch::new()?;
     std::fs::write(
         dir.path().join("components.json"),
-        r#"{"yt-dlp":"2026.10.26","yt-dlp-ejs":"0.8.0","deno":"2.9.8"}"#,
+        serde_json::to_vec(&embedded_pins()?.versions())?,
     )?;
     let tools = Tools::select(false, Some(dir.path().to_path_buf()));
     assert_eq!(tools.mode, Mode::Managed);
